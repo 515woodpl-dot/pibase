@@ -58,7 +58,24 @@ command -v docker >/dev/null 2>&1 || NEED_SUDO=true
 $IN_DOCKER_GROUP || NEED_SUDO=true
 
 if $NEED_SUDO; then
-  log "This run needs root once, for installing Docker and/or adding $USER to the docker group."
+  # Non-interactive runners (Claude Code's bash tool, cron, CI, etc.) have no TTY, so `sudo -v`
+  # can't prompt — it would otherwise fail with a confusing raw sudo error. Detect that up front
+  # and give a one-time, one-line fix instead of a stack of sudo noise.
+  if ! sudo -n true 2>/dev/null; then
+    if [ ! -t 0 ] && [ ! -t 1 ]; then
+      echo
+      warn "Root is needed once (to add $USER to the docker group), but this shell has no"
+      warn "terminal to prompt for a password with. Run this single line in a real terminal"
+      warn "(SSH session or the Pi's own console), once, ever:"
+      echo
+      echo "    sudo usermod -aG docker $USER"
+      echo
+      warn "Then re-run this script from wherever you like, including a non-interactive one —"
+      warn "it re-checks group membership fresh each time and won't need sudo again."
+      exit 1
+    fi
+    log "This run needs root once, for installing Docker and/or adding $USER to the docker group."
+  fi
   sudo -v
   ( while true; do sudo -n true; sleep 60; kill -0 "$$" 2>/dev/null || exit; done ) &
   SUDO_KEEPALIVE_PID=$!
