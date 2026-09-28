@@ -122,15 +122,20 @@ export function CopyButton({ value }: { value: string }) {
         try {
           await navigator.clipboard.writeText(value);
         } catch {
-          // HTTP (non-secure context): clipboard API unavailable; fall back to execCommand
-          const el = document.createElement("textarea");
-          el.value = value;
-          el.style.position = "fixed";
-          el.style.opacity = "0";
-          document.body.appendChild(el);
-          el.select();
-          document.execCommand("copy");
-          document.body.removeChild(el);
+          try {
+            // HTTP (non-secure context): clipboard API unavailable; fall back to execCommand
+            const el = document.createElement("textarea");
+            el.value = value;
+            el.style.position = "fixed";
+            el.style.opacity = "0";
+            document.body.appendChild(el);
+            el.focus();
+            el.select();
+            document.execCommand("copy");
+            document.body.removeChild(el);
+          } catch {
+            // execCommand also failed — badge still shows so the user knows the click registered
+          }
         }
         setDone(true);
         setTimeout(() => setDone(false), 1500);
