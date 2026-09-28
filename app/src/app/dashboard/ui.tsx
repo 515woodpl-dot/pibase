@@ -119,7 +119,19 @@ export function CopyButton({ value }: { value: string }) {
       type="button"
       className="btn-ghost shrink-0"
       onClick={async () => {
-        await navigator.clipboard.writeText(value);
+        try {
+          await navigator.clipboard.writeText(value);
+        } catch {
+          // HTTP (non-secure context): clipboard API unavailable; fall back to execCommand
+          const el = document.createElement("textarea");
+          el.value = value;
+          el.style.position = "fixed";
+          el.style.opacity = "0";
+          document.body.appendChild(el);
+          el.select();
+          document.execCommand("copy");
+          document.body.removeChild(el);
+        }
         setDone(true);
         setTimeout(() => setDone(false), 1500);
       }}
