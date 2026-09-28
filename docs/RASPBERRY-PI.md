@@ -56,6 +56,40 @@ If your router blocks DNS answers with private IPs ("DNS rebinding protection"),
 resolve; allow `sslip.io` in the router or use a local DNS (Pi-hole: wildcard `*.datbase.lan` → Pi IP,
 then `DOMAIN=datbase.lan`).
 
+## Remote access via Tailscale (optional)
+
+If Tailscale is already installed and running on the Pi when you run `./scripts/setup-pi.sh`, it's
+picked up automatically — no per-Pi configuration needed, this isn't tied to any specific
+Tailscale IP or account. The script runs `tailscale ip -4` on whatever machine it's on, and if that
+returns an address, it adds a *second* way to reach the app (`EXTRA_CADDY_DOMAINS` /
+`EXTRA_TRUSTED_ORIGINS` in `.env`) built from that Pi's own Tailscale IP as `<ip-with-dashes>.sslip.io`
+— on top of the LAN address, not instead of it. Both work at the same time: the LAN URL for local access,
+the Tailscale one for reaching the dashboard from anywhere your tailnet reaches (phone off-network,
+a laptop elsewhere), including signing in — both the routing and the auth layer are configured, not
+just the page load.
+
+Two cases where you need to do something by hand:
+- **Installing Tailscale *after* the first `setup-pi.sh` run:** the auto-detect only fills in
+  `EXTRA_CADDY_DOMAINS`/`EXTRA_TRUSTED_ORIGINS` when they're not already set, and a first run without
+  Tailscale leaves them empty (not "unset") — so it won't retroactively fill them in on a later run.
+  Add them yourself in `.env` (swap in this Pi's own Tailscale IP and port, `tailscale ip -4` to check):
+  ```
+  EXTRA_CADDY_DOMAINS=, http://100-119-190-50.sslip.io:9081
+  EXTRA_TRUSTED_ORIGINS=http://100-119-190-50.sslip.io:9081
+  ```
+  Match the scheme (`http`/`https`) to `PUBLIC_SCHEME`, and only add `:<port>` if `CADDY_HTTP_PORT`
+  is set in `.env` (i.e. something else on the box already had 80 taken). Then rebuild the app so the
+  new Caddy label and auth config take effect (a restart alone won't re-read compose labels):
+  `docker compose up -d --build`.
+- **A third hostname, or anything beyond one extra address** (a public domain as well as LAN and
+  Tailscale, say): extend the comma list in both variables the same way —
+  `EXTRA_CADDY_DOMAINS=, http://addr-two, http://addr-three` and matching entries (one per line, or
+  comma-separated — `auth.ts` splits on commas) in `EXTRA_TRUSTED_ORIGINS`.
+
+Tailscale's MagicDNS hostname (e.g. `http://gejg`) isn't used here on purpose — routing by that name
+through Caddy would need its own TLS/cert handling, whereas the Tailscale IP's sslip.io address works
+the same zero-config way the LAN address already does.
+
 ## Check it
 - Disk numbers: DATBase's monitor measures the disk holding Docker's data (where every project lives).
   Compare `/api/monitor` with `df -h $(docker info -f '{{.DockerRootDir}}')`, not `df -h /`.

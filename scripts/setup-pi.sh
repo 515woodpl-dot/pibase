@@ -12,6 +12,9 @@
 #   - detects if 80/443 are already taken by another service and picks free ports instead
 #     (written to .env as CADDY_HTTP_PORT / CADDY_HTTPS_PORT), so this never collides with
 #     something else already running on the box
+#   - detects Tailscale (if installed and running) and adds this machine's own Tailscale IP as a
+#     second way to reach the app (EXTRA_CADDY_DOMAINS / EXTRA_TRUSTED_ORIGINS), alongside the LAN
+#     address rather than instead of it — works on any Pi/box, not tied to one specific tailnet
 #   - builds and starts the stack
 #
 # Safe to re-run any time (e.g. after `git pull`) — it only fills in what's missing.
