@@ -5,7 +5,7 @@ services:
   proxy:
     image: lucaslorentz/caddy-docker-proxy:ci-alpine
     restart: unless-stopped
-    ports: ["80:80", "443:443"]
+    ports: ["9080:80"]
     environment:
       CADDY_INGRESS_NETWORKS: datbase
     volumes:
