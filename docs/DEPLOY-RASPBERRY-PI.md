@@ -2,6 +2,12 @@
 
 First-time deployment on Raspberry Pi OS (Debian Trixie, `aarch64`) with Docker 26 pre-installed.
 
+> **All four issues below are now handled automatically by `scripts/setup-pi.sh`** — it installs
+> the compose/buildx plugins (to `~/.docker/cli-plugins`, no root needed), asks for `sudo` at
+> most once, and detects port conflicts and reassigns `CADDY_HTTP_PORT`/`CADDY_HTTPS_PORT` in
+> `.env` instead of requiring a hand edit to `docker-compose.yml`. This page is kept as reference
+> for what the script does and why, and as a manual fallback if you'd rather not run it.
+
 ---
 
 ## Issues Encountered
@@ -69,12 +75,15 @@ This Pi already runs other services that own the standard ports:
 
 The original `docker-compose.yml` mapped Caddy to `80:80` and `443:443` — both blocked.
 
-**Fix applied:**
-- Changed Caddy's port binding to `9080:80` in `docker-compose.yml`
-- Added an nginx vhost `/etc/nginx/sites-available/datbase` that proxies `192-168-1-171.sslip.io → localhost:9080`
+**Fix applied then, generalized since:** `docker-compose.yml`'s Caddy ports are now
+`${CADDY_HTTP_PORT:-80}:80` / `${CADDY_HTTPS_PORT:-443}:443` — no file edit needed. On this Pi,
+`CADDY_HTTP_PORT=9080` is set in `.env` (`scripts/setup-pi.sh` detects a taken port 80 and picks
+the next free one automatically on any future fresh Pi, whatever the reason it's taken).
+- An nginx vhost `/etc/nginx/sites-available/datbase` proxies `192-168-1-171.sslip.io → localhost:9080`
 - Caddy handles internal routing between containers; nginx is the public front door
 
-The nginx config lives at `/etc/nginx/sites-enabled/datbase`:
+The nginx config lives at `/etc/nginx/sites-enabled/datbase` — the template is
+`scripts/nginx-datbase.conf.example` (fill in `DOMAIN` and `CADDY_HTTP_PORT`):
 
 ```nginx
 server {
@@ -92,7 +101,8 @@ server {
 }
 ```
 
-> If deploying on a fresh Pi with no other services, revert the port change to `80:80` and skip the nginx proxy step.
+> On a fresh Pi with no other services, `CADDY_HTTP_PORT`/`CADDY_HTTPS_PORT` stay unset, Caddy
+> binds 80/443 directly, and the nginx proxy step isn't needed at all.
 
 ---
 
@@ -182,16 +192,11 @@ App will be at: `http://192-168-1-171.sslip.io`
 
 ---
 
-## TODO: Bundle plugins in repo (optional)
+## Done: `scripts/setup-pi.sh`
 
-To avoid the manual download step on future deploys, the two plugin binaries could be committed to `scripts/docker-plugins/` and installed via a setup script:
-
-```
-scripts/
-  setup-pi.sh        ← runs the curl commands above automatically
-  docker-plugins/
-    docker-compose   ← aarch64 binary (28 MB)
-    docker-buildx    ← aarch64 binary (59 MB)
-```
-
-This would make the deploy fully offline-capable after a `git clone`.
+All of the above — plugin install, docker group, `.env` + secrets, port-conflict detection — is
+now automated by `scripts/setup-pi.sh`. It downloads the plugin binaries at run time (matching
+whatever architecture it's running on) rather than committing fixed binaries to the repo, so it
+stays correct across architectures and versions without needing updates here. It needs network
+access to GitHub the first time it runs on a machine; after that, re-runs are instant since the
+plugins are already in place. See the top of this document and `docs/RASPBERRY-PI.md` for usage.

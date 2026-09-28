@@ -1,0 +1,27 @@
+# Optional: only needed if something else on this machine already owns port 80/443, so
+# scripts/setup-pi.sh moved DATBase's Caddy proxy to an alternate port (CADDY_HTTP_PORT in
+# .env) and you still want the plain http://<domain> URL to work without typing the port.
+#
+# Copy this in front of your existing nginx setup as one more vhost:
+#
+#   sudo cp scripts/nginx-datbase.conf.example /etc/nginx/sites-available/datbase
+#   sudo nano /etc/nginx/sites-available/datbase   # fill in DOMAIN and CADDY_HTTP_PORT below
+#   sudo ln -s /etc/nginx/sites-available/datbase /etc/nginx/sites-enabled/datbase
+#   sudo nginx -t && sudo systemctl reload nginx
+#
+# Replace DOMAIN with your .env DOMAIN value, and CADDY_HTTP_PORT with whatever
+# scripts/setup-pi.sh picked (check .env — it only sets this when 80 was already taken).
+
+server {
+    listen 80;
+    server_name DOMAIN;
+
+    location / {
+        proxy_pass http://127.0.0.1:CADDY_HTTP_PORT;
+        proxy_http_version 1.1;
+        proxy_set_header Host $host;
+        proxy_set_header X-Real-IP $remote_addr;
+        proxy_set_header X-Forwarded-For $proxy_add_x_forwarded_for;
+        proxy_set_header X-Forwarded-Proto $scheme;
+    }
+}
