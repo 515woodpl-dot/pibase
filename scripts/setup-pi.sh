@@ -252,6 +252,26 @@ fi
 ok "Port check done"
 
 # ---------------------------------------------------------------------------
+# 5b. Tailscale — if present, make the app reachable (and sign-in-able) over it too, in
+#     addition to the LAN address, instead of one replacing the other.
+# ---------------------------------------------------------------------------
+if command -v tailscale >/dev/null 2>&1; then
+  TS_IP="$(tailscale ip -4 2>/dev/null || true)"
+  if [ -n "$TS_IP" ] && ! grep -q '^EXTRA_CADDY_DOMAINS=' .env; then
+    log "Tailscale detected — adding it as a second way to reach the app"
+    TS_SSLIP="$(printf '%s' "$TS_IP" | tr '.' '-').sslip.io"
+    SCHEME_NOW="$(grep '^PUBLIC_SCHEME=' .env | cut -d= -f2- || true)"
+    SCHEME_NOW="${SCHEME_NOW:-https}"
+    HTTP_PORT_NOW="$(grep '^CADDY_HTTP_PORT=' .env | cut -d= -f2- || true)"
+    TS_ORIGIN="${SCHEME_NOW}://${TS_SSLIP}"
+    [ -n "$HTTP_PORT_NOW" ] && TS_ORIGIN="${TS_ORIGIN}:${HTTP_PORT_NOW}"
+    printf 'EXTRA_CADDY_DOMAINS=, %s\n' "$TS_ORIGIN" >> .env
+    printf 'EXTRA_TRUSTED_ORIGINS=%s\n' "$TS_ORIGIN" >> .env
+    ok "Also reachable at ${TS_ORIGIN} (over Tailscale, from anywhere — not just this LAN)"
+  fi
+fi
+
+# ---------------------------------------------------------------------------
 # 6. Build and start
 # ---------------------------------------------------------------------------
 log "Building and starting the stack (this can take ~10 minutes on a Pi the first time)"
@@ -270,4 +290,8 @@ if [ -n "$HTTP_PORT_VAL" ] && [ "$SCHEME_VAL" = "http" ]; then
 fi
 
 ok "Done. Open: ${URL}"
+EXTRA_ORIGIN_VAL="$(grep '^EXTRA_TRUSTED_ORIGINS=' .env | cut -d= -f2- || true)"
+if [ -n "$EXTRA_ORIGIN_VAL" ]; then
+  echo "   Also reachable at: ${EXTRA_ORIGIN_VAL} (Tailscale)"
+fi
 echo "   Sign up with the address you set as ADMIN_EMAIL in .env to see Server status."

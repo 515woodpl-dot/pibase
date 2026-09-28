@@ -49,7 +49,10 @@ services:
     volumes:
       - /var/run/docker.sock:/var/run/docker.sock
     labels:
-      caddy: ${PUBLIC_SCHEME:-https}://${DOMAIN}
+      # EXTRA_CADDY_DOMAINS (in .env) appends more site addresses so the same app is reachable
+      # under a second hostname (e.g. a Tailscale address alongside the LAN one) — set it to
+      # ", scheme://host[:port]" (leading comma+space), or leave empty for just DOMAIN.
+      caddy: ${PUBLIC_SCHEME:-https}://${DOMAIN}${EXTRA_CADDY_DOMAINS:-}
       caddy.reverse_proxy: "{{upstreams 3000}}"
     networks: [datbase, internal]
 

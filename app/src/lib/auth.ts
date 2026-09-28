@@ -65,6 +65,14 @@ export const auth = betterAuth({
       "/send-verification-email": { window: 3600, max: 5 },
     },
   },
+  // Better Auth only trusts BETTER_AUTH_URL's origin by default, so reaching the dashboard by a
+  // second hostname (e.g. a LAN sslip.io address and a Tailscale one at the same time) loads the
+  // page fine but sign-in fails with an origin mismatch. EXTRA_TRUSTED_ORIGINS (comma-separated
+  // full origins, e.g. "http://100-119-190-50.sslip.io:9081") adds any others that should work too.
+  trustedOrigins: (process.env.EXTRA_TRUSTED_ORIGINS ?? "")
+    .split(",")
+    .map((s) => s.trim())
+    .filter(Boolean),
   // Suspended (by the operator) or deleted accounts can't start a session.
   databaseHooks: {
     session: {
