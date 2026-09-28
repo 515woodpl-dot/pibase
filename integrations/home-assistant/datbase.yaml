@@ -1,0 +1,139 @@
+# DATBase server monitor for Home Assistant (a "package").
+# Setup (once):
+#   1. On the DATBase server, set MONITOR_TOKEN in .env (openssl rand -hex 32) and restart:
+#        docker compose up -d
+#   2. In Home Assistant's secrets.yaml add (note the word Bearer):
+#        datbase_monitor_url: "https://yourdomain.com/api/monitor"      # Pi on LAN: http://<DOMAIN>/api/monitor
+#        datbase_monitor_auth: "Bearer <your MONITOR_TOKEN>"
+#   3. Copy this file to /config/packages/datbase.yaml and make sure configuration.yaml has:
+#        homeassistant:
+#          packages: !include_dir_named packages
+#   4. Restart Home Assistant. Then add the card from datbase-card.yaml to a dashboard.
+# Entities: binary_sensor.datbase_problem, sensor.datbase_status, sensor.datbase_problems,
+# sensor.datbase_disk_used, sensor.datbase_memory_used, sensor.datbase_projects_active,
+# sensor.datbase_projects_down, sensor.datbase_backups_failed_24h, sensor.datbase_last_control_backup,
+# sensor.datbase_load
+
+rest:
+  - resource: !secret datbase_monitor_url
+    headers:
+      Authorization: !secret datbase_monitor_auth
+    scan_interval: 60
+    timeout: 20
+    binary_sensor:
+      - name: "DATBase problem"
+        unique_id: datbase_problem
+        device_class: problem
+        value_template: "{{ value_json.status != 'ok' }}"
+    sensor:
+      - name: "DATBase status"
+        unique_id: datbase_status
+        icon: mdi:database-check
+        value_template: "{{ value_json.status }}"
+        json_attributes:
+          - problems
+          - checked_at
+          - email_configured
+          - backups_enabled
+      - name: "DATBase problems"
+        unique_id: datbase_problems
+        icon: mdi:alert-circle-outline
+        state_class: measurement
+        value_template: "{{ value_json.problems_count }}"
+      - name: "DATBase disk used"
+        unique_id: datbase_disk_used
+        icon: mdi:harddisk
+        unit_of_measurement: "%"
+        state_class: measurement
+        value_template: "{{ value_json.disk_used_pct }}"
+      - name: "DATBase disk free"
+        unique_id: datbase_disk_free
+        icon: mdi:harddisk
+        unit_of_measurement: "GB"
+        state_class: measurement
+        value_template: "{{ value_json.disk_free_gb }}"
+      - name: "DATBase memory used"
+        unique_id: datbase_memory_used
+        icon: mdi:memory
+        unit_of_measurement: "%"
+        state_class: measurement
+        value_template: "{{ value_json.memory_used_pct }}"
+      - name: "DATBase load"
+        unique_id: datbase_load
+        icon: mdi:chip
+        state_class: measurement
+        value_template: "{{ value_json.load_1m }}"
+      - name: "DATBase projects active"
+        unique_id: datbase_projects_active
+        icon: mdi:database
+        state_class: measurement
+        value_template: "{{ value_json.projects_active }}"
+      - name: "DATBase projects down"
+        unique_id: datbase_projects_down
+        icon: mdi:database-alert
+        state_class: measurement
+        value_template: "{{ value_json.projects_down }}"
+      - name: "DATBase backups failed 24h"
+        unique_id: datbase_backups_failed_24h
+        icon: mdi:backup-restore
+        state_class: measurement
+        value_template: "{{ value_json.backups_failed_24h }}"
+      - name: "DATBase last control backup"
+        unique_id: datbase_last_control_backup
+        device_class: timestamp
+        value_template: "{{ value_json.last_control_backup or none }}"
+
+automation:
+  # Phone notification when DATBase reports a problem for 5 minutes, and when it clears.
+  # Replace notify.notify with your phone, e.g. notify.mobile_app_<your_phone>.
+  - id: datbase_problem_notify
+    alias: "DATBase: notify on problems"
+    mode: queued
+    trigger:
+      - platform: state
+        entity_id: binary_sensor.datbase_problem
+        to: "on"
+        for: "00:05:00"
+        id: problem
+      - platform: state
+        entity_id: binary_sensor.datbase_problem
+        from: "on"
+        to: "off"
+        id: clear
+    action:
+      - service: notify.notify
+        data:
+          title: >-
+            {{ 'DATBase problem' if trigger.id == 'problem' else 'DATBase all clear' }}
+          message: >-
+            {% if trigger.id == 'problem' %}{{ state_attr('sensor.datbase_status', 'problems') | join('\n') }}{% else %}All checks are OK again.{% endif %}
+
+  # Unreachable DATBase (the sensor itself goes unavailable): the server, network or app is down.
+  - id: datbase_unreachable_notify
+    alias: "DATBase: notify when unreachable"
+    trigger:
+      - platform: state
+        entity_id: sensor.datbase_status
+        to: "unavailable"
+        for: "00:05:00"
+    action:
+      - service: notify.notify
+        data:
+          title: "DATBase unreachable"
+          message: "Home Assistant can't reach the DATBase status endpoint for 5 minutes."
+
+# Optional: receive DATBase's own alerts instantly (instead of waiting for the next poll).
+# Set ALERT_WEBHOOK_URL=http://<home-assistant>:8123/api/webhook/datbase_alert on the DATBase server,
+# then uncomment:
+#  - id: datbase_webhook_alert
+#    alias: "DATBase: forward alert webhook"
+#    trigger:
+#      - platform: webhook
+#        webhook_id: datbase_alert
+#        allowed_methods: [POST]
+#        local_only: true
+#    action:
+#      - service: notify.notify
+#        data:
+#          title: "{{ trigger.json.title }}"
+#          message: "{{ trigger.json.message }}"

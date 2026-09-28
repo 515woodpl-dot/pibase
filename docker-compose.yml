@@ -1,0 +1,77 @@
+name: datbase
+
+services:
+  # HTTPS for everything. Reads `caddy` labels on containers (the app + every project).
+  proxy:
+    image: lucaslorentz/caddy-docker-proxy:ci-alpine
+    restart: unless-stopped
+    ports: ["80:80", "443:443"]
+    environment:
+      CADDY_INGRESS_NETWORKS: datbase
+    volumes:
+      - /var/run/docker.sock:/var/run/docker.sock:ro
+      - caddy_data:/data
+    networks: [datbase]
+
+  # Control-plane database (accounts, projects). Not reachable from project containers.
+  db:
+    image: postgres:16-alpine
+    restart: unless-stopped
+    environment:
+      POSTGRES_DB: datbase
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:?set POSTGRES_PASSWORD in .env}
+    volumes:
+      - pg_data:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD", "pg_isready", "-U", "postgres"]
+      interval: 5s
+      retries: 10
+    networks: [internal]
+
+  # Dashboard + control plane
+  app:
+    build: ./app
+    restart: unless-stopped
+    env_file: .env
+    environment:
+      # Password passed separately (not inside the URL), so any characters are safe.
+      DATABASE_URL: postgres://postgres@db:5432/datbase
+      PGPASSWORD: ${POSTGRES_PASSWORD}
+      BETTER_AUTH_URL: ${PUBLIC_SCHEME:-https}://${DOMAIN}
+    depends_on:
+      db: { condition: service_healthy }
+      pocketbase-image: { condition: service_completed_successfully }
+    volumes:
+      - /var/run/docker.sock:/var/run/docker.sock
+    labels:
+      caddy: ${PUBLIC_SCHEME:-https}://${DOMAIN}
+      caddy.reverse_proxy: "{{upstreams 3000}}"
+    networks: [datbase, internal]
+
+  # Builds the PocketBase image that every project runs, then exits.
+  pocketbase-image:
+    build:
+      context: ./pocketbase
+      args:
+        PB_VERSION: ${PB_VERSION:-0.39.11}
+    image: datbase/pocketbase:latest
+    command: ["/pb/pocketbase", "--version"]
+    restart: "no"
+
+  # Optional test inbox (no real email provider needed): docker compose --profile mailpit up -d
+  # then set SMTP_HOST=mailpit, SMTP_PORT=1025 in .env and read all emails at http://<server>:8025
+  mailpit:
+    image: axllent/mailpit:latest
+    profiles: [mailpit]
+    restart: unless-stopped
+    ports: ["8025:8025"]
+    networks: [datbase]
+
+networks:
+  datbase:
+    name: datbase
+  internal: {}
+
+volumes:
+  caddy_data: {}
+  pg_data: {}

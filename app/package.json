@@ -1,0 +1,41 @@
+{
+  "name": "app",
+  "version": "0.1.0",
+  "private": true,
+  "scripts": {
+    "dev": "next dev",
+    "build": "next build",
+    "start": "next start",
+    "test": "npm run test:unit",
+    "test:unit": "node --test \"tests/unit/*.test.mjs\"",
+    "test:e2e": "tests/e2e/run-all.sh"
+  },
+  "dependencies": {
+    "@aws-sdk/client-s3": "^3.1141.0",
+    "@aws-sdk/lib-storage": "^3.1141.0",
+    "better-auth": "^1.7.6",
+    "dockerode": "^5.0.1",
+    "drizzle-orm": "^0.45.3",
+    "next": "16.3.6",
+    "nodemailer": "^10.0.11",
+    "pg": "^8.23.0",
+    "react": "19.2.8",
+    "react-dom": "19.2.8",
+    "server-only": "^0.0.1",
+    "yazl": "^3.3.1"
+  },
+  "devDependencies": {
+    "@tailwindcss/postcss": "^4",
+    "@types/dockerode": "^4.0.1",
+    "@types/node": "^20",
+    "@types/nodemailer": "^8.0.2",
+    "@types/pg": "^8.23.1",
+    "@types/react": "^19",
+    "@types/react-dom": "^19",
+    "@types/yazl": "^3.3.1",
+    "drizzle-kit": "^0.31.11",
+    "playwright": "^1.63.0",
+    "tailwindcss": "^4",
+    "typescript": "^5"
+  }
+}

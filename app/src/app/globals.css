@@ -1,0 +1,65 @@
+@import "tailwindcss";
+
+:root {
+  --background: #fafafa;
+  --foreground: #18181b;
+  --muted: #71717a;
+  --card: #ffffff;
+  --border: #e4e4e7;
+  /* Brand: DATBase blue #2d7daf (buttons, links, focus) and green #61b895 (healthy / success). */
+  --accent: #2d7daf;
+  --accent-text: #256a95; /* links on light backgrounds (darker for contrast) */
+  --brand-green: #61b895;
+  --success-text: #2f7d5c;
+}
+
+@media (prefers-color-scheme: dark) {
+  :root {
+    --background: #09090b;
+    --foreground: #fafafa;
+    --muted: #a1a1aa;
+    --card: #18181b;
+    --border: #27272a;
+    --accent: #2d7daf;
+    --accent-text: #6ab0dd;
+    --brand-green: #61b895;
+    --success-text: #7dcaa9;
+  }
+}
+
+@theme inline {
+  --color-background: var(--background);
+  --color-foreground: var(--foreground);
+  --color-muted: var(--muted);
+  --color-card: var(--card);
+  --color-border: var(--border);
+  --color-accent: var(--accent);
+  --color-accent-text: var(--accent-text);
+  --color-brand-green: var(--brand-green);
+  --color-success: var(--success-text);
+  --font-sans: ui-sans-serif, system-ui, -apple-system, "Segoe UI", sans-serif;
+  --font-mono: ui-monospace, SFMono-Regular, Menlo, monospace;
+}
+
+body {
+  background: var(--background);
+  color: var(--foreground);
+}
+
+@layer components {
+  .input {
+    @apply w-full rounded-md border border-border bg-card px-3 py-2 text-sm outline-none focus:border-accent;
+  }
+  .btn {
+    @apply inline-flex items-center justify-center rounded-md bg-accent px-4 py-2 text-sm font-medium text-white hover:opacity-90 disabled:opacity-50;
+  }
+  .btn-ghost {
+    @apply inline-flex items-center justify-center rounded-md border border-border px-3 py-1.5 text-sm hover:bg-border/50 disabled:opacity-50;
+  }
+  .btn-danger {
+    @apply inline-flex items-center justify-center rounded-md bg-red-600 px-4 py-2 text-sm font-medium text-white hover:opacity-90 disabled:opacity-50;
+  }
+  .card {
+    @apply rounded-lg border border-border bg-card p-5;
+  }
+}
