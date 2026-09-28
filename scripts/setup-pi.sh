@@ -43,19 +43,32 @@ esac
 CLI_PLUGINS_DIR="$HOME/.docker/cli-plugins"
 mkdir -p "$CLI_PLUGINS_DIR"
 
-IN_DOCKER_GROUP=false
+# Two different questions, easy to conflate:
+#   ACCOUNT_IN_DOCKER_GROUP — does the *account* have docker group membership (from /etc/group)?
+#     Decides whether `usermod` still needs to run at all.
+#   CAN_DOCKER_DIRECTLY     — does *this running shell* actually have that group active right now?
+#     A `usermod` from an earlier session/terminal doesn't retroactively grant it to a shell that
+#     was already running (or to a fresh one spawned from it) — only a new login or `sg`/`newgrp`
+#     does. Trusting the account-level check here is exactly what silently breaks on a shell that
+#     predates the usermod. Decide this one by actually trying to talk to the docker socket.
+ACCOUNT_IN_DOCKER_GROUP=false
 if id -nG "$USER" 2>/dev/null | grep -qw docker; then
-  IN_DOCKER_GROUP=true
+  ACCOUNT_IN_DOCKER_GROUP=true
+fi
+
+CAN_DOCKER_DIRECTLY=false
+if command -v docker >/dev/null 2>&1 && docker version >/dev/null 2>&1; then
+  CAN_DOCKER_DIRECTLY=true
 fi
 
 # Only a few things in this script genuinely need root: installing Docker itself (if missing)
-# and adding this user to the docker group (if not already in it). Ask for the password once,
-# up front, and keep the ticket alive in the background — nothing later in the script prompts
-# again. If neither of those is needed (already installed, already in the group), no sudo runs
-# at all.
+# and adding this user to the docker group (if not already in it, at the account level — no
+# need to re-run usermod just because this particular shell hasn't picked it up yet). Ask for
+# the password once, up front, and keep the ticket alive in the background — nothing later in
+# the script prompts again. If neither is needed, no sudo runs at all.
 NEED_SUDO=false
 command -v docker >/dev/null 2>&1 || NEED_SUDO=true
-$IN_DOCKER_GROUP || NEED_SUDO=true
+$ACCOUNT_IN_DOCKER_GROUP || NEED_SUDO=true
 
 if $NEED_SUDO; then
   # Non-interactive runners (Claude Code's bash tool, cron, CI, etc.) have no TTY, so `sudo -v`
@@ -82,11 +95,12 @@ if $NEED_SUDO; then
   trap 'kill "$SUDO_KEEPALIVE_PID" 2>/dev/null || true' EXIT
 fi
 
-# `docker` runs plain once we have group access in *this* shell. Until then (fresh usermod, no
-# re-login yet), `sg docker -c "..."` activates the group immediately for one command — no sudo,
-# no logout/login needed. All docker/compose/buildx calls below go through this helper.
+# `docker` runs plain only when this shell can already reach the socket. Otherwise (fresh
+# usermod, or an older shell that predates one from an earlier run/terminal), `sg docker -c
+# "..."` activates the group immediately for one command — no sudo, no logout/login needed. All
+# docker/compose/buildx calls below go through this helper.
 run_docker() {
-  if $IN_DOCKER_GROUP; then
+  if $CAN_DOCKER_DIRECTLY; then
     docker "$@"
   else
     sg docker -c "docker $*"
@@ -104,11 +118,12 @@ else
   ok "Docker already installed ($(docker --version))"
 fi
 
-if ! $IN_DOCKER_GROUP; then
+if ! $ACCOUNT_IN_DOCKER_GROUP; then
   log "Adding $USER to the docker group"
   sudo usermod -aG docker "$USER"
   ok "Added — using 'sg docker' for the rest of this run, no logout needed."
-  warn "For future runs without this script re-activating it, log out and back in once."
+  warn "This shell (and any other already-open terminal) still needs a fresh login or 'newgrp"
+  warn "docker' to run docker commands directly without sg/sudo — this script doesn't need that."
 fi
 
 # ---------------------------------------------------------------------------
