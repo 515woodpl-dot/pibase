@@ -82,3 +82,11 @@ each one goes live.
 
 ### Apps mirrored so far
 - `occ-inventory` — items, categories, quotes, quote_items, settings mirrored; auth not mirrored.
+- `ehsmanager` (Supabase, photography studio CRM) — starting with `clients` only (central table;
+  invoices/bookings/contracts/quotes/questionnaires/messages/leads all reference it via
+  `client_id` and can be added the same way later). Auth not mirrored.
+- `gswstore` (Supabase, retail/inventory store) — starting with `categories` + `inventory` only,
+  kept separate from the app's much larger surface (carts, orders, payments, tax rates,
+  card-on-file — 17 migrations deep). Auth not mirrored. Note: its `FULL_SCHEMA.sql` predates
+  several later migrations, so double-check field names against the live schema before trusting
+  it exactly.
