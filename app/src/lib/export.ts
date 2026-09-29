@@ -2,7 +2,9 @@ import "server-only";
 import { PassThrough, Readable } from "node:stream";
 import { once } from "node:events";
 import { ZipFile } from "yazl";
-import type { Project } from "@/db/schema";
+import { eq } from "drizzle-orm";
+import { db } from "@/db";
+import { sqlFolder, sqlSnippet, type Project } from "@/db/schema";
 import { controlHeaders, enc, fileToken, fileUrl, listCollections, pb, type Page, type RecordItem } from "./pb";
 
 /**
@@ -83,6 +85,25 @@ export function exportProject(p: Project): Readable {
             zip.addReadStream(body, `files/${t.table}/${rec.id}/${name}`);
             await once(body, "end");
           }
+        }
+      }
+      // SQL snippets: exported as .sql files inside a sql-snippets/ folder tree.
+      const folders = await db.query.sqlFolder.findMany({ where: eq(sqlFolder.projectId, p.id) });
+      const snippets = await db.query.sqlSnippet.findMany({ where: eq(sqlSnippet.projectId, p.id) });
+      if (snippets.length > 0) {
+        // Build folder id → path map.
+        const folderMap = new Map<string | null, string>();
+        folderMap.set(null, "sql-snippets");
+        // Resolve nested paths (up to 5 levels; sort by creation so parents come first).
+        folders.sort((a, b) => a.createdAt.getTime() - b.createdAt.getTime());
+        for (const f of folders) {
+          const parentPath = folderMap.get(f.parentId ?? null) ?? "sql-snippets";
+          folderMap.set(f.id, `${parentPath}/${f.name}`);
+        }
+        for (const s of snippets) {
+          const dir = folderMap.get(s.folderId ?? null) ?? "sql-snippets";
+          const safeName = s.name.replace(/[/\\:*?"<>|]/g, "_").slice(0, 100);
+          zip.addBuffer(Buffer.from(s.sqlText, "utf8"), `${dir}/${safeName}.sql`);
         }
       }
       zip.end();

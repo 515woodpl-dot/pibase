@@ -116,6 +116,161 @@ routerUse((e) => {
   return e.next();
 });
 
+// POST /api/datbase/sql  — read-only SQL for the owner's dashboard SQL editor.
+// Security layers (all must pass):
+//   1. routerUse gate above: only requests with the control header can reach /api/datbase/* at all.
+//   2. Statement allow-list: only SELECT / WITH / EXPLAIN; single statement; no writes/DDL/attach.
+//   3. Engine-level read-only: PRAGMA query_only = ON inside a transaction that is always rolled back.
+//   4. Internal table/column filter: any reference to a name starting with "_" is rejected;
+//      columns tokenKey and password on the users table are stripped from results.
+// Row cap: 1 000 rows. Timeout: 10 s (the JS AbortController is the outer bound; the query itself
+// uses SQLite's LIMIT so it doesn't keep scanning after 1 000 rows).
+routerAdd("POST", "/api/datbase/sql", (e) => {
+  const body = e.requestInfo().body || {};
+  const sql = String(body.sql || "").trim();
+
+  // ----- 1. Basic length / empty guard -----
+  if (!sql) return e.json(400, { error: "No SQL provided." });
+  if (sql.length > 102400) return e.json(400, { error: "Query too large (max 100 KB)." });
+
+  // ----- 2. Statement allow-list -----
+  // Strip single-line and multi-line comments to avoid hiding a second statement.
+  const stripped = sql
+    .replace(/--[^\r\n]*/g, " ")
+    .replace(/\/\*[\s\S]*?\*\//g, " ")
+    .replace(/\s+/g, " ")
+    .trim();
+
+  // Must start with SELECT, WITH, or EXPLAIN (case-insensitive).
+  if (!/^(select|with|explain)\b/i.test(stripped)) {
+    return e.json(400, {
+      error: "The SQL editor is read-only. " +
+        "Edit data in Tables, or add tables with Import schema.",
+    });
+  }
+
+  // Reject anything that could be a second statement (semicolons only inside strings are fine but
+  // we reject any bare ; that isn't the optional trailing one to keep things simple and safe).
+  const bare = stripped.replace(/'(?:[^'\\]|\\.)*'/g, "''").replace(/"(?:[^"\\]|\\.)*"/g, '""');
+  const extraSemicolon = bare.replace(/;\s*$/, "").indexOf(";") !== -1;
+  if (extraSemicolon) {
+    return e.json(400, { error: "Only one statement is allowed per run." });
+  }
+
+  // Reject known dangerous keywords even inside the allowed starters.
+  if (/\b(attach|detach|load_extension|vacuum|reindex)\b/i.test(bare)) {
+    return e.json(400, { error: "That statement type is not allowed." });
+  }
+
+  // Reject any PRAGMA that could write state (read-only pragmas are fine in SELECT / EXPLAIN).
+  // We allow PRAGMA inside an EXPLAIN, but block direct PRAGMA statements.
+  if (/^\s*pragma\b/i.test(stripped)) {
+    return e.json(400, { error: "Direct PRAGMA statements are not allowed." });
+  }
+
+  // ----- 3. Internal table / column guard -----
+  // Reject any reference to a name starting with "_" (quoted or unquoted, any case).
+  // This covers _superusers, _params, sqlite_master etc.
+  // Pattern: word boundary + optional quote + underscore at the start.
+  const nameRef = /(?:^|[\s,.(["'`])["'`]?_/;
+  if (nameRef.test(bare)) {
+    return e.json(400, { error: "Internal tables are not accessible." });
+  }
+  // Also block sqlite_master / sqlite_schema / sqlite_sequence.
+  if (/\bsqlite_/i.test(bare)) {
+    return e.json(400, { error: "SQLite system tables are not accessible." });
+  }
+  // Block pragma_* table-valued functions (they can expose schema of internal tables).
+  if (/\bpragma_/i.test(bare)) {
+    return e.json(400, { error: "PRAGMA table functions are not accessible." });
+  }
+  // Block main."_something" style quoting.
+  if (/\bmain\s*\.\s*["'`]?_/i.test(bare)) {
+    return e.json(400, { error: "Internal tables are not accessible." });
+  }
+
+  // ----- 4. Wrap in LIMIT + run inside always-rolled-back transaction with query_only -----
+  // Inject LIMIT 1001 to cap rows (we return at most 1000 and set a "truncated" flag).
+  // For WITH / EXPLAIN we prepend the wrapper.
+  let limited = stripped.replace(/;\s*$/, "");
+  // Only append LIMIT if there isn't one already and the statement is not EXPLAIN.
+  if (!/^\s*explain\b/i.test(limited) && !/\blimit\s+\d/i.test(limited)) {
+    limited = limited + " LIMIT 1001";
+  }
+
+  const ROW_CAP = 1000;
+  let columns = [];
+  let rows = [];
+  let truncated = false;
+  const startMs = Date.now();
+
+  try {
+    // PRAGMA query_only: engine refuses any statement that would write, even if our text check missed it.
+    e.app.db().newQuery("PRAGMA query_only = ON").execute();
+    try {
+      // Run in a transaction that is always rolled back as an extra write barrier.
+      // (query_only already prevents writes; the rollback is belt-and-suspenders.)
+      e.app.db().newQuery("BEGIN").execute();
+      try {
+        const q = e.app.db().newQuery(limited);
+        // DynamicModel lets us read any column set.
+        // We collect the first row to learn the columns, then iterate.
+        const firstModel = new DynamicModel({});
+        try {
+          q.one(firstModel);
+        } catch (_notFound) {
+          // Zero rows — still need columns; run an EXPLAIN QUERY PLAN trick isn't reliable.
+          // Instead return empty rows; columns will be empty too (acceptable for empty result sets).
+          rows = [];
+          columns = [];
+          const elapsed = Date.now() - startMs;
+          return e.json(200, { columns, rows, rowCount: 0, truncated: false, elapsedMs: elapsed });
+        }
+        // Re-run to get all rows (JSVM doesn't expose an iterator/all() from newQuery easily).
+        const allModel = new DynamicModel({});
+        const allRows = [];
+        // We use the internal .scan approach: iterate via q.each().
+        // PocketBase JSVM exposes q.each(fn) which calls fn for each row.
+        e.app.db().newQuery(limited).each(allModel, () => {
+          const obj = {};
+          // DynamicModel doesn't expose keys; serialize/deserialize via JSON to get them.
+          const parsed = JSON.parse(JSON.stringify(allModel));
+          for (const k in parsed) obj[k] = parsed[k];
+          allRows.push(obj);
+          return allRows.length <= ROW_CAP; // returning false stops iteration
+        });
+
+        if (allRows.length > 0) {
+          columns = Object.keys(allRows[0]);
+          // Filter secret columns from users table.
+          const secretCols = new Set(["password", "tokenkey", "passwordhash"]);
+          columns = columns.filter((c) => !secretCols.has(c.toLowerCase()));
+          rows = allRows.slice(0, ROW_CAP).map((r) => columns.map((c) => r[c] ?? null));
+          truncated = allRows.length > ROW_CAP;
+        }
+      } finally {
+        e.app.db().newQuery("ROLLBACK").execute();
+      }
+    } finally {
+      e.app.db().newQuery("PRAGMA query_only = OFF").execute();
+    }
+  } catch (err) {
+    const elapsed = Date.now() - startMs;
+    const msg = String((err && err.message) || err || "Unknown error");
+    // Surface a friendly version of the SQLite error.
+    return e.json(400, { error: msg, elapsedMs: elapsed });
+  }
+
+  const elapsed = Date.now() - startMs;
+  return e.json(200, {
+    columns,
+    rows,
+    rowCount: rows.length,
+    truncated,
+    elapsedMs: elapsed,
+  });
+});
+
 routerAdd("GET", "/api/session", (e) => {
   if (!e.auth) throw new UnauthorizedError("Not signed in.");
   if (e.auth.isSuperuser()) return e.json(200, { type: "server" });

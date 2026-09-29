@@ -43,6 +43,13 @@
       "when": 1790543149363,
       "tag": "0005_admin_ops",
       "breakpoints": true
+    },
+    {
+      "idx": 6,
+      "version": "7",
+      "when": 1790674482047,
+      "tag": "0006_sql_editor",
+      "breakpoints": true
     }
   ]
 }

@@ -1,5 +1,5 @@
 import { sql } from "drizzle-orm";
-import { bigint, boolean, index, integer, pgTable, primaryKey, text, timestamp, uniqueIndex } from "drizzle-orm/pg-core";
+import { bigint, boolean, index, integer, pgTable, primaryKey, text, timestamp, uniqueIndex, varchar } from "drizzle-orm/pg-core";
 export * from "./auth-schema";
 import { user } from "./auth-schema";
 
@@ -128,3 +128,77 @@ export const usageNotice = pgTable(
   },
   (t) => [primaryKey({ columns: [t.projectId, t.month, t.metric, t.level] })],
 );
+
+/* ---------- SQL editor: snippets and folders ---------- */
+
+/**
+ * Folders for organising SQL snippets. Nested up to 5 levels.
+ * Cascade: deleting a project removes all its folders (and by cascade, their snippets).
+ */
+export const sqlFolder = pgTable(
+  "sql_folder",
+  {
+    id: text("id").primaryKey(),
+    projectId: text("project_id")
+      .notNull()
+      .references(() => project.id, { onDelete: "cascade" }),
+    parentId: text("parent_id"), // null = top-level; FK enforced in code (self-referential)
+    name: varchar("name", { length: 80 }).notNull(),
+    createdAt: timestamp("created_at").notNull().defaultNow(),
+  },
+  (t) => [
+    index("sql_folder_project_idx").on(t.projectId),
+    index("sql_folder_parent_idx").on(t.parentId),
+    // Unique folder name within the same parent (null parent = top level).
+    uniqueIndex("sql_folder_name_idx").on(t.projectId, t.parentId, t.name),
+  ],
+);
+export type SqlFolder = typeof sqlFolder.$inferSelect;
+
+/**
+ * SQL snippets: saved queries, per project, optionally in a folder.
+ * sql_text is the raw SQL (max 100 KB enforced in application code).
+ */
+export const sqlSnippet = pgTable(
+  "sql_snippet",
+  {
+    id: text("id").primaryKey(),
+    projectId: text("project_id")
+      .notNull()
+      .references(() => project.id, { onDelete: "cascade" }),
+    folderId: text("folder_id")
+      .references(() => sqlFolder.id, { onDelete: "cascade" }),
+    name: varchar("name", { length: 200 }).notNull(),
+    sqlText: text("sql_text").notNull(),
+    favorite: boolean("favorite").notNull().default(false),
+    createdAt: timestamp("created_at").notNull().defaultNow(),
+    updatedAt: timestamp("updated_at").notNull().defaultNow(),
+  },
+  (t) => [
+    index("sql_snippet_project_idx").on(t.projectId),
+    index("sql_snippet_folder_idx").on(t.folderId),
+    index("sql_snippet_fav_idx").on(t.projectId, t.favorite),
+  ],
+);
+export type SqlSnippet = typeof sqlSnippet.$inferSelect;
+
+/**
+ * Run history: last 20 runs per project (rolling; we delete old ones in the action).
+ * No result rows are stored — just metadata.
+ */
+export const sqlRun = pgTable(
+  "sql_run",
+  {
+    id: text("id").primaryKey(),
+    projectId: text("project_id")
+      .notNull()
+      .references(() => project.id, { onDelete: "cascade" }),
+    sql: text("sql").notNull(),
+    elapsedMs: integer("elapsed_ms"),
+    rowCount: integer("row_count"),
+    error: text("error"),
+    createdAt: timestamp("created_at").notNull().defaultNow(),
+  },
+  (t) => [index("sql_run_project_idx").on(t.projectId, t.createdAt)],
+);
+export type SqlRun = typeof sqlRun.$inferSelect;

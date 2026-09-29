@@ -16,6 +16,7 @@ export function Tabs({ id }: { id: string }) {
     { href: `${base}/tables/users`, label: "Users", active: path.startsWith(`${base}/tables/users`) },
     { href: `${base}/usage`, label: "Usage", active: path.startsWith(`${base}/usage`) },
     { href: `${base}/backups`, label: "Backups", active: path.startsWith(`${base}/backups`) },
+    { href: `${base}/sql`, label: "SQL", active: path.startsWith(`${base}/sql`) },
   ];
   return (
     <nav className="flex gap-1 overflow-x-auto border-b border-border">
