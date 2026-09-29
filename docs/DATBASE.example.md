@@ -7,7 +7,7 @@ This file is written for AI coding assistants and for developers. It is the comp
 ## Rules for AI assistants
 
 1. **Use only what this file documents.** Table names, field names, types and access rules below are exact. Don't invent tables, fields or endpoints.
-2. **You cannot change the schema or access rules.** If the app needs a new table, field or different access, stop and tell the human exactly what to add in the DATBase dashboard (Tables → the table → Settings). Then continue once they confirm, using a freshly downloaded DATBASE.md.
+2. **You can't change the schema through the API, but you can write it.** When the app needs tables, fields or access that aren't below, design them for whatever the product is and write a **schema import** (see *Adding tables: schema import*). Give it to the human to paste into the DATBase dashboard (Tables → Import schema), then continue with a freshly downloaded DATBASE.md.
 3. **Never put a server key in browser, mobile or public code.** Server keys ignore all access rules and are for the app owner's servers only (see *Server-side access*). App users sign in with their own email and password (see *Users & sign-in*).
 4. **Respect the access table of each table.** If an action is "Server only", the website can't do it directly. If it says "Any signed-in user", send the user's token.
 5. **Use the `datbase.ts` client at the end of this file.** Copy it into the project (for example `src/lib/datbase.ts`). It has no dependencies and works in browsers, Node 18+, Next.js, Vite, React Native and Deno.
@@ -203,6 +203,75 @@ export interface User {
 ```
 </details>
 
+## Adding tables: schema import
+
+Tables can't be created through the API. Instead, **you design them and write one JSON document; the human pastes it into the DATBase dashboard (Tables → Import schema)** and every table is created at once. This works for any kind of product: a store, a CRM, a booking app, a game, anything. Design the tables the product really needs, the same way you would for any database.
+
+Hand it to the human in a single ```json block and tell them: *"Paste this into DATBase → your project → Tables → Import schema, then download DATBASE.md again and give it to me."*
+
+```json
+{
+  "tables": [
+    {
+      "name": "categories",
+      "fields": [
+        { "name": "name", "type": "text", "required": true },
+        { "name": "slug", "type": "text", "unique": true }
+      ],
+      "access": { "read": "public", "write": "admin" }
+    },
+    {
+      "name": "products",
+      "fields": [
+        { "name": "title", "type": "text", "required": true },
+        { "name": "price", "type": "number", "min": 0 },
+        { "name": "stock", "type": "number", "integer": true, "min": 0 },
+        { "name": "size", "type": "select", "values": ["S", "M", "L", "XL"], "multiple": true },
+        { "name": "category", "type": "relation", "table": "categories", "required": true },
+        { "name": "photos", "type": "file", "multiple": true, "maxSizeMb": 10 },
+        { "name": "active", "type": "bool" }
+      ],
+      "access": { "read": "public", "write": "admin" }
+    },
+    {
+      "name": "orders",
+      "fields": [
+        { "name": "owner", "type": "relation", "table": "users", "required": true },
+        { "name": "status", "type": "select", "values": ["pending", "paid", "shipped"] },
+        { "name": "total", "type": "number" }
+      ],
+      "access": { "list": "owner", "view": "owner", "create": "owner", "update": "admin", "delete": "admin" }
+    }
+  ]
+}
+```
+
+**Field types:** `text`, `number`, `bool`, `email`, `url`, `date`, `select`, `json`, `file`, `relation`.
+
+| Option | Applies to | Meaning |
+|---|---|---|
+| `required` | all | Must have a value. |
+| `unique` | text, email, url, number, single relation | No two records share a value (empty values allowed). |
+| `values` | select | The allowed choices (list of text). Required for select. |
+| `multiple` | select, file, relation | Allow several values (a list). |
+| `min`, `max`, `integer` | number | Limits; `integer: true` rejects decimals. |
+| `maxSizeMb` | file | Max size per file, 1–100 (default 5). |
+| `table` | relation | The table it links to: another table in the import, an existing table, or `users`. |
+
+**Access** per table, for the actions `list`, `view`, `create`, `update`, `delete` (or `read` = list+view, `write` = create+update+delete):
+`public` (anyone), `signedIn` (any signed-in user), `verified` (signed in with a confirmed email), `owner` (only the user in the table's link to `users`, e.g. an `owner` field), `admin` (server only, via a server key). **Actions you leave out are `admin`.** Pick the tightest access that works: catalogs are usually `read: public`, per-user data like carts, addresses and orders is `owner`, and anything that changes prices, stock or order status is `admin` (done by the app's server).
+
+**Rules:**
+
+- Don't add `id`, `created` or `updated`: every table has them automatically (they're skipped if you do).
+- Names: letters, numbers and underscores, starting with a letter. Use the same names in your code.
+- Money: store as a `number` (e.g. cents with `integer: true`, or decimal amounts); there's no currency type.
+- Many-to-many: use a `relation` with `multiple: true`, or a join table with two relations.
+- User accounts already exist in the `users` table (email, password, name, avatar). Don't create your own users/accounts table; link to `users` instead. You may add extra profile fields by including `{ "name": "users", "fields": [...] }`.
+- Pasting again is safe: existing tables only get the new fields added; nothing is deleted or retyped. So when the app grows, write an import with just the new tables/fields.
+- SQL/Supabase-style type names (`varchar`, `integer`, `boolean`, `timestamptz`, `jsonb`, `uuid` + `references`, `enum`) are understood, but prefer the types above.
+- The import is all-or-nothing. If the dashboard shows an error, fix what it names and paste again.
+
 ## What "not allowed" looks like
 
 Access rules don't always produce an error. Know these cases, or you'll chase phantom bugs:
@@ -330,7 +399,7 @@ const everything = await listAll("products", { sort: "-created" }, 5000, asServe
 
 ## Not available (don't build against these)
 
-- Creating or changing tables, fields or access rules through the API (use the dashboard).
+- Creating or changing tables, fields or access rules through the API (write a schema import instead: see *Adding tables: schema import*).
 - Realtime subscriptions, server functions or webhooks.
 - Password reset, email verification and social login (no email provider yet).
 - Server keys in client code. There is no "public API key" to add either: public access is controlled by each table's access rules.

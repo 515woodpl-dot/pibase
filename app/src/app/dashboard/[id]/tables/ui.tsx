@@ -8,6 +8,7 @@ import {
   addUniqueRule,
   createTable,
   deleteRecord,
+  importSchema,
   deleteTable,
   removeField,
   removeUniqueRule,
@@ -37,6 +38,89 @@ export function CreateTableForm({ projectId }: { projectId: string }) {
       </div>
       <Err state={state} />
     </form>
+  );
+}
+
+const IMPORT_EXAMPLE = `{
+  "tables": [
+    {
+      "name": "categories",
+      "fields": [
+        { "name": "name", "type": "text", "required": true },
+        { "name": "slug", "type": "text", "unique": true }
+      ],
+      "access": { "read": "public", "write": "admin" }
+    },
+    {
+      "name": "products",
+      "fields": [
+        { "name": "title", "type": "text", "required": true },
+        { "name": "price", "type": "number", "min": 0 },
+        { "name": "category", "type": "relation", "table": "categories" },
+        { "name": "photos", "type": "file", "multiple": true }
+      ],
+      "access": { "read": "public", "write": "admin" }
+    }
+  ]
+}`;
+
+/** Paste a whole schema (usually written by an AI assistant from DATBASE.md) and create every table at once. */
+export function ImportSchemaForm({ projectId }: { projectId: string }) {
+  const [state, action, pending] = useActionState(importSchema, undefined);
+  const [text, setText] = useState("");
+  const [open, setOpen] = useState(false);
+
+  return (
+    <details className="card" open={open} onToggle={(e) => setOpen((e.target as HTMLDetailsElement).open)}>
+      <summary className="cursor-pointer font-medium">Import schema (many tables at once)</summary>
+      <form action={action} className="mt-3 space-y-3">
+        <input type="hidden" name="projectId" value={projectId} />
+        <p className="text-sm text-muted">
+          Paste a schema in JSON. Ask your AI assistant: <em>“Write a DATBase schema import for my app”</em>. The
+          format is explained in DATBASE.md, and common SQL / Supabase type names work too. Tables that already exist
+          get the new fields added; nothing is deleted. If anything fails, nothing changes.
+        </p>
+        <textarea
+          name="schema"
+          value={text}
+          onChange={(e) => setText(e.target.value)}
+          rows={14}
+          spellCheck={false}
+          placeholder={IMPORT_EXAMPLE}
+          className="input font-mono text-xs"
+        />
+        <div className="flex flex-wrap gap-2">
+          <button className="btn" disabled={pending || !text.trim()}>
+            {pending ? "Importing…" : "Import"}
+          </button>
+          <button type="button" className="btn-ghost" onClick={() => setText(IMPORT_EXAMPLE)}>
+            Load example
+          </button>
+        </div>
+        {state?.error && <p className="text-sm text-red-600">{state.error}</p>}
+        {state?.ok && state.created && (
+          <div className="text-sm">
+            <p className="font-medium text-green-700">Imported:</p>
+            <ul className="list-disc pl-5">
+              {state.created.map((c) => (
+                <li key={c}>{c}</li>
+              ))}
+            </ul>
+            <p className="mt-1 text-muted">Download DATBASE.md again so your AI assistant sees the new tables.</p>
+          </div>
+        )}
+        {state?.notes && state.notes.length > 0 && (
+          <div className="text-sm text-muted">
+            <p className="font-medium">Notes:</p>
+            <ul className="list-disc pl-5">
+              {state.notes.map((n) => (
+                <li key={n}>{n}</li>
+              ))}
+            </ul>
+          </div>
+        )}
+      </form>
+    </details>
   );
 }
 

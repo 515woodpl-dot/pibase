@@ -21,6 +21,7 @@ import {
 import { actionProject } from "@/lib/projects";
 import { randomId } from "@/lib/crypto";
 import { FIELD_TYPES, findOwnerField, ownerRule, RULE_PRESETS, UNIQUE_TYPES, uniqueIndexSql, uniqueRules, type RuleOp } from "./shared";
+import { describePlan, planImport, runImport } from "./import-schema";
 
 export type FormState = { error?: string; ok?: boolean } | undefined;
 
@@ -96,6 +97,37 @@ export async function deleteTable(_: FormState, f: FormData): Promise<FormState>
   });
   if (res?.error) return res;
   redirect(base(p.id));
+}
+
+/* ---------------- Schema import (many tables from one JSON paste) ---------------- */
+
+export type ImportState = { error?: string; ok?: boolean; created?: string[]; notes?: string[] } | undefined;
+
+/** Create or extend every table in a pasted schema (see import-schema.ts). All-or-nothing. */
+export async function importSchema(_: ImportState, f: FormData): Promise<ImportState> {
+  const p = await actionProject(f.get("projectId"));
+  const text = String(f.get("schema") ?? "");
+  try {
+    const existing = await listCollections(p);
+    const planned = planImport(text, existing);
+    if ("error" in planned) return planned;
+    const { plan, notes } = planned;
+    try {
+      await runImport(
+        plan,
+        existing,
+        (method, path, body) => pb(p, path, body === undefined ? { method } : json(method, body)),
+        () => randomId(10),
+      );
+    } catch (e) {
+      return { error: `Nothing was imported. ${(e as Error).message}`, notes };
+    }
+    revalidatePath(base(p.id), "layout");
+    return { ok: true, created: describePlan(plan), notes };
+  } catch (e) {
+    if (e instanceof PbError) return { error: e.message };
+    throw e;
+  }
 }
 
 /* ---------------- Fields ---------------- */

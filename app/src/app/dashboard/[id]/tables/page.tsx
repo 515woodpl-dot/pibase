@@ -2,7 +2,7 @@ import Link from "next/link";
 import { enc, listCollections, pb, type Page } from "@/lib/pb";
 import { pageProject } from "@/lib/projects";
 import { load, Notice } from "./notice";
-import { CreateTableForm } from "./ui";
+import { CreateTableForm, ImportSchemaForm } from "./ui";
 
 export default async function TablesPage({ params }: PageProps<"/dashboard/[id]/tables">) {
   const { id } = await params;
@@ -47,6 +47,7 @@ export default async function TablesPage({ params }: PageProps<"/dashboard/[id]/
         <p className="text-sm text-muted">No tables yet.</p>
       )}
       <CreateTableForm projectId={p.id} />
+      <ImportSchemaForm projectId={p.id} />
     </div>
   );
 }
