@@ -87,7 +87,7 @@ export function ImportSchemaForm({ projectId }: { projectId: string }) {
           rows={14}
           spellCheck={false}
           placeholder={IMPORT_EXAMPLE}
-          className="input font-mono text-xs"
+          className="input font-mono text-xs overflow-auto resize-y"
         />
         <div className="flex flex-wrap gap-2">
           <button className="btn" disabled={pending || !text.trim()}>
