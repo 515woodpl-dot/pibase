@@ -167,6 +167,26 @@ for (const [label, r] of [
 must(!(await names()).includes("pwned") && (await collection("products")).createRule === null, "schema unchanged after the attempts");
 ok("server key: reads and writes data, but create table / change access / import / delete / truncate / mint tokens are all 403; schema unchanged");
 
+// 9a. A server key must not touch PocketBase's internal accounts or project settings (SI-01, SI-02).
+// Creating a _superusers record would let a leaked key mint a new superuser and authenticate as it;
+// PATCH /api/settings would let it rename the project or repoint its URLs. Both go through the hook's
+// dashboard-only gate, so without the control header they are 403 — even though a raw superuser could.
+const settingsBefore = (await (await fetch(`${PB}/api/settings`, { headers: H })).json()).meta.appName;
+for (const [label, r] of [
+  ["create a superuser", await withKey("/api/collections/_superusers/records", "POST", { email: "attacker@evil.test", password: "AttackerPass12345", passwordConfirm: "AttackerPass12345" })],
+  ["delete a superuser", await withKey(`/api/collections/_superusers/records/${uid}`, "DELETE")],
+  ["create an internal _otps record", await withKey("/api/collections/_otps/records", "POST", {})],
+  ["change project settings", await withKey("/api/settings", "PATCH", { meta: { appName: "HACKED" } })],
+]) must(r.status === 403, `server key must not ${label}: got ${r.status}`);
+// The attacker email must not exist as a superuser, and it must not authenticate.
+const superusers = await (await fetch(`${PB}/api/collections/_superusers/records?perPage=500`, { headers: H })).json();
+must(!superusers.items.some((s) => s.email === "attacker@evil.test"), "server key managed to create a superuser record");
+const attackerAuth = await rec("/api/collections/_superusers/auth-with-password", "POST", { identity: "attacker@evil.test", password: "AttackerPass12345" });
+must(attackerAuth.status !== 200, `a superuser the key tried to create was able to authenticate: ${attackerAuth.status}`);
+const settingsAfter = (await (await fetch(`${PB}/api/settings`, { headers: H })).json()).meta.appName;
+must(settingsAfter === settingsBefore, `server key changed project settings: appName ${settingsBefore} -> ${settingsAfter}`);
+ok("server key: create/delete superuser, write internal-collection records and PATCH /api/settings are all 403; no superuser created, settings unchanged");
+
 // 10. Other accounts can't reach the import.
 const bp = await signup(b, "b@test.com");
 must((await bp.goto(P + "/tables")).status() === 404, "another account must get 404");

@@ -103,6 +103,28 @@ export async function deleteTable(_: FormState, f: FormData): Promise<FormState>
 
 export type ImportState = { error?: string; ok?: boolean; created?: string[]; notes?: string[] } | undefined;
 
+/**
+ * Turn an import failure into one product-level sentence. Most failures already carry a clear message
+ * (pb.ts turns PocketBase's validation body into a readable line). The exception is a race: if the same
+ * table is imported from two dashboard tabs at once, both plans validate against a project that still
+ * lacks the table, then collide when they hit the database. Depending on timing that surfaces either as
+ * PocketBase's own "name must be unique" validation or, when the collision is caught at the storage
+ * layer, as a raw SQLite line ("UNIQUE constraint failed: _collections.name (2067)"). Either way the
+ * import rolled back cleanly (runImport is all-or-nothing); the owner just needs to know it was a
+ * duplicate, not an internal error. Both forms map to the same guidance.
+ */
+function importErrorMessage(e: unknown): string {
+  const msg = e instanceof Error ? e.message : String(e);
+  const duplicateName =
+    /unique constraint failed:\s*_collections\.name/i.test(msg) || // raw SQLite (concurrent commit)
+    /collection name must be unique/i.test(msg) || // PocketBase validation
+    /^name:\s*collection name must be unique/i.test(msg);
+  if (duplicateName) {
+    return "One of these tables already exists — another import may have just created it. Refresh the page and try again; anything already there is safe.";
+  }
+  return msg;
+}
+
 /** Create or extend every table in a pasted schema (see import-schema.ts). All-or-nothing. */
 export async function importSchema(_: ImportState, f: FormData): Promise<ImportState> {
   const p = await actionProject(f.get("projectId"));
@@ -120,7 +142,7 @@ export async function importSchema(_: ImportState, f: FormData): Promise<ImportS
         () => randomId(10),
       );
     } catch (e) {
-      return { error: `Nothing was imported. ${(e as Error).message}`, notes };
+      return { error: `Nothing was imported. ${importErrorMessage(e)}`, notes };
     }
     revalidatePath(base(p.id), "layout");
     return { ok: true, created: describePlan(plan), notes };

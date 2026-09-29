@@ -43,7 +43,8 @@ The owner works mostly by pasting prompts into AI CLIs (Claude Code on the Pi, C
 
 ## Rules that must not be broken
 - **Schema is dashboard-only.** Tables, fields and access change only through the dashboard (forms or *Import schema*), which sends the control header. A server key or user token must get 403 on `POST/PATCH/PUT/DELETE /api/collections…`, `…/truncate`, `…/impersonate/…` (enforced in `datbase.pb.js`, tested in `schema-import.mjs`). *This was NOT enforced until 2026-09-28: it was only an instruction in DATBASE.md.* Existing projects need **Update all projects** (Server status) to get the hook.
-- Still open by design: a server key can `PATCH /api/settings` (the hook neutralises what matters: sender, links, test email). Treat any new PocketBase admin endpoint as reachable by a server key until proven blocked.
+- **Internal accounts and settings are dashboard-only too.** The same hook now 403s a server key on `POST/DELETE /api/collections/_superusers/records[/<id>]` (any internal `_`-collection record write) and on state-changing `/api/settings`. *Until 2026-09-29 both were open: a leaked server key could create a working superuser (then authenticate as it) and rename the project / repoint its URLs (SI-01, SI-02). Fixed in `datbase.pb.js`, regression-tested in `schema-import.mjs` item 9a.* DATBase's own key lifecycle and mail setup still work because they go through `pb()`, which always sends the control header. Existing projects need **Update all projects**.
+- Treat any new PocketBase admin endpoint as reachable by a server key until proven blocked and gated in the hook. The gate is allow-by-control-header: a call with the control header passes (that's DATBase itself); anything else mutating tables, internal-collection records or settings is 403.
 - Schema import **never changes existing tables' access, retypes, renames or deletes**; it only adds tables/fields. It is all-or-nothing with rollback.
 - Customer-facing text and generated files must never name the engine (`pocketbase`).
 - `DATBASE.md` is the customer AI's only knowledge of a project. Any feature an AI must use has to be documented in `ai-guide.ts` and covered by `ai-guide.mjs`/`schema-import.mjs`.
@@ -55,7 +56,7 @@ cd app && npm install
 npm run dev                # needs DATABASE_URL, BETTER_AUTH_URL (see README "Local development")
 npm run test:unit          # 16 tests, no services (retention + schema-import planner)
 npm run build && tests/e2e/harness.sh <suite>.mjs   # one suite
-tests/e2e/run-all.sh       # 12 suites, 150 checks (≈15 min); all green on 2026-09-28
+tests/e2e/run-all.sh       # 12 suites, 151 checks (≈15 min); all green on 2026-09-28 (schema-import now 13/13 after the 2026-09-29 server-key boundary fix)
 ```
 E2E needs PostgreSQL 16 (default socket `/tmp`, port 5433, user `postgres`; see `tests/README.md`),
 Chromium (`CHROMIUM_PATH=/opt/pw-browsers/chromium` in the cloud sandbox), `pip install "moto[server]" aiosmtpd`. PocketBase is downloaded by the harness.

@@ -5,7 +5,7 @@ every table (fields, links, unique rules, access) is created at once. This repla
 and fields one by one. `DATBASE.md` now teaches any AI to write this JSON.
 
 **Your job:** try to break it, and judge whether an AI can really use it. Automated checks already
-pass on Linux (unit 16/16, e2e all 12 suites / 150 checks including `schema-import` 12/12), so **spend your effort on section 3 (attack it) and section 4 (the AI loop)**, not on
+pass on Linux (unit 16/16, e2e all 12 suites / 151 checks including `schema-import` 13/13), so **spend your effort on section 3 (attack it) and section 4 (the AI loop)**, not on
 re-proving section 2.
 
 ## 0. Prompt to give Codex (copy everything in the box)
@@ -28,10 +28,11 @@ Same as `TESTING.md` §2 / `app/tests/README.md` (PostgreSQL 16, `npm run build`
 
 ## 2. Confirm the automated suite (10 minutes, don't go deeper here)
 
-Run `harness.sh schema-import.mjs`, expect 12 ✔ (box present, 4 kinds of bad input rejected with nothing
+Run `harness.sh schema-import.mjs`, expect 13 ✔ (box present, 4 kinds of bad input rejected with nothing
 created, 8-table store in one paste, database matches the JSON, rules behave over the API, DATBASE.md
 updated, re-paste harmless, growth paste keeps data/access, Supabase-style JSON, mid-way failure fully
-undone, **server key cannot change schema**, other account 404). Run `npm run test:unit` (expect 16/16).
+undone, **server key cannot change schema**, **server key cannot create/delete superusers or change
+settings**, other account 404). Run `npm run test:unit` (expect 16/16).
 
 ## 3. Attack it (manual, in the dashboard)
 
@@ -53,7 +54,7 @@ Fixtures live in `app/tests/fixtures/schema-import/`: `store.json` (8 tables), `
 | 11 | `unique: true` on `bool`, `json`, `file`, and on a `multiple` relation | Ignored with a note, or rejected clearly. Never a broken table. |
 | 12 | **Force a failure half-way** (e.g. a table named `sqlite_bad` as the 3rd of 3, or stop PocketBase between pasting and applying) | "Nothing was imported…" and the project is exactly as before. Check Tables, Settings and the Usage tab for leftovers. |
 | 13 | **Security:** signed-in as account B, POST the Tables page's server action for account A's project id (replay the request with A's `projectId`) | Refused (404/not found). Nothing created in A. |
-| 14 | **Security (most important):** use a **server key** (Overview → Server keys) against the project URL: `POST /api/collections`, `PATCH`/`DELETE /api/collections/<id>`, `PUT /api/collections/import`, `DELETE /api/collections/<id>/truncate`, `POST /api/collections/_superusers/impersonate/<id>`. Then try to find **any other** way a server key or signed-in user can change tables, access rules, settings or create a new superuser (e.g. `/api/settings`, `/api/backups`, `/api/crons`, batch endpoints, `/api/collections/meta/*`). | The listed calls: 403 "Tables and access rules can only be changed in the DATBase dashboard." Until 2026-09-28 they **succeeded** (found by me, fixed in the project hook). **Projects created before need *Update all projects* to get the fix**, so test on a project created or updated with the current build. Report anything else that works as a finding. `/api/settings` PATCH is known-open (neutralised for sender/links only); tell me if you can do harm with it. |
+| 14 | **Security (most important):** use a **server key** (Overview → Server keys) against the project URL: `POST /api/collections`, `PATCH`/`DELETE /api/collections/<id>`, `PUT /api/collections/import`, `DELETE /api/collections/<id>/truncate`, `POST /api/collections/_superusers/impersonate/<id>`, **`POST`/`DELETE /api/collections/_superusers/records[/<id>]`** (create/delete a superuser), **`PATCH /api/settings`**. Then try to find **any other** way a server key or signed-in user can change tables, access rules, settings or create a new superuser (e.g. `/api/backups`, `/api/crons`, batch endpoints, `/api/collections/meta/*`). | All of the listed calls: 403. Schema calls say "Tables and access rules can only be changed in the DATBase dashboard."; superuser-record calls say "Internal accounts can only be changed in the DATBase dashboard."; settings say "Project settings can only be changed in the DATBase dashboard." A superuser the key tries to create must **not** exist afterwards and must **not** be able to authenticate. Until 2026-09-28 the schema calls succeeded; until 2026-09-29 `_superusers/records` and `/api/settings` also succeeded (a server key could mint a working superuser and rename the project — found in testing, fixed in the project hook). **Projects created before need *Update all projects* to get the fix**, so test on a project created or updated with the current build. Report anything else that works as a finding. |
 | 15 | **Injection:** table/field/choice/relation values containing quotes, backticks, `;`, `<script>`, emoji, very long strings; a `unique` field on a table named with SQL keywords (`group`, `order`, `select`) | Rejected by the name rule, or handled safely; no XSS in the notes/success list; unique index still created correctly for allowed names. |
 | 16 | Import with `"access": "public"` on a table that has a `password`-like text field | Allowed (owner's choice) but confirm `DATBASE.md` shows "Anyone" for it in plain words. |
 | 17 | Mobile (375 px) and keyboard-only use of the import box (Tab to summary, Space to open, paste, Enter on Import) | Usable; the textarea doesn't overflow; focus visible. |

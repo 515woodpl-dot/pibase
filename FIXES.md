@@ -1,3 +1,27 @@
+# Fixes for the schema-import security review (2026-09-29): SI-01 … SI-04
+
+From `SCHEMA-IMPORT-REPORT.md`. The two authorization findings were reproduced against PocketBase
+0.39.11 with the real project hook and the control-secret derivation from `harness.sh`, then fixed and
+re-verified: the exact probes that returned 200/204 before now return 403, while every DATBase call
+(which carries the control header) still works. Regression coverage ships in `schema-import.mjs` (new
+item 9a), taking that suite from 12 ✔ to 13 ✔.
+
+| ID | Severity | Fix | Where | Verified by |
+|---|---|---|---|---|
+| SI-01 | Critical | The dashboard-only gate now also 403s any write to an internal (`_`-prefixed) system collection's records — `POST/DELETE /api/collections/_superusers/records[/<id>]`, `_otps`, etc. — unless the control header is present. Previously the `schemaWrite` regex matched `/api/collections/_superusers` (collection management) but not the `.../records` path, so a leaked server key could create a superuser and authenticate as it, or delete superusers. DATBase's own key lifecycle (`server-keys.ts`) still works because it goes through `pb()`, which always sends the control header. | `pocketbase/pb_hooks/datbase.pb.js` → `routerUse` | Server key: `POST _superusers/records` and `DELETE _superusers/records/<id>` → 403 (were 200/204); the attacker email never appears as a superuser and cannot authenticate; `_otps` record write → 403. Dashboard key create/revoke (control header) still 200. |
+| SI-02 | High | The same gate 403s state-changing `/api/settings` (and `/api/settings/…`) for any non-control request. Previously only mail-relevant fields were neutralised (via `onMailerSend`) while the settings write itself was open, so a server key could rename the project or repoint its URLs. The one legitimate settings write (`project-mail.ts` → `configureProjectMail`) goes through `pb()` with the control header and is unaffected. | `pocketbase/pb_hooks/datbase.pb.js` → `routerUse` | Server key: `PATCH /api/settings` → 403 (was 200); `meta.appName` unchanged on read-back. Control-header PATCH still 200. |
+| SI-03 | Low | A duplicate-name import failure now maps to a product-level message ("One of these tables already exists — another import may have just created it. Refresh the page and try again…") whether it surfaces as PocketBase's validation ("Collection name must be unique") or, under a concurrent commit, the raw SQLite line (`UNIQUE constraint failed: _collections.name (2067)`). The import was already rolled back cleanly; only the message was internal. | `tables/actions.ts` → `importErrorMessage`, used by `importSchema` | Unit-style check of the mapper over both error forms and the report's raw string → friendly message; unrelated errors pass through unchanged. |
+| SI-04 | Low | Corrected the check counts. The committed `schema-import.mjs` emitted **12** ✔ (12 `ok()` calls), so the protocol's "12/12" was accurate as written and the report's "13 emitted" was a miscount; with the new SI-01/SI-02 regression the suite now emits **13**, and the protocol, `CLAUDE.md` and item 14's expectations are updated to match (and to record that `/api/settings` and `_superusers/records` are no longer open). | `TESTING-SCHEMA-IMPORT.md`, `CLAUDE.md` | Source now has 13 `ok()` calls; item 14 rewritten to expect 403 on the two newly-gated surfaces. |
+
+**AI loop / DATBASE.md:** the report confirmed the additive bookstore import worked first-time in a
+fresh empty project and found no wording defect in the generated guide. The "public/client-safe key"
+the separated Builder invented was a test-harness artifact (it was handed the schema contract, not the
+real downloaded guide, which has no such key), so no product-doc change was needed. Left as-is.
+
+**Note on rollout:** like the 2026-09-28 schema lockdown, these gates live in the per-project hook, so
+**projects created before 2026-09-29 need *Update all projects*** (Server status) to pick them up.
+
+
 # Fixes for REPORT.md (Codex test, 2026-09-26)
 
 Each fix was verified with an automated regression test against real PocketBase 0.40.4 + Postgres.

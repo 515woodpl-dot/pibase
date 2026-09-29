@@ -87,6 +87,14 @@ routerUse((e) => {
   // Tables, access rules and schema imports are changed only from the DATBase dashboard (which sends the
   // control header). A server key or any other token can't create, alter or delete tables, import a
   // schema, or mint new tokens by impersonation, even though the engine would allow a superuser to.
+  //
+  // The same gate covers two admin surfaces that are NOT under /api/collections and that a server key
+  // (a superuser token) would otherwise be allowed to drive:
+  //   - Records of PocketBase's internal system collections (_superusers, _otps, _authOrigins, …):
+  //     writing _superusers/records lets a leaked key mint or delete superusers (and then authenticate
+  //     as one). Only DATBase creates/revokes key accounts, and it always sends the control header.
+  //   - /api/settings state changes: a key could rename the project, repoint URLs, or toggle settings.
+  //     DATBase's own mail setup (configureProjectMail) sends these with the control header.
   const method = e.request.method;
   if (method !== "GET" && method !== "HEAD" && method !== "OPTIONS") {
     const schemaWrite =
@@ -96,6 +104,14 @@ routerUse((e) => {
       /^\/api\/collections\/[^/]+\/truncate$/.test(path) ||
       /^\/api\/collections\/[^/]+\/impersonate\/[^/]+$/.test(path);
     if (schemaWrite) throw new ForbiddenError("Tables and access rules can only be changed in the DATBase dashboard.");
+    // Records of internal system collections (name starts with "_"): _superusers, _otps, _authOrigins, …
+    // Matches /api/collections/_x/records and /api/collections/_x/records/<id> (and any deeper action).
+    const internalRecordWrite = /^\/api\/collections\/_[^/]+\/records(\/|$)/.test(path);
+    if (internalRecordWrite) throw new ForbiddenError("Internal accounts can only be changed in the DATBase dashboard.");
+    // Any state-changing call to project settings.
+    if (path === "/api/settings" || path.startsWith("/api/settings/")) {
+      throw new ForbiddenError("Project settings can only be changed in the DATBase dashboard.");
+    }
   }
   return e.next();
 });
