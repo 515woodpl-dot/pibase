@@ -298,3 +298,12 @@ if [ -n "$EXTRA_ORIGIN_VAL" ]; then
   echo "   Also reachable at: ${EXTRA_ORIGIN_VAL} (Tailscale)"
 fi
 echo "   Sign up with the address you set as ADMIN_EMAIL in .env to see Server status."
+BUCKET_VAL="$(grep '^BACKUP_S3_BUCKET=' .env | cut -d= -f2- || true)"
+if [ -z "$BUCKET_VAL" ]; then
+  echo ""
+  echo "   Backups are off. To enable them with self-hosted MinIO:"
+  echo "     1. Add MINIO_ROOT_PASSWORD=\$(openssl rand -hex 16) to .env"
+  echo "     2. docker compose --profile minio up -d minio"
+  echo "     3. ./scripts/setup-minio.sh"
+  echo "     4. Paste the printed BACKUP_S3_* lines into .env, then: docker compose up -d app"
+fi

@@ -75,6 +75,29 @@ services:
     ports: ["8025:8025"]
     networks: [datbase]
 
+  # Optional self-hosted S3-compatible storage for backups: docker compose --profile minio up -d
+  # Run scripts/setup-minio.sh once afterwards to create the bucket and credentials, then add
+  # the printed BACKUP_S3_* values to .env and restart the app (docker compose up -d app).
+  # Console at http://<server>:9001  (MinIO_ROOT_USER / MinIO_ROOT_PASSWORD from .env).
+  minio:
+    image: minio/minio:latest
+    profiles: [minio]
+    restart: unless-stopped
+    command: server /data --console-address ":9001"
+    environment:
+      MINIO_ROOT_USER: ${MINIO_ROOT_USER:-datbase}
+      MINIO_ROOT_PASSWORD: ${MINIO_ROOT_PASSWORD:?set MINIO_ROOT_PASSWORD in .env}
+    volumes:
+      - minio_data:/data
+    ports:
+      - "9000:9000"   # S3 API (app uses this)
+      - "9001:9001"   # web console
+    networks: [internal, datbase]
+    healthcheck:
+      test: ["CMD", "mc", "ready", "local"]
+      interval: 10s
+      retries: 5
+
 networks:
   datbase:
     name: datbase
@@ -83,3 +106,4 @@ networks:
 volumes:
   caddy_data: {}
   pg_data: {}
+  minio_data: {}

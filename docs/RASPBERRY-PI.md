@@ -97,7 +97,55 @@ the same zero-config way the LAN address already does.
   `PB_URL=http://<slug>.192-168-1-50.sslip.io DATBASE_SERVER_KEY=<key> node app/tests/e2e/pb-stress.mjs`
 - Home Assistant: see `integrations/home-assistant/datbase.yaml` (monitor URL
   `http://192-168-1-50.sslip.io/api/monitor`).
-- Backups: any S3-compatible bucket works; for a Pi-only test you can leave `BACKUP_S3_*` empty.
+- Backups: see **Backups with MinIO** below.
+
+## Backups with MinIO
+
+MinIO is a self-hosted S3-compatible store that runs as another Docker container on the same Pi.
+It uses the `minio` Docker Compose profile so it only starts when you ask for it.
+
+### First-time setup (one-off)
+
+**1. Add a password for MinIO to `.env`:**
+```
+MINIO_ROOT_USER=datbase          # can leave as-is
+MINIO_ROOT_PASSWORD=<openssl rand -hex 16>
+```
+
+**2. Start MinIO and run the setup script:**
+```bash
+docker compose --profile minio up -d minio
+./scripts/setup-minio.sh
+```
+The script waits for MinIO to be ready, creates the `datbase-backups` bucket, creates a
+scoped access key (not the root credentials), and prints five lines to paste into `.env`:
+```
+BACKUP_S3_ENDPOINT=http://minio:9000
+BACKUP_S3_REGION=us-east-1
+BACKUP_S3_BUCKET=datbase-backups
+BACKUP_S3_KEY=<generated>
+BACKUP_S3_SECRET=<generated>
+```
+
+**3. Paste those lines into `.env`, then restart the app:**
+```bash
+docker compose up -d app
+```
+The "Backups & alerts" section of Server status will now say "on" and the first backup of
+each project runs within `BACKUP_CHECK_MIN` minutes (default 15).
+
+### Day-to-day
+
+- MinIO starts automatically with the rest of the stack: `docker compose --profile minio up -d`
+- Web console at `http://<your-pi-ip>:9001` — login with `MINIO_ROOT_USER` / `MINIO_ROOT_PASSWORD`
+- Backup files land in the `datbase-backups` bucket, encrypted with `ENCRYPTION_KEY`
+- Restore from the Backups tab on any project in the dashboard
+
+### Moving MinIO data to a real S3 bucket later
+
+Change the five `BACKUP_S3_*` values in `.env` to point at Spaces / AWS S3 / Backblaze B2 and
+restart the app. Old backups stay in MinIO; new ones go to the new bucket. You can copy old
+files into the new bucket with `mc mirror` if you want them all in one place.
 
 ## Moving to DigitalOcean later
 Set a real `DOMAIN`, remove `PUBLIC_SCHEME`, point `A yourdomain` and `A *.yourdomain` at the droplet,
