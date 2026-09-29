@@ -10,6 +10,7 @@
 //   GET  /api/datbase/boot           id of the current process start (to detect restarts)
 //   POST /api/datbase/limits         which limits are currently exceeded
 //   POST /api/datbase/mail           email sender, link base and hourly cap {from, publicUrl, perHour}
+//   POST /api/datbase/sql            read-only query for the dashboard SQL editor {sql} (see datbase_sql.js)
 //
 // Enforcement:
 //   blockAll     → every request except DATBase's own returns 429 (monthly requests used up)
@@ -116,159 +117,110 @@ routerUse((e) => {
   return e.next();
 });
 
-// POST /api/datbase/sql  — read-only SQL for the owner's dashboard SQL editor.
-// Security layers (all must pass):
-//   1. routerUse gate above: only requests with the control header can reach /api/datbase/* at all.
-//   2. Statement allow-list: only SELECT / WITH / EXPLAIN; single statement; no writes/DDL/attach.
-//   3. Engine-level read-only: PRAGMA query_only = ON inside a transaction that is always rolled back.
-//   4. Internal table/column filter: any reference to a name starting with "_" is rejected;
-//      columns tokenKey and password on the users table are stripped from results.
-// Row cap: 1 000 rows. Timeout: 10 s (the JS AbortController is the outer bound; the query itself
-// uses SQLite's LIMIT so it doesn't keep scanning after 1 000 rows).
+// POST /api/datbase/sql {sql} — read-only "DATBase SQL" for the owner's dashboard SQL editor.
+// Reachable only with the control header (the routerUse gate above returns 404 to server keys and app
+// users). The checks, rewriting and their reasons live in datbase_sql.js (unit-tested in Node); this
+// handler adds the engine-level parts:
+//   - one pinned read connection (a transaction that is always rolled back) with PRAGMA query_only = ON,
+//     reset before the connection goes back to the pool;
+//   - EXPLAIN of each statement before it runs: every table/index it opens must be a user table;
+//   - the query is interrupted when the caller disconnects (the dashboard aborts at 10 s or on Cancel).
+// Not counted as an API request (control calls skip the counter). Result: {columns, rows, rowCount,
+// truncated, elapsedMs} or {error, elapsedMs}.
 routerAdd("POST", "/api/datbase/sql", (e) => {
-  const body = e.requestInfo().body || {};
-  const sql = String(body.sql || "").trim();
+  const S = require(`${__hooks}/datbase_sql.js`);
+  const started = Date.now();
+  const checked = S.check((e.requestInfo().body || {}).sql);
+  if (checked.error) return e.json(400, { error: checked.error, elapsedMs: Date.now() - started });
 
-  // ----- 1. Basic length / empty guard -----
-  if (!sql) return e.json(400, { error: "No SQL provided." });
-  if (sql.length > 102400) return e.json(400, { error: "Query too large (max 100 KB)." });
-
-  // ----- 2. Statement allow-list -----
-  // Strip single-line and multi-line comments to avoid hiding a second statement.
-  const stripped = sql
-    .replace(/--[^\r\n]*/g, " ")
-    .replace(/\/\*[\s\S]*?\*\//g, " ")
-    .replace(/\s+/g, " ")
-    .trim();
-
-  // Must start with SELECT, WITH, or EXPLAIN (case-insensitive).
-  if (!/^(select|with|explain)\b/i.test(stripped)) {
-    return e.json(400, {
-      error: "The SQL editor is read-only. " +
-        "Edit data in Tables, or add tables with Import schema.",
-    });
+  // Tables with hidden fields (every auth table: password, tokenKey) are replaced by CTEs that list
+  // only their visible columns, so no spelling of the query can read a hidden column.
+  const shadows = [];
+  for (const c of e.app.findAllCollections()) {
+    if (c.name.charAt(0) === "_") continue;
+    let hidden = false;
+    const visible = [];
+    for (const f of c.fields) {
+      if (f.getHidden()) hidden = true;
+      else visible.push(f.getName());
+    }
+    if (hidden) shadows.push({ name: c.name, visible });
   }
-
-  // Reject anything that could be a second statement (semicolons only inside strings are fine but
-  // we reject any bare ; that isn't the optional trailing one to keep things simple and safe).
-  const bare = stripped.replace(/'(?:[^'\\]|\\.)*'/g, "''").replace(/"(?:[^"\\]|\\.)*"/g, '""');
-  const extraSemicolon = bare.replace(/;\s*$/, "").indexOf(";") !== -1;
-  if (extraSemicolon) {
-    return e.json(400, { error: "Only one statement is allowed per run." });
-  }
-
-  // Reject known dangerous keywords even inside the allowed starters.
-  if (/\b(attach|detach|load_extension|vacuum|reindex)\b/i.test(bare)) {
-    return e.json(400, { error: "That statement type is not allowed." });
-  }
-
-  // Reject any PRAGMA that could write state (read-only pragmas are fine in SELECT / EXPLAIN).
-  // We allow PRAGMA inside an EXPLAIN, but block direct PRAGMA statements.
-  if (/^\s*pragma\b/i.test(stripped)) {
-    return e.json(400, { error: "Direct PRAGMA statements are not allowed." });
-  }
-
-  // ----- 3. Internal table / column guard -----
-  // Reject any reference to a name starting with "_" (quoted or unquoted, any case).
-  // This covers _superusers, _params, sqlite_master etc.
-  // Pattern: word boundary + optional quote + underscore at the start.
-  const nameRef = /(?:^|[\s,.(["'`])["'`]?_/;
-  if (nameRef.test(bare)) {
-    return e.json(400, { error: "Internal tables are not accessible." });
-  }
-  // Also block sqlite_master / sqlite_schema / sqlite_sequence.
-  if (/\bsqlite_/i.test(bare)) {
-    return e.json(400, { error: "SQLite system tables are not accessible." });
-  }
-  // Block pragma_* table-valued functions (they can expose schema of internal tables).
-  if (/\bpragma_/i.test(bare)) {
-    return e.json(400, { error: "PRAGMA table functions are not accessible." });
-  }
-  // Block main."_something" style quoting.
-  if (/\bmain\s*\.\s*["'`]?_/i.test(bare)) {
-    return e.json(400, { error: "Internal tables are not accessible." });
-  }
-
-  // ----- 4. Wrap in LIMIT + run inside always-rolled-back transaction with query_only -----
-  // Inject LIMIT 1001 to cap rows (we return at most 1000 and set a "truncated" flag).
-  // For WITH / EXPLAIN we prepend the wrapper.
-  let limited = stripped.replace(/;\s*$/, "");
-  // Only append LIMIT if there isn't one already and the statement is not EXPLAIN.
-  if (!/^\s*explain\b/i.test(limited) && !/\blimit\s+\d/i.test(limited)) {
-    limited = limited + " LIMIT 1001";
-  }
-
-  const ROW_CAP = 1000;
-  let columns = [];
-  let rows = [];
-  let truncated = false;
-  const startMs = Date.now();
-
+  const shadow = S.shadowWith(shadows);
+  const ctx = e.request.context();
+  const tx = e.app.concurrentDB().begin();
+  let status = 200;
+  let out;
   try {
-    // PRAGMA query_only: engine refuses any statement that would write, even if our text check missed it.
-    e.app.db().newQuery("PRAGMA query_only = ON").execute();
+    tx.newQuery("PRAGMA query_only = ON").execute();
     try {
-      // Run in a transaction that is always rolled back as an extra write barrier.
-      // (query_only already prevents writes; the rollback is belt-and-suspenders.)
-      e.app.db().newQuery("BEGIN").execute();
-      try {
-        const q = e.app.db().newQuery(limited);
-        // DynamicModel lets us read any column set.
-        // We collect the first row to learn the columns, then iterate.
-        const firstModel = new DynamicModel({});
-        try {
-          q.one(firstModel);
-        } catch (_notFound) {
-          // Zero rows — still need columns; run an EXPLAIN QUERY PLAN trick isn't reliable.
-          // Instead return empty rows; columns will be empty too (acceptable for empty result sets).
-          rows = [];
-          columns = [];
-          const elapsed = Date.now() - startMs;
-          return e.json(200, { columns, rows, rowCount: 0, truncated: false, elapsedMs: elapsed });
-        }
-        // Re-run to get all rows (JSVM doesn't expose an iterator/all() from newQuery easily).
-        const allModel = new DynamicModel({});
-        const allRows = [];
-        // We use the internal .scan approach: iterate via q.each().
-        // PocketBase JSVM exposes q.each(fn) which calls fn for each row.
-        e.app.db().newQuery(limited).each(allModel, () => {
-          const obj = {};
-          // DynamicModel doesn't expose keys; serialize/deserialize via JSON to get them.
-          const parsed = JSON.parse(JSON.stringify(allModel));
-          for (const k in parsed) obj[k] = parsed[k];
-          allRows.push(obj);
-          return allRows.length <= ROW_CAP; // returning false stops iteration
-        });
+      const roots = {};
+      const schema = arrayOf(new DynamicModel({ tbl_name: "", rootpage: 0 }));
+      tx.newQuery("SELECT tbl_name, rootpage FROM sqlite_schema WHERE rootpage > 0").all(schema);
+      for (const r of schema) roots[String(r.rootpage)] = r.tbl_name;
+      const denied = (sql) => {
+        const ops = arrayOf(new DynamicModel({ opcode: "", p2: 0, p3: 0 }));
+        tx.newQuery("EXPLAIN " + sql).withContext(ctx).all(ops);
+        return S.accessProblem(ops, roots);
+      };
 
-        if (allRows.length > 0) {
-          columns = Object.keys(allRows[0]);
-          // Filter secret columns from users table.
-          const secretCols = new Set(["password", "tokenkey", "passwordhash"]);
-          columns = columns.filter((c) => !secretCols.has(c.toLowerCase()));
-          rows = allRows.slice(0, ROW_CAP).map((r) => columns.map((c) => r[c] ?? null));
-          truncated = allRows.length > ROW_CAP;
+      if (checked.mode) {
+        const problem = denied(S.wrappedSql(shadow, checked.body));
+        if (problem) {
+          status = 400;
+          out = { error: problem };
+        } else {
+          const plan = checked.mode === "plan";
+          const columns = plan ? ["id", "parent", "detail"] : ["addr", "opcode", "p1", "p2", "p3", "p5"];
+          const shape = {};
+          for (const c of columns) shape[c] = c === "detail" || c === "opcode" ? "" : 0;
+          const list = arrayOf(new DynamicModel(shape));
+          tx.newQuery(S.explainSql(checked.mode, shadow, checked.body)).withContext(ctx).all(list);
+          const rows = list.slice(0, S.ROW_CAP).map((r) => columns.map((c) => r[c]));
+          out = { columns, rows, rowCount: rows.length, truncated: list.length > S.ROW_CAP };
         }
-      } finally {
-        e.app.db().newQuery("ROLLBACK").execute();
+      } else {
+        const probe = S.probeSql(shadow, checked.body);
+        let problem = denied(probe);
+        let columns = [];
+        if (!problem) {
+          const rs = tx.newQuery(probe).withContext(ctx).rows();
+          try {
+            columns = rs.columns();
+          } finally {
+            rs.close();
+          }
+        }
+        const data = problem ? "" : S.dataSql(shadow, checked.body, columns);
+        if (!problem) problem = denied(data);
+        if (problem) {
+          status = 400;
+          out = { error: problem };
+        } else {
+          const chunks = Math.ceil(columns.length / 100);
+          const shape = {};
+          for (let i = 0; i < chunks; i++) shape["r" + i] = "";
+          const list = arrayOf(new DynamicModel(shape));
+          tx.newQuery(data).withContext(ctx).all(list);
+          const got = S.collectRows(list, chunks);
+          out = { columns, rows: got.rows, rowCount: got.rows.length, truncated: got.truncated };
+        }
       }
     } finally {
-      e.app.db().newQuery("PRAGMA query_only = OFF").execute();
+      tx.newQuery("PRAGMA query_only = OFF").execute();
     }
   } catch (err) {
-    const elapsed = Date.now() - startMs;
-    const msg = String((err && err.message) || err || "Unknown error");
-    // Surface a friendly version of the SQLite error.
-    return e.json(400, { error: msg, elapsedMs: elapsed });
+    status = 400;
+    out = { error: S.friendlyError(err) };
+    // Operator log (no query text): shows a Cancel or the 10 s limit really stopped the engine.
+    if (/context canceled|interrupt/i.test(String(err))) console.log("[datbase-sql] query stopped after " + (Date.now() - started) + " ms");
+  } finally {
+    try {
+      tx.rollback();
+    } catch (_) {}
   }
-
-  const elapsed = Date.now() - startMs;
-  return e.json(200, {
-    columns,
-    rows,
-    rowCount: rows.length,
-    truncated,
-    elapsedMs: elapsed,
-  });
+  out.elapsedMs = Date.now() - started;
+  return e.json(status, out);
 });
 
 routerAdd("GET", "/api/session", (e) => {

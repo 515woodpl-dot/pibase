@@ -50,6 +50,13 @@
       "when": 1790674482047,
       "tag": "0006_sql_editor",
       "breakpoints": true
+    },
+    {
+      "idx": 7,
+      "version": "7",
+      "when": 1790679750057,
+      "tag": "0007_sql_editor_fixes",
+      "breakpoints": true
     }
   ]
 }

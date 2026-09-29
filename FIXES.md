@@ -1,3 +1,36 @@
+# Fixes for the SQL editor review (Codex, 2026-09-29): SQL-01 … SQL-10, plus what fixing them found
+
+The first SQL editor (commit `eed1978`) had **never been executed**. Codex's ten findings were all
+confirmed against PocketBase 0.39.11 with the real hook, and reproducing them turned up worse problems.
+Each is fixed and covered by `tests/e2e/sql-editor.mjs` (21 ✔) or the new unit tests (17).
+Details and the security layers: `docs/SQL-EDITOR.md`.
+
+| ID | Severity | Problem | Fix | Verified by |
+|---|---|---|---|---|
+| SQL-01 | Critical | Quoted internal tables got through the name filter (`FROM "main"."_superusers"`); query_only blocks writes, not reads. **Also** `FROM '_superusers'` (SQLite accepts a string as a name), `'pragma_table_info'(…)`, `sqlite_dbpage` (raw pages, compiled in) and `[[x]]` (rewritten by the query builder). | Real tokenizer that checks every name spelling; subquery wrapper; engine `EXPLAIN` root-page check of every table/index opened; `main.`/`temp.` rejected | e2e item 4 (34 attacks incl. all spellings), unit tests |
+| SQL-01b | Critical (found while fixing) | `password`/`tokenKey` were only stripped by column name: `SELECT password AS p FROM users` or a renaming CTE returned hashes. | Shadow CTEs: tables with hidden fields are replaced by their visible columns | e2e item 4 (`substr(password…)`, `'users'`, `"USERS"`, data-table hidden field) |
+| SQL-01c | Critical (found while fixing) | Every query that returned rows crashed the handler (`new DynamicModel({})` panics), and `PRAGMA query_only`/`BEGIN`/`ROLLBACK` could each run on a different pooled connection. | Columns from `rows().columns()`, rows as `json_array`; one pinned transaction with `query_only`, reset, rollback | e2e item 3–5; writes still work after the editor |
+| SQL-02 | High | No 10 s limit in the engine (12 s fetch timeout); Cancel only hid the result. Server actions also run one at a time per tab, so a cancel action could never overtake the query. | Route handler `sql/run` whose request signal aborts the engine call; the engine query runs with the request context and is interrupted; 10 s deadline | e2e: endless query stops at 10.02 s and the engine logs it; Cancel stops it in the engine within ~150 ms |
+| SQL-03 | High | Paused/suspended project: the page called the engine and could crash before any message. | Page shows the status notice for non-active projects; route answers 409 with a plain message and records nothing | e2e item 7 |
+| SQL-04 | High | E2E setup created tables without the control header (403 after the lockdown) and never checked setup responses. | Suite rewritten: every setup call asserted; control header used | e2e setup |
+| SQL-05 | Medium | Starter snippets: check-then-insert race (two tabs → duplicates); deleting them all made them come back. | `sql_editor_state` row inserted with `on conflict do nothing` in the same transaction as the starters | e2e item 2 (two tabs at once → 5, not 10) |
+| SQL-06 | Medium | Deleting a folder orphaned its subfolders (plain `parent_id`). | Self-referencing FK with cascade (migration 0007 also removes existing orphans) | e2e item 10 |
+| SQL-07 | Medium | Moving a folder under its own descendant created a cycle (and endless recursion). Also: moving a subtree could exceed 5 levels. | `moveProblem()` checks descendants and depth + subtree height; the Move list never offers them | unit tests; e2e tampered request |
+| SQL-08 | Medium | A starter query used `sqlite_master` (blocked). All other starters used `your_table` placeholders and failed too. | Five starters on `users` that run as they are | e2e item 2 runs all five |
+| SQL-09 | Medium | Export nested folders by creation order (wrong after moves); folder names like `..` escaped the folder; duplicate names overwrote each other. | `snippetPaths()` from parent links, sanitized segments, `name (2).sql` | unit tests; e2e item 11 |
+| SQL-10 | Medium | Security e2e incomplete: unreachable row-value check, no app-user 404, paused test asserted nothing. | App-user, superuser, server-key and anonymous → 404; row values checked for hashes/hidden text; paused asserted; account B's tampered requests (and proof the tampering took effect) | e2e items 6, 7, 9 |
+
+Also fixed while there (not in the review): Ctrl/⌘+Enter always re-ran the first query (stale
+closure); CodeMirror styles would have been blocked by the nonce-only CSP (now `EditorView.cspNonce`,
+e2e asserts 0 violations); two top-level folders could share a name (NULL parents are distinct in a
+unique index); `%`/`_` in snippet search acted as wildcards; history order had no tie-breaker; most
+snippet/folder actions had no UI. The owner asked for a **+** button and **right-click menus**; both
+are in (see `docs/SQL-EDITOR.md`).
+
+**Rollout:** new hook files → existing projects need **Update all projects**. Migration `0007` runs
+on start.
+
+
 # Fixes for the schema-import security review (2026-09-29): SI-01 … SI-04
 
 From `SCHEMA-IMPORT-REPORT.md`. The two authorization findings were reproduced against PocketBase

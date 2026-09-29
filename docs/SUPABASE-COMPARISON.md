@@ -35,7 +35,7 @@ Status: **Have** = works and is tested. **Partial** = works with a real limitati
 | Number limits, required fields | CHECK / NOT NULL | Min/max, whole numbers, required | Have | |
 | Auto REST API | PostgREST | Yes: list/get/create/edit/delete, filter, sort, paginate | Have | Filter syntax is PocketBase's, documented in `DATBASE.md`. |
 | Generated client | supabase-js | Zero-dependency `datbase.ts` inside `DATBASE.md` | Have | No npm package or React hooks (Partial vs Supabase's ecosystem). |
-| **SQL access** | SQL editor, connection string | None | **Missing** | Engine is SQLite inside PocketBase. This is the core trade-off (small, one folder to back up, one container per project). |
+| **SQL access** | SQL editor (read/write), connection string | **SQL tab: read-only** queries (SELECT/WITH/EXPLAIN, 1,000 rows, 10 s), saved queries in folders, history, CSV download. No connection string | Partial | Writes/DDL stay in Tables and Import schema, so schema remains dashboard-only. SQLite-style SQL. Details: `docs/SQL-EDITOR.md`. |
 | Aggregates (sum, count, group by) | Yes | None (only "total items" on a list) | **Missing** | Same cause. Workaround: fetch with `listAll()` and compute in your server. Possible future fix: PocketBase view collections. |
 | Views, functions, triggers, stored procedures | Yes | None | **Missing** | No SQL. Business logic lives in your app's server. |
 | Transactions across several writes | Yes | Not offered | **Missing** | An order + its items are separate writes today; write them from your server and clean up on failure. |

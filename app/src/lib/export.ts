@@ -5,13 +5,15 @@ import { ZipFile } from "yazl";
 import { eq } from "drizzle-orm";
 import { db } from "@/db";
 import { sqlFolder, sqlSnippet, type Project } from "@/db/schema";
+import { snippetPaths } from "@/app/dashboard/[id]/sql/folders";
 import { controlHeaders, enc, fileToken, fileUrl, listCollections, pb, type Page, type RecordItem } from "./pb";
 
 /**
  * A project's data as a portable zip (owner's "Download data"):
  *   README.txt, tables.json (every table and its fields),
  *   tables/<table>.json (all records, as the API returns them; no passwords),
- *   files/<table>/<recordId>/<fileName> (every uploaded file).
+ *   files/<table>/<recordId>/<fileName> (every uploaded file),
+ *   sql-snippets/<folder>/<name>.sql (the SQL editor's saved queries).
  * Streamed page by page, so large projects don't need memory. DATBase's own calls aren't counted.
  */
 export function exportProject(p: Project): Readable {
@@ -30,7 +32,8 @@ export function exportProject(p: Project): Readable {
           `Data export of the DATBase project "${p.name}" (${new Date().toISOString()}).\n\n` +
             "tables.json         every table with its fields\n" +
             "tables/<name>.json  all records of the table (JSON array)\n" +
-            "files/<table>/<record id>/<file name>  uploaded files, referenced by name in the records\n\n" +
+            "files/<table>/<record id>/<file name>  uploaded files, referenced by name in the records\n" +
+            "sql-snippets/<folder>/<name>.sql        saved queries from the SQL editor\n\n" +
             "Passwords of app users are never exported (they are stored only as one-way hashes).\n",
         ),
         "README.txt",
@@ -87,25 +90,11 @@ export function exportProject(p: Project): Readable {
           }
         }
       }
-      // SQL snippets: exported as .sql files inside a sql-snippets/ folder tree.
+      // SQL editor snippets: sql-snippets/<folder>/<subfolder>/<name>.sql
       const folders = await db.query.sqlFolder.findMany({ where: eq(sqlFolder.projectId, p.id) });
       const snippets = await db.query.sqlSnippet.findMany({ where: eq(sqlSnippet.projectId, p.id) });
-      if (snippets.length > 0) {
-        // Build folder id → path map.
-        const folderMap = new Map<string | null, string>();
-        folderMap.set(null, "sql-snippets");
-        // Resolve nested paths (up to 5 levels; sort by creation so parents come first).
-        folders.sort((a, b) => a.createdAt.getTime() - b.createdAt.getTime());
-        for (const f of folders) {
-          const parentPath = folderMap.get(f.parentId ?? null) ?? "sql-snippets";
-          folderMap.set(f.id, `${parentPath}/${f.name}`);
-        }
-        for (const s of snippets) {
-          const dir = folderMap.get(s.folderId ?? null) ?? "sql-snippets";
-          const safeName = s.name.replace(/[/\\:*?"<>|]/g, "_").slice(0, 100);
-          zip.addBuffer(Buffer.from(s.sqlText, "utf8"), `${dir}/${safeName}.sql`);
-        }
-      }
+      const text = new Map(snippets.map((s) => [s.id, s.sqlText]));
+      for (const { id, path } of snippetPaths(folders, snippets)) zip.addBuffer(Buffer.from(text.get(id) ?? "", "utf8"), path);
       zip.end();
     } catch (e) {
       console.error(`[export] ${p.slug}:`, e instanceof Error ? e.message : e);

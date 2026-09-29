@@ -59,3 +59,9 @@ default timeout (`FETCH_TIMEOUT_SEC`, 60). On timeout the suite fails and prints
   it records create/start/stop/remove calls and can "forget" all containers to simulate a lost server.
 - `flaky-s3-proxy.py`: sits in front of the S3 stand-in and can be switched to fail everything, or only deletes.
 - `pg_dump`: wraps the real `pg_dump` and can be switched to fail or to run slowly.
+
+### SQL editor suite
+
+`sql-editor.mjs` needs two engines and a higher query limit (the suite runs more than the product's
+30 queries per minute): `PB_PORTS="8090 8091" tests/e2e/harness.sh sql-editor.mjs SQL_RUNS_PER_MINUTE=150`
+(`run-all.sh` does this). It also uses `python3` to read the exported zip.

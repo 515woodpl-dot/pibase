@@ -21,7 +21,7 @@ run ai-fixes          "$HERE/run-backups.sh" ai-fixes.mjs
 run email-monitor     "$HERE/run-email.sh" email-monitor.mjs
 run admin-ops         env WITH_MAIL=1 'PLAN_LIMITS_OVERRIDE={"requestsPerMonth":20}' "$HERE/run-backups.sh" admin-ops.mjs
 run schema-import     "$HERE/harness.sh" schema-import.mjs
-run sql-editor        "$HERE/harness.sh" sql-editor.mjs
+run sql-editor        env PB_PORTS="8090 8091" "$HERE/harness.sh" sql-editor.mjs SQL_RUNS_PER_MINUTE=150
 run pb-stress         "$HERE/harness.sh" pb-stress.mjs
 echo; echo "━━ Summary"; printf '%s\n' "${results[@]}"
 exit $fail

@@ -20,6 +20,10 @@ PocketBase runs underneath each project; customers only ever see DATBase.
 - **Schema is dashboard-only:** a server key can read and write data but gets 403 on creating, changing, importing or
   deleting tables and on minting tokens (enforced in the project hook; existing projects need *Update all projects*)
 - **Data browser:** add, edit, delete records; file uploads; filter, sort, pagination
+- **SQL (read-only):** the project's *SQL* tab runs SELECT / WITH / EXPLAIN queries (1,000 rows, 10 s, Cancel,
+  Ctrl/⌘+Enter, CSV download), with saved queries in folders (**+** and right-click menus), favorites, search and
+  the last 20 runs. It never changes data or tables, and internal tables and hidden fields (passwords) aren't
+  visible. See `docs/SQL-EDITOR.md`.
 - **Users:** your app's users: create, edit, delete (they sign in through the API)
 - **Access:** per table, choose who can list/view/create/edit/delete: anyone, any signed-in
   user, only the record's owner (needs a link field to `users`), or server only

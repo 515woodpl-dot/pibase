@@ -1,5 +1,5 @@
 import { sql } from "drizzle-orm";
-import { bigint, boolean, index, integer, pgTable, primaryKey, text, timestamp, uniqueIndex, varchar } from "drizzle-orm/pg-core";
+import { type AnyPgColumn, bigint, boolean, index, integer, pgTable, primaryKey, text, timestamp, uniqueIndex, varchar } from "drizzle-orm/pg-core";
 export * from "./auth-schema";
 import { user } from "./auth-schema";
 
@@ -132,8 +132,9 @@ export const usageNotice = pgTable(
 /* ---------- SQL editor: snippets and folders ---------- */
 
 /**
- * Folders for organising SQL snippets. Nested up to 5 levels.
- * Cascade: deleting a project removes all its folders (and by cascade, their snippets).
+ * Folders for organising SQL snippets. Nested up to 5 levels (checked in the actions).
+ * Cascade: deleting a project removes its folders; deleting a folder removes its subfolders
+ * (self-reference) and, through sql_snippet.folder_id, every snippet inside them.
  */
 export const sqlFolder = pgTable(
   "sql_folder",
@@ -142,15 +143,16 @@ export const sqlFolder = pgTable(
     projectId: text("project_id")
       .notNull()
       .references(() => project.id, { onDelete: "cascade" }),
-    parentId: text("parent_id"), // null = top-level; FK enforced in code (self-referential)
+    parentId: text("parent_id").references((): AnyPgColumn => sqlFolder.id, { onDelete: "cascade" }), // null = top level
     name: varchar("name", { length: 80 }).notNull(),
     createdAt: timestamp("created_at").notNull().defaultNow(),
   },
   (t) => [
     index("sql_folder_project_idx").on(t.projectId),
     index("sql_folder_parent_idx").on(t.parentId),
-    // Unique folder name within the same parent (null parent = top level).
-    uniqueIndex("sql_folder_name_idx").on(t.projectId, t.parentId, t.name),
+    // Folder names are unique (ignoring case) within the same parent, top level included
+    // (a plain index would let two top-level folders share a name, because NULLs differ).
+    uniqueIndex("sql_folder_unique_name_idx").on(t.projectId, sql`coalesce(${t.parentId}, '')`, sql`lower(${t.name})`),
   ],
 );
 export type SqlFolder = typeof sqlFolder.$inferSelect;
@@ -202,3 +204,15 @@ export const sqlRun = pgTable(
   (t) => [index("sql_run_project_idx").on(t.projectId, t.createdAt)],
 );
 export type SqlRun = typeof sqlRun.$inferSelect;
+
+/**
+ * One row per project once the SQL editor has been opened: the starter snippets are created in the
+ * same transaction as this row (insert … on conflict do nothing), so they appear exactly once even
+ * when two tabs open the editor at the same moment, and deleting them all doesn't bring them back.
+ */
+export const sqlEditorState = pgTable("sql_editor_state", {
+  projectId: text("project_id")
+    .primaryKey()
+    .references(() => project.id, { onDelete: "cascade" }),
+  startersCreatedAt: timestamp("starters_created_at").notNull().defaultNow(),
+});

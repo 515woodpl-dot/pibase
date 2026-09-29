@@ -1,336 +1,54 @@
 "use server";
 
-import { and, asc, desc, eq, ilike, isNull, or, sql as drizzleSql } from "drizzle-orm";
-import { notFound } from "next/navigation";
+import { and, asc, desc, eq, ilike, inArray, or } from "drizzle-orm";
 import { db } from "@/db";
-import { sqlFolder, sqlRun, sqlSnippet, type SqlFolder, type SqlSnippet } from "@/db/schema";
+import { sqlEditorState, sqlFolder, sqlRun, sqlSnippet } from "@/db/schema";
+import { randomId } from "@/lib/crypto";
 import { listCollections } from "@/lib/pb";
 import { actionProject } from "@/lib/projects";
-import { randomId } from "@/lib/crypto";
+import { checkName, depthOf, descendants, MAX_FOLDER_DEPTH, MAX_SNIPPET_BYTES, moveProblem } from "./folders";
 
-export type SqlResult =
-  | { columns: string[]; rows: unknown[][]; rowCount: number; truncated: boolean; elapsedMs: number }
-  | { error: string; elapsedMs?: number };
+// Snippets, folders and history of the SQL editor. Every action loads the project through
+// actionProject (404 unless the signed-in user owns it) and only touches folders and snippets whose
+// project_id is that project, so ids from another project behave exactly like ids that don't exist.
+// Running queries is not here: see ./run/route.ts (server actions run one at a time per tab).
 
-export type SnippetState = { error?: string; ok?: boolean; id?: string } | undefined;
+export type ActionResult = { ok: true; id?: string } | { error: string };
 
-/** Rate-limit store: runs per (projectId, window). */
-const runCounts = new Map<string, { count: number; windowStart: number }>();
-const RATE_WINDOW_MS = 60_000;
-const RATE_LIMIT = 30;
+const NOT_FOUND = { error: "Not found. It may have been deleted in another tab; reload the page." } as const;
 
-function checkRateLimit(projectId: string): boolean {
-  const now = Date.now();
-  const key = projectId;
-  const entry = runCounts.get(key);
-  if (!entry || now - entry.windowStart > RATE_WINDOW_MS) {
-    runCounts.set(key, { count: 1, windowStart: now });
-    return true;
+function isUniqueViolation(e: unknown): boolean {
+  for (let x = e as { code?: string; cause?: unknown } | undefined, i = 0; x && i < 5; x = x.cause as typeof x, i++) {
+    if (x.code === "23505") return true;
   }
-  if (entry.count >= RATE_LIMIT) return false;
-  entry.count++;
-  return true;
+  return false;
 }
 
-/* ---------- SQL execution ---------- */
-
-export async function runSql(projectId: string, query: string): Promise<SqlResult> {
-  const p = await actionProject(projectId);
-
-  if (p.status !== "active") {
-    return { error: `Project is ${p.status}. No queries can run while the project is not active.` };
-  }
-
-  if (!checkRateLimit(p.id)) {
-    return { error: "Rate limit reached: max 30 queries per minute. Wait a moment and try again." };
-  }
-
-  const trimmed = query.trim();
-  if (!trimmed) return { error: "No SQL provided." };
-
-  const { pbInternalUrl } = await import("@/lib/config");
-  const { controlHeaders: makeControlHeaders } = await import("@/lib/pb");
-  const url = `${pbInternalUrl(p.slug)}/api/datbase/sql`;
-  const start = Date.now();
-  let result: SqlResult;
-
-  try {
-    const res = await fetch(url, {
-      method: "POST",
-      headers: {
-        "content-type": "application/json",
-        ...makeControlHeaders(p.slug),
-      },
-      body: JSON.stringify({ sql: trimmed }),
-      signal: AbortSignal.timeout(12_000), // hook enforces 10 s; outer is 12 s safety
-    });
-
-    const body = await res.json();
-    if (!res.ok || body.error) {
-      result = { error: body.error ?? `Query failed (${res.status}).`, elapsedMs: body.elapsedMs ?? (Date.now() - start) };
-    } else {
-      result = {
-        columns: body.columns ?? [],
-        rows: body.rows ?? [],
-        rowCount: body.rowCount ?? 0,
-        truncated: body.truncated ?? false,
-        elapsedMs: body.elapsedMs ?? (Date.now() - start),
-      };
-    }
-  } catch (e) {
-    const msg = e instanceof Error ? e.message : String(e);
-    result = { error: msg.includes("timed out") || msg.includes("abort") ? "Query timed out (10 s limit)." : msg, elapsedMs: Date.now() - start };
-  }
-
-  // Persist run history (last 20 per project).
-  const isError = "error" in result;
-  await db.insert(sqlRun).values({
-    id: randomId(),
-    projectId: p.id,
-    sql: trimmed.slice(0, 10_000),
-    elapsedMs: "elapsedMs" in result ? result.elapsedMs : undefined,
-    rowCount: isError ? undefined : (result as { rowCount: number }).rowCount,
-    error: isError ? (result as { error: string }).error : undefined,
-  });
-
-  // Trim to last 20.
-  const all = await db
-    .select({ id: sqlRun.id })
-    .from(sqlRun)
-    .where(eq(sqlRun.projectId, p.id))
-    .orderBy(desc(sqlRun.createdAt));
-  if (all.length > 20) {
-    const toDelete = all.slice(20).map((r) => r.id);
-    await db.delete(sqlRun).where(and(eq(sqlRun.projectId, p.id), drizzleSql`id = ANY(ARRAY[${drizzleSql.join(toDelete.map((id) => drizzleSql`${id}`), drizzleSql`, `)}]::text[])`));
-  }
-
-  return result;
+async function projectFolders(projectId: string) {
+  return db.select({ id: sqlFolder.id, parentId: sqlFolder.parentId, name: sqlFolder.name }).from(sqlFolder).where(eq(sqlFolder.projectId, projectId));
 }
 
-/* ---------- Schema browser ---------- */
+async function ownedSnippet(projectId: string, snippetId: unknown) {
+  return db.query.sqlSnippet.findFirst({ where: and(eq(sqlSnippet.id, String(snippetId)), eq(sqlSnippet.projectId, projectId)) });
+}
 
+/* ---------- Read ---------- */
+
+/** Tables and visible columns for the schema browser and autocomplete (hidden fields left out). */
 export async function getSqlSchema(projectId: string) {
   const p = await actionProject(projectId);
   const tables = await listCollections(p);
   return tables.map((t) => ({
     name: t.name,
-    columns: t.fields
-      .filter((f) => !f.hidden && f.type !== "password")
-      .map((f) => ({ name: f.name, type: f.type })),
+    kind: t.type === "auth" ? "users" : "data",
+    columns: t.fields.filter((f) => !f.hidden && f.type !== "password").map((f) => ({ name: f.name, type: f.type })),
   }));
 }
 
-/* ---------- Run history ---------- */
-
 export async function getSqlHistory(projectId: string) {
   const p = await actionProject(projectId);
-  return db.query.sqlRun.findMany({
-    where: eq(sqlRun.projectId, p.id),
-    orderBy: desc(sqlRun.createdAt),
-    limit: 20,
-  });
+  return db.query.sqlRun.findMany({ where: eq(sqlRun.projectId, p.id), orderBy: [desc(sqlRun.createdAt), desc(sqlRun.id)], limit: 20 });
 }
-
-/* ---------- Folders ---------- */
-
-const MAX_DEPTH = 5;
-
-async function folderDepth(id: string | null): Promise<number> {
-  if (!id) return 0;
-  const f = await db.query.sqlFolder.findFirst({ where: eq(sqlFolder.id, id) });
-  if (!f) return 0;
-  return 1 + (await folderDepth(f.parentId ?? null));
-}
-
-export async function createFolder(_: SnippetState, form: FormData): Promise<SnippetState> {
-  const p = await actionProject(form.get("projectId"));
-  const name = String(form.get("name") ?? "").trim().slice(0, 80);
-  const parentId = String(form.get("parentId") ?? "").trim() || null;
-  if (!name) return { error: "Folder name is required." };
-  if (/\//.test(name)) return { error: "Folder names cannot contain slashes." };
-  if (parentId) {
-    const parent = await db.query.sqlFolder.findFirst({ where: and(eq(sqlFolder.id, parentId), eq(sqlFolder.projectId, p.id)) });
-    if (!parent) return { error: "Parent folder not found." };
-    const depth = await folderDepth(parentId);
-    if (depth >= MAX_DEPTH) return { error: `Folders can be nested up to ${MAX_DEPTH} levels.` };
-  }
-  try {
-    const id = randomId();
-    await db.insert(sqlFolder).values({ id, projectId: p.id, parentId, name });
-    return { ok: true, id };
-  } catch (e) {
-    const msg = e instanceof Error ? e.message : String(e);
-    if (/unique/i.test(msg)) return { error: "A folder with that name already exists here." };
-    throw e;
-  }
-}
-
-export async function renameFolder(_: SnippetState, form: FormData): Promise<SnippetState> {
-  const p = await actionProject(form.get("projectId"));
-  const folderId = String(form.get("folderId") ?? "");
-  const name = String(form.get("name") ?? "").trim().slice(0, 80);
-  if (!name) return { error: "Folder name is required." };
-  if (/\//.test(name)) return { error: "Folder names cannot contain slashes." };
-  const folder = await db.query.sqlFolder.findFirst({ where: and(eq(sqlFolder.id, folderId), eq(sqlFolder.projectId, p.id)) });
-  if (!folder) notFound();
-  try {
-    await db.update(sqlFolder).set({ name }).where(and(eq(sqlFolder.id, folderId), eq(sqlFolder.projectId, p.id)));
-    return { ok: true };
-  } catch (e) {
-    const msg = e instanceof Error ? e.message : String(e);
-    if (/unique/i.test(msg)) return { error: "A folder with that name already exists here." };
-    throw e;
-  }
-}
-
-export async function moveFolder(_: SnippetState, form: FormData): Promise<SnippetState> {
-  const p = await actionProject(form.get("projectId"));
-  const folderId = String(form.get("folderId") ?? "");
-  const newParentId = String(form.get("parentId") ?? "").trim() || null;
-  const folder = await db.query.sqlFolder.findFirst({ where: and(eq(sqlFolder.id, folderId), eq(sqlFolder.projectId, p.id)) });
-  if (!folder) notFound();
-  if (newParentId === folderId) return { error: "A folder cannot be its own parent." };
-  if (newParentId) {
-    const newParent = await db.query.sqlFolder.findFirst({ where: and(eq(sqlFolder.id, newParentId), eq(sqlFolder.projectId, p.id)) });
-    if (!newParent) return { error: "Target folder not found." };
-    const depth = await folderDepth(newParentId);
-    if (depth >= MAX_DEPTH) return { error: `Folders can be nested up to ${MAX_DEPTH} levels.` };
-  }
-  try {
-    await db.update(sqlFolder).set({ parentId: newParentId }).where(and(eq(sqlFolder.id, folderId), eq(sqlFolder.projectId, p.id)));
-    return { ok: true };
-  } catch (e) {
-    const msg = e instanceof Error ? e.message : String(e);
-    if (/unique/i.test(msg)) return { error: "A folder with that name already exists there." };
-    throw e;
-  }
-}
-
-export async function deleteFolder(_: SnippetState, form: FormData): Promise<SnippetState> {
-  const p = await actionProject(form.get("projectId"));
-  const folderId = String(form.get("folderId") ?? "");
-  const confirmed = String(form.get("confirmed") ?? "") === "yes";
-  const folder = await db.query.sqlFolder.findFirst({ where: and(eq(sqlFolder.id, folderId), eq(sqlFolder.projectId, p.id)) });
-  if (!folder) notFound();
-  // Count contents.
-  const [{ snippetCount }] = await db
-    .select({ snippetCount: drizzleSql<number>`count(*)` })
-    .from(sqlSnippet)
-    .where(eq(sqlSnippet.folderId, folderId));
-  const [{ subFolderCount }] = await db
-    .select({ subFolderCount: drizzleSql<number>`count(*)` })
-    .from(sqlFolder)
-    .where(eq(sqlFolder.parentId, folderId));
-  const total = Number(snippetCount) + Number(subFolderCount);
-  if (total > 0 && !confirmed) {
-    return { error: `This folder contains ${total} item(s). Confirm by sending confirmed=yes.` };
-  }
-  // Cascade deletes snippets and subfolders via FK.
-  await db.delete(sqlFolder).where(and(eq(sqlFolder.id, folderId), eq(sqlFolder.projectId, p.id)));
-  return { ok: true };
-}
-
-/* ---------- Snippets ---------- */
-
-const MAX_SQL_BYTES = 100 * 1024; // 100 KB
-
-export async function createSnippet(_: SnippetState, form: FormData): Promise<SnippetState> {
-  const p = await actionProject(form.get("projectId"));
-  const name = String(form.get("name") ?? "").trim().slice(0, 200);
-  const sqlText = String(form.get("sql") ?? "");
-  const folderId = String(form.get("folderId") ?? "").trim() || null;
-  if (!name) return { error: "Snippet name is required." };
-  if (Buffer.byteLength(sqlText, "utf8") > MAX_SQL_BYTES) return { error: "SQL exceeds 100 KB limit." };
-  if (folderId) {
-    const folder = await db.query.sqlFolder.findFirst({ where: and(eq(sqlFolder.id, folderId), eq(sqlFolder.projectId, p.id)) });
-    if (!folder) return { error: "Folder not found." };
-  }
-  const id = randomId();
-  await db.insert(sqlSnippet).values({ id, projectId: p.id, folderId, name, sqlText });
-  return { ok: true, id };
-}
-
-export async function updateSnippet(_: SnippetState, form: FormData): Promise<SnippetState> {
-  const p = await actionProject(form.get("projectId"));
-  const snippetId = String(form.get("snippetId") ?? "");
-  const snippet = await db.query.sqlSnippet.findFirst({ where: and(eq(sqlSnippet.id, snippetId), eq(sqlSnippet.projectId, p.id)) });
-  if (!snippet) notFound();
-  const name = String(form.get("name") ?? snippet.name).trim().slice(0, 200);
-  const sqlText = String(form.get("sql") ?? snippet.sqlText);
-  if (!name) return { error: "Snippet name is required." };
-  if (Buffer.byteLength(sqlText, "utf8") > MAX_SQL_BYTES) return { error: "SQL exceeds 100 KB limit." };
-  await db.update(sqlSnippet).set({ name, sqlText, updatedAt: new Date() }).where(and(eq(sqlSnippet.id, snippetId), eq(sqlSnippet.projectId, p.id)));
-  return { ok: true };
-}
-
-export async function renameSnippet(_: SnippetState, form: FormData): Promise<SnippetState> {
-  const p = await actionProject(form.get("projectId"));
-  const snippetId = String(form.get("snippetId") ?? "");
-  const name = String(form.get("name") ?? "").trim().slice(0, 200);
-  if (!name) return { error: "Snippet name is required." };
-  const snippet = await db.query.sqlSnippet.findFirst({ where: and(eq(sqlSnippet.id, snippetId), eq(sqlSnippet.projectId, p.id)) });
-  if (!snippet) notFound();
-  await db.update(sqlSnippet).set({ name, updatedAt: new Date() }).where(and(eq(sqlSnippet.id, snippetId), eq(sqlSnippet.projectId, p.id)));
-  return { ok: true };
-}
-
-export async function duplicateSnippet(_: SnippetState, form: FormData): Promise<SnippetState> {
-  const p = await actionProject(form.get("projectId"));
-  const snippetId = String(form.get("snippetId") ?? "");
-  const snippet = await db.query.sqlSnippet.findFirst({ where: and(eq(sqlSnippet.id, snippetId), eq(sqlSnippet.projectId, p.id)) });
-  if (!snippet) notFound();
-  const id = randomId();
-  await db.insert(sqlSnippet).values({ id, projectId: p.id, folderId: snippet.folderId, name: `${snippet.name} (copy)`, sqlText: snippet.sqlText });
-  return { ok: true, id };
-}
-
-export async function moveSnippet(_: SnippetState, form: FormData): Promise<SnippetState> {
-  const p = await actionProject(form.get("projectId"));
-  const snippetId = String(form.get("snippetId") ?? "");
-  const folderId = String(form.get("folderId") ?? "").trim() || null;
-  const snippet = await db.query.sqlSnippet.findFirst({ where: and(eq(sqlSnippet.id, snippetId), eq(sqlSnippet.projectId, p.id)) });
-  if (!snippet) notFound();
-  if (folderId) {
-    const folder = await db.query.sqlFolder.findFirst({ where: and(eq(sqlFolder.id, folderId), eq(sqlFolder.projectId, p.id)) });
-    if (!folder) return { error: "Folder not found." };
-  }
-  await db.update(sqlSnippet).set({ folderId, updatedAt: new Date() }).where(and(eq(sqlSnippet.id, snippetId), eq(sqlSnippet.projectId, p.id)));
-  return { ok: true };
-}
-
-export async function toggleFavorite(_: SnippetState, form: FormData): Promise<SnippetState> {
-  const p = await actionProject(form.get("projectId"));
-  const snippetId = String(form.get("snippetId") ?? "");
-  const snippet = await db.query.sqlSnippet.findFirst({ where: and(eq(sqlSnippet.id, snippetId), eq(sqlSnippet.projectId, p.id)) });
-  if (!snippet) notFound();
-  await db.update(sqlSnippet).set({ favorite: !snippet.favorite }).where(and(eq(sqlSnippet.id, snippetId), eq(sqlSnippet.projectId, p.id)));
-  return { ok: true };
-}
-
-export async function deleteSnippet(_: SnippetState, form: FormData): Promise<SnippetState> {
-  const p = await actionProject(form.get("projectId"));
-  const snippetId = String(form.get("snippetId") ?? "");
-  const snippet = await db.query.sqlSnippet.findFirst({ where: and(eq(sqlSnippet.id, snippetId), eq(sqlSnippet.projectId, p.id)) });
-  if (!snippet) notFound();
-  await db.delete(sqlSnippet).where(and(eq(sqlSnippet.id, snippetId), eq(sqlSnippet.projectId, p.id)));
-  return { ok: true };
-}
-
-export async function searchSnippets(projectId: string, query: string) {
-  const p = await actionProject(projectId);
-  const q = query.trim();
-  if (!q) return [];
-  return db.query.sqlSnippet.findMany({
-    where: and(
-      eq(sqlSnippet.projectId, p.id),
-      or(ilike(sqlSnippet.name, `%${q}%`), ilike(sqlSnippet.sqlText, `%${q}%`)),
-    ),
-    orderBy: asc(sqlSnippet.name),
-    limit: 50,
-  });
-}
-
-/* ---------- Sidebar data ---------- */
 
 export async function getSidebarData(projectId: string) {
   const p = await actionProject(projectId);
@@ -341,59 +59,212 @@ export async function getSidebarData(projectId: string) {
   return { folders, snippets };
 }
 
-/* ---------- Starter snippets (created lazily on first visit) ---------- */
+export async function searchSnippets(projectId: string, query: string) {
+  const p = await actionProject(projectId);
+  const q = String(query ?? "").trim().slice(0, 200);
+  if (!q) return [];
+  const like = `%${q.replace(/[\\%_]/g, (c) => "\\" + c)}%`; // search for the text as typed
+  return db.query.sqlSnippet.findMany({
+    where: and(eq(sqlSnippet.projectId, p.id), or(ilike(sqlSnippet.name, like), ilike(sqlSnippet.sqlText, like))),
+    orderBy: asc(sqlSnippet.name),
+    limit: 50,
+  });
+}
 
+/* ---------- Folders ---------- */
+
+export async function createFolder(projectId: string, rawName: string, parentId: string | null): Promise<ActionResult> {
+  const p = await actionProject(projectId);
+  const n = checkName(rawName, "Folder");
+  if ("error" in n) return n;
+  const all = await projectFolders(p.id);
+  if (parentId) {
+    if (!all.some((f) => f.id === parentId)) return NOT_FOUND;
+    if (depthOf(all, parentId) >= MAX_FOLDER_DEPTH) return { error: `Folders can be nested up to ${MAX_FOLDER_DEPTH} levels.` };
+  }
+  try {
+    const id = randomId();
+    await db.insert(sqlFolder).values({ id, projectId: p.id, parentId: parentId || null, name: n.name });
+    return { ok: true, id };
+  } catch (e) {
+    if (isUniqueViolation(e)) return { error: `There is already a folder called "${n.name}" here.` };
+    throw e;
+  }
+}
+
+export async function renameFolder(projectId: string, folderId: string, rawName: string): Promise<ActionResult> {
+  const p = await actionProject(projectId);
+  const n = checkName(rawName, "Folder");
+  if ("error" in n) return n;
+  try {
+    const r = await db.update(sqlFolder).set({ name: n.name }).where(and(eq(sqlFolder.id, String(folderId)), eq(sqlFolder.projectId, p.id))).returning({ id: sqlFolder.id });
+    return r.length ? { ok: true } : NOT_FOUND;
+  } catch (e) {
+    if (isUniqueViolation(e)) return { error: `There is already a folder called "${n.name}" here.` };
+    throw e;
+  }
+}
+
+export async function moveFolder(projectId: string, folderId: string, newParentId: string | null): Promise<ActionResult> {
+  const p = await actionProject(projectId);
+  const all = await projectFolders(p.id);
+  const folder = all.find((f) => f.id === folderId);
+  if (!folder || (newParentId && !all.some((f) => f.id === newParentId))) return NOT_FOUND;
+  const problem = moveProblem(all, folder.id, newParentId || null);
+  if (problem) return { error: problem };
+  try {
+    await db.update(sqlFolder).set({ parentId: newParentId || null }).where(and(eq(sqlFolder.id, folder.id), eq(sqlFolder.projectId, p.id)));
+    return { ok: true };
+  } catch (e) {
+    if (isUniqueViolation(e)) return { error: `There is already a folder called "${folder.name}" there.` };
+    throw e;
+  }
+}
+
+/** What deleting a folder would remove (for the confirmation). */
+export async function folderContents(projectId: string, folderId: string): Promise<{ folders: number; snippets: number } | { error: string }> {
+  const p = await actionProject(projectId);
+  const all = await projectFolders(p.id);
+  if (!all.some((f) => f.id === folderId)) return NOT_FOUND;
+  const ids = [folderId, ...descendants(all, folderId)];
+  const snippets = await db.select({ id: sqlSnippet.id }).from(sqlSnippet).where(and(eq(sqlSnippet.projectId, p.id), inArray(sqlSnippet.folderId, ids)));
+  return { folders: ids.length - 1, snippets: snippets.length };
+}
+
+/** Deletes the folder, its subfolders and every snippet in them (foreign-key cascade). */
+export async function deleteFolder(projectId: string, folderId: string): Promise<ActionResult> {
+  const p = await actionProject(projectId);
+  const r = await db.delete(sqlFolder).where(and(eq(sqlFolder.id, String(folderId)), eq(sqlFolder.projectId, p.id))).returning({ id: sqlFolder.id });
+  return r.length ? { ok: true } : NOT_FOUND;
+}
+
+/* ---------- Snippets ---------- */
+
+function checkSql(sqlText: unknown): { sql: string } | { error: string } {
+  const sql = String(sqlText ?? "");
+  if (Buffer.byteLength(sql, "utf8") > MAX_SNIPPET_BYTES) return { error: "Snippets can be at most 100 KB." };
+  return { sql };
+}
+
+async function folderOk(projectId: string, folderId: string | null) {
+  if (!folderId) return true;
+  return !!(await db.query.sqlFolder.findFirst({ where: and(eq(sqlFolder.id, folderId), eq(sqlFolder.projectId, projectId)) }));
+}
+
+export async function createSnippet(projectId: string, rawName: string, sqlText: string, folderId: string | null): Promise<ActionResult> {
+  const p = await actionProject(projectId);
+  const n = checkName(rawName, "Snippet");
+  if ("error" in n) return n;
+  const s = checkSql(sqlText);
+  if ("error" in s) return s;
+  if (!(await folderOk(p.id, folderId || null))) return NOT_FOUND;
+  const id = randomId();
+  await db.insert(sqlSnippet).values({ id, projectId: p.id, folderId: folderId || null, name: n.name, sqlText: s.sql });
+  return { ok: true, id };
+}
+
+/** Save the editor's text into an existing snippet. */
+export async function updateSnippet(projectId: string, snippetId: string, sqlText: string): Promise<ActionResult> {
+  const p = await actionProject(projectId);
+  const s = checkSql(sqlText);
+  if ("error" in s) return s;
+  const r = await db.update(sqlSnippet).set({ sqlText: s.sql, updatedAt: new Date() }).where(and(eq(sqlSnippet.id, String(snippetId)), eq(sqlSnippet.projectId, p.id))).returning({ id: sqlSnippet.id });
+  return r.length ? { ok: true } : NOT_FOUND;
+}
+
+export async function renameSnippet(projectId: string, snippetId: string, rawName: string): Promise<ActionResult> {
+  const p = await actionProject(projectId);
+  const n = checkName(rawName, "Snippet");
+  if ("error" in n) return n;
+  const r = await db.update(sqlSnippet).set({ name: n.name, updatedAt: new Date() }).where(and(eq(sqlSnippet.id, String(snippetId)), eq(sqlSnippet.projectId, p.id))).returning({ id: sqlSnippet.id });
+  return r.length ? { ok: true } : NOT_FOUND;
+}
+
+export async function duplicateSnippet(projectId: string, snippetId: string): Promise<ActionResult> {
+  const p = await actionProject(projectId);
+  const s = await ownedSnippet(p.id, snippetId);
+  if (!s) return NOT_FOUND;
+  const id = randomId();
+  await db.insert(sqlSnippet).values({ id, projectId: p.id, folderId: s.folderId, name: `${s.name} (copy)`.slice(0, 200), sqlText: s.sqlText });
+  return { ok: true, id };
+}
+
+export async function moveSnippet(projectId: string, snippetId: string, folderId: string | null): Promise<ActionResult> {
+  const p = await actionProject(projectId);
+  if (!(await folderOk(p.id, folderId || null))) return NOT_FOUND;
+  const r = await db.update(sqlSnippet).set({ folderId: folderId || null, updatedAt: new Date() }).where(and(eq(sqlSnippet.id, String(snippetId)), eq(sqlSnippet.projectId, p.id))).returning({ id: sqlSnippet.id });
+  return r.length ? { ok: true } : NOT_FOUND;
+}
+
+export async function toggleFavorite(projectId: string, snippetId: string): Promise<ActionResult> {
+  const p = await actionProject(projectId);
+  const s = await ownedSnippet(p.id, snippetId);
+  if (!s) return NOT_FOUND;
+  await db.update(sqlSnippet).set({ favorite: !s.favorite }).where(and(eq(sqlSnippet.id, s.id), eq(sqlSnippet.projectId, p.id)));
+  return { ok: true };
+}
+
+export async function deleteSnippet(projectId: string, snippetId: string): Promise<ActionResult> {
+  const p = await actionProject(projectId);
+  const r = await db.delete(sqlSnippet).where(and(eq(sqlSnippet.id, String(snippetId)), eq(sqlSnippet.projectId, p.id))).returning({ id: sqlSnippet.id });
+  return r.length ? { ok: true } : NOT_FOUND;
+}
+
+/* ---------- Starter snippets (once per project, on the first visit) ---------- */
+
+// Every project has the users table, so these run as they are.
 const STARTERS: { name: string; sql: string }[] = [
   {
-    name: "Row counts per table",
-    sql: `-- Row count of every customer table.
--- Replace 'your_table' with any table name below.
-SELECT 'your_table' AS table_name, COUNT(*) AS rows FROM your_table`,
+    name: "Newest sign-ups",
+    sql: `-- The 20 most recent app users.
+SELECT id, email, verified, created
+FROM users
+ORDER BY created DESC
+LIMIT 20`,
   },
   {
-    name: "Newest 20 rows",
-    sql: `-- Most recently created rows in a table.
--- Replace 'your_table' with any table name.
-SELECT * FROM your_table ORDER BY created DESC LIMIT 20`,
+    name: "Sign-ups per day",
+    sql: `-- New app users per day (created is stored in UTC).
+SELECT date(created) AS day, count(*) AS new_users
+FROM users
+GROUP BY day
+ORDER BY day DESC`,
   },
   {
-    name: "Find duplicates in a column",
-    sql: `-- Find values that appear more than once.
--- Replace 'your_table' and 'your_column'.
-SELECT your_column, COUNT(*) AS occurrences
-FROM your_table
-GROUP BY your_column
-HAVING COUNT(*) > 1
-ORDER BY occurrences DESC`,
+    name: "Unconfirmed emails",
+    sql: `-- App users who haven't confirmed their email address yet.
+SELECT email, created
+FROM users
+WHERE verified = 0
+ORDER BY created`,
   },
   {
-    name: "Rows created today",
-    sql: `-- Records created since midnight UTC.
--- Replace 'your_table' with any table name.
-SELECT * FROM your_table
-WHERE created >= date('now')
-ORDER BY created DESC`,
+    name: "Find duplicates",
+    sql: `-- Values that appear more than once. Change the table and column to check your own data.
+SELECT name, count(*) AS times
+FROM users
+WHERE name != ''
+GROUP BY name
+HAVING count(*) > 1
+ORDER BY times DESC`,
   },
   {
-    name: "Storage usage by table",
-    sql: `-- Approximate number of rows per table (SQLite page estimate).
--- Use row counts above for exact numbers.
-SELECT name AS table_name
-FROM sqlite_master
-WHERE type = 'table' AND name NOT LIKE '_%'
-ORDER BY name`,
+    name: "How a query runs",
+    sql: `-- EXPLAIN QUERY PLAN shows whether a query uses an index (SEARCH) or reads the whole table (SCAN).
+EXPLAIN QUERY PLAN
+SELECT * FROM users WHERE email = 'someone@example.com'`,
   },
 ];
 
+/** Creates the "Getting started" folder and its snippets the first time; later calls do nothing. */
 export async function ensureStarterSnippets(projectId: string): Promise<void> {
   const p = await actionProject(projectId);
-  // Only create once: check if any snippet exists for this project.
-  const existing = await db.query.sqlSnippet.findFirst({ where: eq(sqlSnippet.projectId, p.id) });
-  if (existing) return;
-  // Create the Getting started folder.
-  const folderId = randomId();
-  await db.insert(sqlFolder).values({ id: folderId, projectId: p.id, parentId: null, name: "Getting started" });
-  for (const s of STARTERS) {
-    await db.insert(sqlSnippet).values({ id: randomId(), projectId: p.id, folderId, name: s.name, sqlText: s.sql });
-  }
+  await db.transaction(async (tx) => {
+    const first = await tx.insert(sqlEditorState).values({ projectId: p.id }).onConflictDoNothing().returning({ projectId: sqlEditorState.projectId });
+    if (!first.length) return; // already done (possibly by a request running at the same moment)
+    let folderId: string | null = randomId();
+    const made = await tx.insert(sqlFolder).values({ id: folderId, projectId: p.id, parentId: null, name: "Getting started" }).onConflictDoNothing().returning({ id: sqlFolder.id });
+    if (!made.length) folderId = null; // the owner already has a folder with that name: put them at the top
+    await tx.insert(sqlSnippet).values(STARTERS.map((s) => ({ id: randomId(), projectId: p.id, folderId, name: s.name, sqlText: s.sql })));
+  });
 }
