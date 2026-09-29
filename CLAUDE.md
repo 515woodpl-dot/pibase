@@ -27,12 +27,12 @@ The owner works mostly by pasting prompts into AI CLIs (Claude Code on the Pi, C
 | **Tables + schema import** | `.../tables/actions.ts` (server actions), `ui.tsx`, `shared.ts` (field types, access presets, unique rules), **`import-schema.ts`** (pure planner + `runImport`, unit-tested) |
 | Talking to a project's PocketBase | `app/src/lib/pb.ts`: `pb(project, path, init)` logs in as superuser, sends the control header and the token as a **raw `Authorization` header (no `Bearer`)**. Never forward a browser-supplied path. Internal tables (`_superusers`…) go through `getCollection`/`isInternal` and read as "not found". |
 | **SQL editor** (read-only "DATBase SQL") | Checks in `pocketbase/pb_hooks/datbase_sql.js` (tokenizer, shadow CTEs, EXPLAIN access check; unit-tested in Node), endpoint `POST /api/datbase/sql` in `datbase.pb.js`, `lib/sql.ts` (ready/rate limit/10 s/history), route `dashboard/[id]/sql/run/route.ts` (**not** a server action: those run one at a time per tab, so Cancel couldn't overtake), `sql/{page,ui,actions,folders}`. Design + limits: `docs/SQL-EDITOR.md`. |
-| Project lifecycle | `lib/provision.ts`, `docker.ts` (containers, Caddy labels, blocks `/_/`), `lifecycle.ts` (delete, suspend, update-all), `busy.ts` |
+| Project lifecycle | `lib/provision.ts`, `docker.ts` (containers, Caddy labels, blocks `/_/`), `lifecycle.ts` (delete, suspend, update-all), `busy.ts`. **Update-all progress**: `admin/UpdateProgress.tsx` (polls `GET /dashboard/admin/update-status` every 2 s while running; no page reload needed). |
 | Server keys | `lib/server-keys.ts` (superuser impersonation tokens: expire, revocable) |
 | AI guide (`DATBASE.md`) | `lib/ai-guide.ts` (generator, incl. `schemaImportSection()` and the `datbase.ts` client), route `dashboard/[id]/datbase-md/route.ts`. Sample: `docs/DATBASE.example.md` (regenerate the changed sections when the generator changes). |
 | Per-project hook (runs inside every project) | `pocketbase/pb_hooks/datbase.pb.js` (limits, request counting, fail-closed tokens, **schema lockdown**), `datbase_mail.js` (fixed-wording emails) |
 | Usage/limits/plans | `lib/usage.ts`, `lib/plans.ts` (Free plan only; `PLAN_LIMITS_OVERRIDE`) |
-| Backups | `lib/backups.ts`, `lib/retention.ts`, `scripts/backup-tool.mjs` (S3-compatible, AES-GCM, 7 daily + 4 weekly) |
+| Backups | `lib/backups.ts`, `lib/retention.ts`, `scripts/backup-tool.mjs` (S3-compatible, AES-GCM, 7 daily + 4 weekly). Self-hosted storage: MinIO runs as `docker compose --profile minio up -d minio`; `scripts/setup-minio.sh` creates the bucket + scoped key and prints the `BACKUP_S3_*` lines. See `docs/RASPBERRY-PI.md` → "Backups with MinIO". |
 | Email, monitoring | `lib/mail.ts`, `lib/project-mail.ts`, `lib/monitor.ts`, `app/api/monitor/route.ts`, `integrations/home-assistant/` |
 | Auth (dashboard) | Better Auth: `lib/auth.ts` (`trustedOrigins` from `EXTRA_TRUSTED_ORIGINS`), pages in `app/src/app/(auth)` |
 | Security headers | `app/src/proxy.ts` (nonce CSP) |
@@ -67,8 +67,8 @@ Test setup that creates tables directly on PocketBase must send `controlHeaders(
 Acceptance docs for a second tester (Codex): `CODEX-HANDOFF.md`, `TESTING*.md`. Newest: `TESTING-SCHEMA-IMPORT.md`. SQL editor: `docs/SQL-EDITOR.md` + `FIXES.md` (SQL-01…10).
 `sql-editor.mjs` needs `PB_PORTS="8090 8091"` and `SQL_RUNS_PER_MINUTE=150` (set in `run-all.sh`).
 
-## Deployment state (as of 2026-09-28)
-- **Raspberry Pi "gejg"** (test box): running via `scripts/setup-pi.sh`, `PUBLIC_SCHEME=http`, sslip.io hostname, plus a Tailscale hostname through `EXTRA_CADDY_DOMAINS`/`EXTRA_TRUSTED_ORIGINS` (auto-filled when Tailscale is present). Not yet real-world verified: SMTP (blank), backups (off), Stage-7 admin tools on this Pi, a public HTTPS URL (Tailscale Funnel prompt was given to the Pi's CLI; result not confirmed).
+## Deployment state (as of 2026-09-29)
+- **Raspberry Pi "gejg"** (test box): running via `scripts/setup-pi.sh`, `PUBLIC_SCHEME=http`, sslip.io hostname, plus a Tailscale hostname through `EXTRA_CADDY_DOMAINS`/`EXTRA_TRUSTED_ORIGINS` (auto-filled when Tailscale is present). Not yet real-world verified: SMTP (blank), backups (MinIO support added but not yet set up on the Pi — see `docs/RASPBERRY-PI.md`), a public HTTPS URL (Tailscale Funnel prompt was given to the Pi's CLI; result not confirmed).
 - **Second Pi "occnj"** (other tailnet) could not reach DATBase: tailnet mismatch. Fix is a public HTTPS URL (Funnel) or same tailnet.
 - Update procedure on a box: `git pull && docker compose up -d --build`, then **Update all projects** if `pocketbase/` changed.
 - Setup-script lessons (all fixed, keep them fixed): Docker compose/buildx plugins install to `~/.docker/cli-plugins` (no root); `id -nG` says the *account* is in the docker group, not that the *shell* is, so test with `docker version` and use `sg docker -c`; `sudo -v` fails with no TTY, so print a one-line fix instead of a raw error; Caddy only routes the configured hostnames, so a bare IP shows a blank page.
@@ -84,7 +84,8 @@ Full table with reasons: `docs/SUPABASE-COMPARISON.md`. Short version:
 
 ## Working on the next thing
 The SQL editor (2026-09-29) is not yet tried on the Pi: needs `git pull && docker compose up -d --build` and **Update all projects**.
-Suggested order (owner decides): (1) wire a mirror into one real app end to end using schema import; (2) verify backups + SMTP + Funnel on the Pi; (3) a server-side story (webhooks/actions) so stores can check out; (4) custom access rules; (5) aggregates. When a feature ships: update `docs/SUPABASE-COMPARISON.md`, `README.md`, this file, and add/extend an e2e suite.
+MinIO backup storage (2026-09-29) added but not yet set up on the Pi — run `scripts/setup-minio.sh` after `docker compose --profile minio up -d minio`.
+Suggested order (owner decides): (1) set up MinIO + SMTP on the Pi; (2) wire a mirror into one real app end to end using schema import; (3) verify Funnel for a public URL; (4) a server-side story (webhooks/actions) so stores can check out; (5) custom access rules; (6) aggregates. When a feature ships: update `docs/SUPABASE-COMPARISON.md`, `README.md`, this file, and add/extend an e2e suite.
 
 ## Documentation map
 `README.md` (features, deploy, backups, email, operator tools) · `docs/SUPABASE-COMPARISON.md` · `docs/SECONDARY-BACKEND.md` · `docs/RASPBERRY-PI.md` · `docs/DEPLOY-RASPBERRY-PI.md` · `docs/DATBASE.example.md` · `TESTING*.md`, `CODEX-HANDOFF.md`, `FIXES.md` (finding history) · `app/tests/README.md`.
