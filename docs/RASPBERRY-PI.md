@@ -90,6 +90,23 @@ Tailscale's MagicDNS hostname (e.g. `http://gejg`) isn't used here on purpose �
 through Caddy would need its own TLS/cert handling, whereas the Tailscale IP's sslip.io address works
 the same zero-config way the LAN address already does.
 
+## Nginx proxy (when port 80 is taken)
+
+When something else on the Pi already owns port 80 (Home Assistant, another web server, etc.),
+`setup-pi.sh` automatically moves Caddy to a free port (`CADDY_HTTP_PORT` in `.env`, e.g. 9081).
+If nginx is installed and running, the script also auto-generates an nginx site config that
+forwards port 80 to Caddy — including a **wildcard** `*.DOMAIN` rule so every project subdomain
+(e.g. `panda-xyz.100-119-190-50.sslip.io`) routes correctly. Without the wildcard, project URLs
+get a 502 because nginx doesn't recognise the hostname and never forwards to Caddy.
+
+This is fully automatic on a fresh `setup-pi.sh` run. If nginx wasn't installed at first run and
+you install it later, just re-run `./scripts/setup-pi.sh` — it detects nginx, writes the config,
+and reloads. You can also set it up manually from `scripts/nginx-datbase.conf.example`.
+
+**If you change the Pi's IP** (or DOMAIN changes for any reason), re-run `./scripts/setup-pi.sh`
+to regenerate the nginx config with the new hostname — otherwise the old `server_name` won't match
+the new domain and project subdomains will 502 again.
+
 ## Check it
 - Disk numbers: DATBase's monitor measures the disk holding Docker's data (where every project lives).
   Compare `/api/monitor` with `df -h $(docker info -f '{{.DockerRootDir}}')`, not `df -h /`.
