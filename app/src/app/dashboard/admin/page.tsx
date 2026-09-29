@@ -5,6 +5,7 @@ import { outdatedProjects, updateState } from "@/lib/lifecycle";
 import Link from "next/link";
 import { applyEmailSettings, runChecksNow, sendTestAlert, updateAllProjects } from "./actions";
 import { AdminButton } from "./ui";
+import { UpdateProgress } from "./UpdateProgress";
 
 export const dynamic = "force-dynamic";
 
@@ -103,13 +104,7 @@ export default async function AdminPage() {
               ? `${img.outdated.length} of ${img.total} projects run an older version. Update them after every rebuild (a few seconds offline each).`
               : `All ${img.total} projects run the current version.`}
         </p>
-        {(up.running || up.finishedAt) && (
-          <p data-testid="update-progress">
-            {up.running ? `Updating… ${up.done} of ${up.total} done.` : `Last update: ${up.done} of ${up.total} done`}
-            {up.failed.length > 0 && <span className="text-red-600"> · failed: {up.failed.map((f) => `${f.slug} (${f.error})`).join(", ")}</span>}
-            {up.skipped.length > 0 && <span className="text-muted"> · skipped (busy): {up.skipped.join(", ")}</span>}
-          </p>
-        )}
+        <UpdateProgress initial={up} />
         <AdminButton label="Update all projects" run={updateAllProjects} />
       </section>
 
