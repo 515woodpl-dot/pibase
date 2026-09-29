@@ -12,8 +12,8 @@
  * "references"…) and system columns (id, created_at…) are understood or skipped with a note.
  * Anything it can't safely map is rejected with a message that says exactly what to change.
  *
- * Tables that already exist are extended, never rewritten: new fields are added, existing fields
- * and data are left alone, and access is only changed for actions the import names. So an updated
+ * Tables that already exist are extended, never rewritten: new fields are added, while existing
+ * fields, data and access are left alone (access may have been tightened by hand). So an updated
  * schema can be pasted again after the app grows.
  *
  * Pure validation/planning lives here (no I/O) so it can be unit-tested; actions.ts executes it.
@@ -93,7 +93,7 @@ export type PlannedTable = {
   isAuth: boolean;
   /** Fields to add (for an existing table: only the ones it doesn't have yet). */
   fields: PlannedField[];
-  /** Access to set. For existing tables only the actions the import named. */
+  /** Access to set. Empty for existing tables: their access is never changed by an import. */
   access: Partial<Record<RuleOp, RulePreset>>;
 };
 
@@ -204,8 +204,9 @@ export function planImport(text: string, existing: ExistingTable[]): ImportResul
     let chosen = access.access;
     if (!ex) {
       for (const op of OPS) chosen[op] ??= "admin"; // new tables: unnamed actions are server-only
-    } else if (isAuth && Object.keys(chosen).length) {
-      notes.push(`${name}: access of the users table is managed by DATBase and was not changed.`);
+    } else {
+      // Existing tables keep the access they have (it may have been tightened by hand since); change it in the table's settings.
+      if (Object.keys(chosen).length) notes.push(`${name}: already exists, so its access was left as it is.`);
       chosen = {};
     }
 
@@ -371,7 +372,7 @@ export function ruleFor(op: RuleOp, preset: RulePreset, ownerField: string | nul
 export function describePlan(plan: ImportPlan) {
   return plan.tables.map((t) => {
     const n = `${t.fields.length} field${t.fields.length === 1 ? "" : "s"}`;
-    return t.existingId ? `${t.name}: added ${n}${Object.keys(t.access).length ? ", updated access" : ""}` : `${t.name}: created with ${n}`;
+    return t.existingId ? `${t.name}: added ${n}` : `${t.name}: created with ${n}`;
   });
 }
 

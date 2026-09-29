@@ -5,7 +5,7 @@ Backend-as-a-service for developers. Each project gets its own isolated PocketBa
 
 PocketBase runs underneath each project; customers only ever see DATBase.
 
-**Built so far: Stages 1–5**
+**Built so far: Stages 1–7 + schema import** (Stage 6: email, monitoring, Raspberry Pi; Stage 7: operator/owner tools). New session? Read `CLAUDE.md`. How this compares to Supabase: `docs/SUPABASE-COMPARISON.md`.
 - Accounts: sign up, sign in, sign out
 - Projects: create, rename, pause, resume, retry failed setup, delete (typed confirmation)
 - Automatic provisioning: container + data volume + health check + admin account, per project
@@ -13,6 +13,12 @@ PocketBase runs underneath each project; customers only ever see DATBase.
 - Per-user project limit, per-project RAM/CPU caps
 - **Tables:** create, rename, delete; add/remove fields (text, number, yes/no, email, URL,
   date, choice, JSON, file, link to another table)
+- **Import schema:** paste one JSON (usually written by an AI from `DATBASE.md`) in *Tables → Import schema* and every
+  table, field, link, unique rule and access setting is created at once, like pasting SQL into Supabase. Understands
+  SQL/Supabase-style type names, adds to tables that already exist (never changes their access, never deletes), and is
+  all-or-nothing. Example: `docs/examples/ecommerce-store.schema.json`. Acceptance test: `TESTING-SCHEMA-IMPORT.md`
+- **Schema is dashboard-only:** a server key can read and write data but gets 403 on creating, changing, importing or
+  deleting tables and on minting tokens (enforced in the project hook; existing projects need *Update all projects*)
 - **Data browser:** add, edit, delete records; file uploads; filter, sort, pagination
 - **Users:** your app's users: create, edit, delete (they sign in through the API)
 - **Access:** per table, choose who can list/view/create/edit/delete: anyone, any signed-in
@@ -24,7 +30,7 @@ PocketBase runs underneath each project; customers only ever see DATBase.
 - **Build with AI:** each project's Overview has *Download DATBASE.md* + a copy-paste prompt. The
   guide is generated from the live schema (tables, fields, access in plain words, error meanings)
   and includes a dependency-free `datbase.ts` client. It never names the engine underneath.
-  Example: `docs/DATBASE.example.md`. Acceptance test for Codex: `TESTING-AI.md`
+  Example: `docs/DATBASE.example.md`. Acceptance test for Codex: `TESTING-AI.md`. When an app needs tables the guide tells the AI to write a schema import for the owner to paste.
 - **Connect:** API URL and copy-paste code examples on the project overview
 - PocketBase's own admin panel is blocked on project URLs
 - **Backups:** every project daily + DATBase's own database daily, encrypted, stored off-server in

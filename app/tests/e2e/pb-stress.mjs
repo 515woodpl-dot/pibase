@@ -4,20 +4,22 @@
 // Local (via harness):   tests/e2e/harness.sh pb-stress.mjs
 // Against a deployed project (e.g. to vet a new PocketBase version on your real server/arch).
 // Use a throwaway test project: these requests count toward its plan.
-//   PB_URL=https://<project>.<domain> DATBASE_SERVER_KEY=<key> STRESS_SECONDS=120 node tests/e2e/pb-stress.mjs
+//   PB_URL=https://<project>.<domain> DATBASE_SERVER_KEY=<key> STRESS_TABLE=<table> STRESS_SECONDS=120 node tests/e2e/pb-stress.mjs
+// A server key can't create tables (schema is dashboard-only), so create the table in the dashboard first:
+// fields `name` (text) and `photo` (file, single), list and view access "Anyone". Pass its name as STRESS_TABLE.
 import { existsSync, readFileSync } from "node:fs";
-import { must, ok, PB, pbAdminToken, WORK_DIR } from "./lib.mjs";
+import { controlHeaders, must, ok, PB, pbAdminToken, WORK_DIR } from "./lib.mjs";
 
 const SECS = Number(process.env.STRESS_SECONDS ?? 45);
 const WORKERS = Number(process.env.STRESS_WORKERS ?? 60);
 const J = { "content-type": "application/json" };
 const T = process.env.DATBASE_SERVER_KEY ?? (await pbAdminToken(PB));
 const H = { Authorization: T };
-const table = `stress_${Date.now().toString(36)}`;
+const table = process.env.STRESS_TABLE ?? `stress_${Date.now().toString(36)}`;
 
-await fetch(PB + "/api/collections", {
+if (!process.env.STRESS_TABLE) await fetch(PB + "/api/collections", {
   method: "POST",
-  headers: { ...J, ...H },
+  headers: { ...J, ...H, ...controlHeaders(new URL(PB).port) },
   body: JSON.stringify({ name: table, type: "base", listRule: "", viewRule: "", fields: [{ name: "name", type: "text" }, { name: "photo", type: "file", maxSelect: 1 }] }),
 });
 const recs = [];

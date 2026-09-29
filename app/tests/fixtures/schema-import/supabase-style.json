@@ -1,0 +1,30 @@
+{
+  "collections": {
+    "blog_posts": {
+      "columns": [
+        { "name": "id", "type": "uuid", "primary": true },
+        { "name": "created_at", "type": "timestamptz", "default": "now()" },
+        { "name": "title", "type": "varchar(255)", "nullable": false },
+        { "name": "body", "type": "text" },
+        { "name": "views", "type": "integer", "default": 0 },
+        { "name": "rating", "type": "numeric(3,1)" },
+        { "name": "tags", "type": "text[]" },
+        { "name": "meta", "type": "jsonb" },
+        { "name": "published", "type": "boolean" },
+        { "name": "status", "type": "enum", "options": ["draft", "live"] },
+        { "name": "author_id", "type": "uuid", "references": "auth.users(id)", "onDelete": "cascade" },
+        { "name": "cover", "type": "image" },
+        { "name": "published_at", "type": "timestamp" }
+      ],
+      "permissions": { "select": "anyone", "insert": "authenticated", "update": "owner", "delete": "owner" }
+    },
+    "comments": {
+      "columns": {
+        "post": { "type": "uuid", "references": "blog_posts(id)" },
+        "author_id": { "type": "uuid", "references": "users" },
+        "body": "text"
+      },
+      "permissions": { "read": "public", "write": "authenticated" }
+    }
+  }
+}

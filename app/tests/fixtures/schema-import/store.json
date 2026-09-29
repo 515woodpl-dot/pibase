@@ -1,0 +1,101 @@
+{
+  "tables": [
+    {
+      "name": "categories",
+      "fields": [
+        { "name": "name", "type": "text", "required": true },
+        { "name": "slug", "type": "text", "unique": true },
+        { "name": "sortOrder", "type": "number", "integer": true }
+      ],
+      "access": { "read": "public", "write": "admin" }
+    },
+    {
+      "name": "products",
+      "fields": [
+        { "name": "name", "type": "text", "required": true },
+        { "name": "slug", "type": "text", "unique": true },
+        { "name": "category", "type": "relation", "table": "categories", "required": true },
+        { "name": "description", "type": "text" },
+        { "name": "basePrice", "type": "number", "integer": true, "min": 0 },
+        { "name": "imageUrl", "type": "url" },
+        { "name": "images", "type": "file", "multiple": true, "maxSizeMb": 10 },
+        { "name": "featured", "type": "bool" },
+        { "name": "active", "type": "bool" }
+      ],
+      "access": { "read": "public", "write": "admin" }
+    },
+    {
+      "name": "product_variants",
+      "fields": [
+        { "name": "product", "type": "relation", "table": "products", "required": true },
+        { "name": "sku", "type": "text", "unique": true },
+        { "name": "size", "type": "text" },
+        { "name": "color", "type": "text" },
+        { "name": "priceOverride", "type": "number", "integer": true, "min": 0 },
+        { "name": "stock", "type": "number", "integer": true, "min": 0 }
+      ],
+      "access": { "read": "public", "write": "admin" }
+    },
+    {
+      "name": "carts",
+      "fields": [
+        { "name": "owner", "type": "relation", "table": "users", "required": true },
+        { "name": "status", "type": "select", "values": ["active", "converted", "abandoned"] }
+      ],
+      "access": "owner"
+    },
+    {
+      "name": "cart_items",
+      "fields": [
+        { "name": "owner", "type": "relation", "table": "users", "required": true },
+        { "name": "cart", "type": "relation", "table": "carts", "required": true },
+        { "name": "variant", "type": "relation", "table": "product_variants", "required": true },
+        { "name": "qty", "type": "number", "integer": true, "min": 1, "required": true }
+      ],
+      "access": "owner"
+    },
+    {
+      "name": "addresses",
+      "fields": [
+        { "name": "owner", "type": "relation", "table": "users", "required": true },
+        { "name": "fullName", "type": "text" },
+        { "name": "line1", "type": "text", "required": true },
+        { "name": "line2", "type": "text" },
+        { "name": "city", "type": "text", "required": true },
+        { "name": "state", "type": "text" },
+        { "name": "zip", "type": "text" },
+        { "name": "country", "type": "text" },
+        { "name": "phone", "type": "text" },
+        { "name": "isDefault", "type": "bool" }
+      ],
+      "access": "owner"
+    },
+    {
+      "name": "orders",
+      "fields": [
+        { "name": "orderNumber", "type": "text", "unique": true },
+        { "name": "owner", "type": "relation", "table": "users", "required": true },
+        { "name": "status", "type": "select", "values": ["pending", "paid", "shipped", "completed", "cancelled"] },
+        { "name": "shippingAddress", "type": "relation", "table": "addresses" },
+        { "name": "subtotal", "type": "number", "integer": true, "min": 0 },
+        { "name": "tax", "type": "number", "integer": true, "min": 0 },
+        { "name": "shipping", "type": "number", "integer": true, "min": 0 },
+        { "name": "total", "type": "number", "integer": true, "min": 0 },
+        { "name": "notes", "type": "text" }
+      ],
+      "access": { "list": "owner", "view": "owner", "create": "admin", "update": "admin", "delete": "admin" }
+    },
+    {
+      "name": "order_items",
+      "fields": [
+        { "name": "order", "type": "relation", "table": "orders", "required": true },
+        { "name": "owner", "type": "relation", "table": "users", "required": true },
+        { "name": "variant", "type": "relation", "table": "product_variants" },
+        { "name": "name", "type": "text", "required": true },
+        { "name": "unitPrice", "type": "number", "integer": true, "min": 0 },
+        { "name": "qty", "type": "number", "integer": true, "min": 1 }
+      ],
+      "access": { "list": "owner", "view": "owner", "create": "admin", "update": "admin", "delete": "admin" }
+    }
+  ]
+}

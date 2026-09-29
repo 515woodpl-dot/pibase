@@ -21,7 +21,7 @@ const J = { "content-type": "application/json" };
 
 async function seedNotes(base, texts) {
   const T = await pbAdminToken(base);
-  await fetch(base + "/api/collections", { method: "POST", headers: { ...J, Authorization: T }, body: JSON.stringify({ name: "notes", type: "base", fields: [{ name: "t", type: "text" }] }) });
+  await fetch(base + "/api/collections", { method: "POST", headers: { ...J, ...controlHeaders(new URL(base).port), Authorization: T }, body: JSON.stringify({ name: "notes", type: "base", fields: [{ name: "t", type: "text" }] }) });
   for (const t of texts) await fetch(base + "/api/collections/notes/records", { method: "POST", headers: { ...J, Authorization: T }, body: JSON.stringify({ t }) });
 }
 async function notes(base) {

@@ -1,0 +1,24 @@
+{
+  "tables": [
+    {
+      "name": "products",
+      "fields": [
+        { "name": "name", "type": "text" },
+        { "name": "brand", "type": "text" },
+        { "name": "weightGrams", "type": "number", "integer": true, "min": 0 },
+        { "name": "tags", "type": "text[]" }
+      ]
+    },
+    {
+      "name": "reviews",
+      "fields": [
+        { "name": "product", "type": "relation", "table": "products", "required": true },
+        { "name": "owner", "type": "relation", "table": "users", "required": true },
+        { "name": "stars", "type": "int", "min": 1, "max": 5 },
+        { "name": "body", "type": "text" }
+      ],
+      "access": { "read": "public", "create": "owner", "update": "owner", "delete": "owner" }
+    },
+    { "name": "users", "fields": [{ "name": "phone", "type": "text" }] }
+  ]
+}

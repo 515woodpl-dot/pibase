@@ -1,4 +1,4 @@
-import { APP as B, PB, psql, enc, ok, must, sleep, browser, requireApp, fixture, WORK_DIR } from "./lib.mjs";
+import { APP as B, PB, psql, enc, ok, must, sleep, browser, requireApp, fixture, WORK_DIR, controlHeaders } from "./lib.mjs";
 import { execSync } from "node:child_process";
 const req = requireApp;
 const { S3Client, ListObjectsV2Command, GetObjectCommand, PutObjectCommand } = req("@aws-sdk/client-s3");
@@ -13,7 +13,7 @@ const notes = async () => { const T = await su(); const r = await (await fetch(P
 
 // Seed: table + 2 records (one with a file)
 let T = await su();
-await fetch(PB + "/api/collections", { method: "POST", headers: { ...J, Authorization: T }, body: JSON.stringify({ name: "notes", type: "base", fields: [{ name: "t", type: "text" }, { name: "f", type: "file", maxSelect: 1 }] }) });
+await fetch(PB + "/api/collections", { method: "POST", headers: { ...J, ...controlHeaders(), Authorization: T }, body: JSON.stringify({ name: "notes", type: "base", fields: [{ name: "t", type: "text" }, { name: "f", type: "file", maxSelect: 1 }] }) });
 const fd = new FormData(); fd.set("t", "v1-a"); fd.set("f", new Blob(["original file"]), "orig.txt");
 const recA = await (await fetch(PB + "/api/collections/notes/records", { method: "POST", headers: { Authorization: T }, body: fd })).json();
 await fetch(PB + "/api/collections/notes/records", { method: "POST", headers: { ...J, Authorization: T }, body: JSON.stringify({ t: "v1-b" }) });

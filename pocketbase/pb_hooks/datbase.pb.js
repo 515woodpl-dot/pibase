@@ -15,6 +15,9 @@
 //   blockAll     → every request except DATBase's own returns 429 (monthly requests used up)
 //   blockWrites  → creating/editing records returns 403; reading and deleting still work (storage full)
 //   blockSignups → creating app users returns 403 (user limit reached)
+// Schema is dashboard-only: POST/PATCH/PUT/DELETE on /api/collections (create, edit, delete, import, truncate)
+// and impersonation return 403 unless the request carries the control header, so a leaked server key can
+// read and write data but never open up a table or change access.
 // Fail closed: a request that sends a token which is invalid, expired or revoked gets 401 instead of
 // silently running as "signed out" (which would turn a revoked server key into empty results).
 // GET /api/session reports who a token belongs to ({type:"user"|"server"}), or 401.
@@ -79,6 +82,20 @@ routerUse((e) => {
   const sent = (e.request.header.get("Authorization") || "").replace(/^Bearer\s+/i, "").trim();
   if (sent !== "" && !e.auth && !signInPath) {
     throw new UnauthorizedError("The token is invalid, expired or revoked. Sign in again (or use a valid server key).");
+  }
+
+  // Tables, access rules and schema imports are changed only from the DATBase dashboard (which sends the
+  // control header). A server key or any other token can't create, alter or delete tables, import a
+  // schema, or mint new tokens by impersonation, even though the engine would allow a superuser to.
+  const method = e.request.method;
+  if (method !== "GET" && method !== "HEAD" && method !== "OPTIONS") {
+    const schemaWrite =
+      path === "/api/collections" ||
+      path === "/api/collections/import" ||
+      /^\/api\/collections\/[^/]+$/.test(path) ||
+      /^\/api\/collections\/[^/]+\/truncate$/.test(path) ||
+      /^\/api\/collections\/[^/]+\/impersonate\/[^/]+$/.test(path);
+    if (schemaWrite) throw new ForbiddenError("Tables and access rules can only be changed in the DATBase dashboard.");
   }
   return e.next();
 });

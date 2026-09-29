@@ -19,7 +19,7 @@ const err = (doc, re, existing) => {
   assert.match(r.error, re);
 };
 
-// The Panda store: 8 tables, forward links, owner access, in the documented format.
+// A typical store: 8 tables, forward links, owner access, in the documented format.
 const PANDA = { tables: [
   { name: "categories", fields: [{ name: "name", type: "text", required: true }, { name: "slug", type: "text", unique: true }, { name: "sortOrder", type: "number", integer: true }], access: { read: "public", write: "admin" } },
   { name: "products", fields: [
@@ -38,7 +38,7 @@ const PANDA = { tables: [
   { name: "order_items", fields: [{ name: "order", type: "relation", table: "orders", required: true }, { name: "variant", type: "relation", table: "product_variants" }, { name: "unitPrice", type: "number" }, { name: "qty", type: "number" }] },
 ] };
 
-test("Panda store schema plans all 8 tables", () => {
+test("store schema plans all 8 tables", () => {
   const { plan: p } = ok(PANDA);
   assert.deepEqual(p.tables.map((t) => t.name), ["categories", "products", "product_variants", "carts", "cart_items", "addresses", "orders", "order_items"]);
   const products = p.tables[1];
@@ -106,7 +106,7 @@ test("existing tables are extended, not recreated", () => {
   assert.deepEqual(p.tables[1].fields.map((f) => f.name), ["phone"]);
   assert.deepEqual(p.tables[1].access, {});
   assert.ok(notes.some((n) => n.includes("products.title") && n.includes("already exists")));
-  assert.ok(notes.some((n) => n.includes("users table is managed")));
+  assert.ok(notes.some((n) => n.includes("users: already exists, so its access was left as it is")));
   assert.equal(describePlan(p)[0], "products: added 1 field");
 });
 

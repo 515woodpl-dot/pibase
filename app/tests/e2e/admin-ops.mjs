@@ -136,7 +136,7 @@ ok("lifting the account suspension: sign-in works again; the active project is b
 // ---------------------------------------------------------------- export
 step("export");
 const T = await pbAdminToken(PBA);
-await fetch(PBA + "/api/collections", { method: "POST", headers: { ...J, Authorization: T }, body: JSON.stringify({ name: "notes", type: "base", fields: [{ name: "text", type: "text" }, { name: "photo", type: "file", maxSelect: 1 }] }) });
+await fetch(PBA + "/api/collections", { method: "POST", headers: { ...J, ...controlHeaders("8090"), Authorization: T }, body: JSON.stringify({ name: "notes", type: "base", fields: [{ name: "text", type: "text" }, { name: "photo", type: "file", maxSelect: 1 }] }) });
 for (let i = 0; i < 3; i++) {
   const fd = new FormData();
   fd.append("text", `note ${i} "quoted"`);

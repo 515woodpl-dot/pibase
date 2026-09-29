@@ -207,7 +207,7 @@ must(appMails === 8, `app emails this hour: ${appMails}`);
 ok("per-project cap: 12 more sign-up confirmations → exactly 8 emails this hour in total, the API still answers 204");
 
 // "Signed-in users with a confirmed email" access option
-await fetch(PB + "/api/collections", { method: "POST", headers: { ...J, Authorization: T }, body: JSON.stringify({ name: "notes", type: "base", fields: [{ name: "text", type: "text" }] }) });
+await fetch(PB + "/api/collections", { method: "POST", headers: { ...J, ...controlHeaders(), Authorization: T }, body: JSON.stringify({ name: "notes", type: "base", fields: [{ name: "text", type: "text" }] }) });
 await fetch(PB + "/api/collections/notes/records", { method: "POST", headers: { ...J, Authorization: T }, body: JSON.stringify({ text: "hello" }) });
 await a.goto(P1 + "/tables/notes/settings");
 await a.selectOption("select[name=list]", "verified");

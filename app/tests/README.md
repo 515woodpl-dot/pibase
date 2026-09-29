@@ -2,7 +2,7 @@
 
 ## Unit tests (no services needed)
 ```bash
-npm run test:unit        # retention rules (tests/unit)
+npm run test:unit        # retention rules + schema-import planner (tests/unit)
 ```
 
 ## End-to-end suites
@@ -20,6 +20,7 @@ Real PostgreSQL, real PocketBase and a production build, driven by a headless br
 | `ai-fixes.mjs` | "Build with AI" review AI-02…05 + gap 7 + AI-V4-01: number limits, unique rules (incl. a 10-request race), server keys (create, `checkServerKey()`, use, revoke → `401` everywhere incl. owner-filtered lists, can't be revived by a restore), limit enforcement that admins can't bypass, strict type-check of the generated client, plain JS client |
 | `email-monitor.mjs` | Dashboard email confirmation + password reset (no account enumeration), app-user email via hosted pages, phishing-proof project emails, per-project email cap, "confirmed email" access option, monitoring alerts (project down → email + webhook → all clear), `/api/monitor` token, admin-only status page, Home Assistant field check. Run with `run-email.sh` (needs `pip install aiosmtpd`) |
 | `admin-ops.mjs` | 80%/100% plan-limit emails (once each), "Update all projects" (outdated detection, paused stays stopped, limits re-applied), suspend project/account (sign-in blocked, reasons shown, lifting restores paused/active correctly), data export zip (records, files byte-exact, no internals), account deletion (projects, containers, volumes, backups gone). Run with `WITH_MAIL=1 PLAN_LIMITS_OVERRIDE='{"requestsPerMonth":20}' run-backups.sh admin-ops.mjs` |
+| `schema-import.mjs` | Tables → Import schema through the real UI: bad input rejected with nothing created, 8-table store in one paste, fields/links/rules verified in the database, rules exercised over the API (public read, server-only write, owner-only), DATBASE.md lists the new tables, re-paste is harmless, extending tables keeps data and access, Supabase-style JSON, a mid-way failure is fully undone, other accounts get 404 (11) |
 | `pb-stress.mjs` | AI-01: 60 concurrent clients for 45 s (lists, images, token refresh, admin calls) → backend must stay up with 0 errors. Also runs against a deployed project: see the file header (1) |
 
 ### Requirements
