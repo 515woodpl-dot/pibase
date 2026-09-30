@@ -128,6 +128,10 @@ password automatically.
   and committed M0 raw measurement evidence with a PSS-capable harness.
 - Re-ran static/unit/real-Postgres/image/ARM64 gates and Supabase JS acceptance;
   the updated ARM64 artifact checksum is recorded in the milestone reports.
+- Follow-up hardening caps project pools at one connection with one-second idle
+  eviction, accounts auth requests, binds owner SQL to authenticator session
+  authorization, normalizes admin emails, guards token exposure to test mode,
+  and restricts private bucket metadata under RLS.
 
 ## Repository state
 

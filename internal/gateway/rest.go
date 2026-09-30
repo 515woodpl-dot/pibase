@@ -647,7 +647,15 @@ func writeAPIError(w http.ResponseWriter, err error) {
 			default:
 				status = http.StatusBadRequest
 			}
-			message = pgErr.Message
+			message = "database request failed"
+			switch pgErr.Code {
+			case "23505":
+				message = "duplicate key value violates a unique constraint"
+			case "23503":
+				message = "related record does not exist"
+			case "23514":
+				message = "record violates a data constraint"
+			}
 			if pgErr.Detail != "" {
 				details = pgErr.Detail
 			}

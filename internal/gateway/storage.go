@@ -288,7 +288,10 @@ func (s *Server) storageDeleteBucket(w http.ResponseWriter, r *http.Request) {
 		writeAPIError(w, err)
 		return
 	}
-	_ = os.RemoveAll(filepath.Join(s.storageRoot, p.id, name))
+	if removeErr := os.RemoveAll(filepath.Join(s.storageRoot, p.id, name)); removeErr != nil {
+		writeAPIError(w, removeErr)
+		return
+	}
 	writeJSON(w, http.StatusOK, map[string]any{"message": "Successfully deleted"})
 }
 
@@ -329,6 +332,14 @@ func (s *Server) storageUploadObject(w http.ResponseWriter, r *http.Request) {
 	}()
 	if err = os.MkdirAll(filepath.Dir(finalPath), 0o750); err != nil {
 		writeAPIError(w, err)
+		return
+	}
+	var bucketLimit *int64
+	var allowedMimes []string
+	if err = s.storageTransaction(r.Context(), storageServicePrincipal(*who.project), func(tx pgx.Tx) error {
+		return tx.QueryRow(r.Context(), `SELECT file_size_limit,allowed_mime_types FROM storage.buckets WHERE id=$1`, bucket).Scan(&bucketLimit, &allowedMimes)
+	}); err != nil {
+		writeAPIError(w, httpError(http.StatusNotFound, "bucket not found"))
 		return
 	}
 	tmp, openErr := os.OpenFile(tmpPath, os.O_WRONLY|os.O_CREATE|os.O_EXCL, 0o640)
@@ -407,17 +418,12 @@ func (s *Server) storageUploadObject(w http.ResponseWriter, r *http.Request) {
 	}
 	var objectID string
 	err = s.storageTransaction(r.Context(), who, func(tx pgx.Tx) error {
-		var limit *int64
-		var allowed []string
-		if e := tx.QueryRow(r.Context(), `SELECT public,file_size_limit,allowed_mime_types FROM storage.buckets WHERE id=$1`, bucket).Scan(new(bool), &limit, &allowed); e != nil {
-			return httpError(http.StatusNotFound, "bucket not found or inaccessible")
-		}
-		if limit != nil && size > *limit {
+		if bucketLimit != nil && size > *bucketLimit {
 			return httpError(http.StatusRequestEntityTooLarge, "object exceeds bucket file size limit")
 		}
-		if len(allowed) > 0 {
+		if len(allowedMimes) > 0 {
 			matched := false
-			for _, pattern := range allowed {
+			for _, pattern := range allowedMimes {
 				if pattern == mimeType || (strings.HasSuffix(pattern, "/*") && strings.HasPrefix(mimeType, strings.TrimSuffix(pattern, "*"))) {
 					matched = true
 				}
@@ -719,7 +725,10 @@ func (s *Server) storageDeleteObjects(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	for _, name := range names {
-		_ = os.Remove(s.storageFile(who.project, bucket, name))
+		if removeErr := os.Remove(s.storageFile(who.project, bucket, name)); removeErr != nil && !os.IsNotExist(removeErr) {
+			writeAPIError(w, removeErr)
+			return
+		}
 	}
 	writeJSON(w, http.StatusOK, names)
 }

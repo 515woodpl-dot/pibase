@@ -21,9 +21,9 @@ func (s *Server) projectPool(ctx context.Context, p *project) (*pgxpool.Pool, er
 		return nil, err
 	}
 	config.ConnConfig.Database = p.database
-	config.MaxConns = 2
+	config.MaxConns = 1
 	config.MinConns = 0
-	config.MaxConnIdleTime = 30 * time.Second
+	config.MaxConnIdleTime = 1 * time.Second
 	config.MaxConnLifetime = 10 * time.Minute
 	pool, err := pgxpool.NewWithConfig(ctx, config)
 	if err != nil {

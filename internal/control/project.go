@@ -155,7 +155,7 @@ CREATE OR REPLACE FUNCTION auth.uid() RETURNS uuid
 LANGUAGE sql STABLE SECURITY DEFINER SET search_path = pg_catalog, auth
 AS $$ SELECT CASE WHEN current_setting('request.jwt.claims', true) ~ '"sub"\s*:\s*"[0-9a-fA-F-]{36}"' THEN
   (current_setting('request.jwt.claims', true)::jsonb ->> 'sub')::uuid ELSE NULL END $$;
-CREATE POLICY storage_bucket_read ON storage.buckets FOR SELECT TO ` + pgx.Identifier{anon}.Sanitize() + `, ` + pgx.Identifier{authenticated}.Sanitize() + ` USING (public OR owner_id = auth.uid() OR auth.uid() IS NOT NULL);
+CREATE POLICY storage_bucket_read ON storage.buckets FOR SELECT TO ` + pgx.Identifier{anon}.Sanitize() + `, ` + pgx.Identifier{authenticated}.Sanitize() + ` USING (public OR owner_id = auth.uid());
 CREATE POLICY storage_bucket_service ON storage.buckets FOR ALL TO ` + pgx.Identifier{service}.Sanitize() + ` USING (true) WITH CHECK (true);
 CREATE POLICY storage_object_read ON storage.objects FOR SELECT TO ` + pgx.Identifier{anon}.Sanitize() + `, ` + pgx.Identifier{authenticated}.Sanitize() + ` USING (EXISTS (SELECT 1 FROM storage.buckets b WHERE b.id = bucket_id AND (b.public OR b.owner_id = auth.uid())) OR owner_id = auth.uid());
 CREATE POLICY storage_object_owner ON storage.objects FOR ALL TO ` + pgx.Identifier{authenticated}.Sanitize() + ` USING (owner_id = auth.uid()) WITH CHECK (owner_id = auth.uid());

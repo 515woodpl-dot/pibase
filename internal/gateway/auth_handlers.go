@@ -138,6 +138,7 @@ func (s *Server) authSignup(w http.ResponseWriter, r *http.Request) {
 		writeAPIError(w, err)
 		return
 	}
+	s.recordRequest(r.Context(), p.id)
 	password, err := auth.HashPassword(req.Password)
 	if err != nil {
 		writeAPIError(w, httpError(400, err.Error()))
@@ -209,6 +210,7 @@ func (s *Server) authToken(w http.ResponseWriter, r *http.Request) {
 		writeAPIError(w, err)
 		return
 	}
+	s.recordRequest(r.Context(), p.id)
 	grant := r.URL.Query().Get("grant_type")
 	var out map[string]any
 	err = s.adminTx(r.Context(), p, func(tx pgx.Tx) error {
@@ -333,6 +335,7 @@ func (s *Server) authRecover(w http.ResponseWriter, r *http.Request) {
 		writeAPIError(w, err)
 		return
 	}
+	s.recordRequest(r.Context(), p.id)
 	raw, digest, err := auth.RandomToken(32)
 	if err != nil {
 		writeAPIError(w, err)
@@ -510,7 +513,8 @@ func (s *Server) authAdminCreate(w http.ResponseWriter, r *http.Request) {
 		if req.EmailConfirm {
 			c = time.Now()
 		}
-		e := tx.QueryRow(r.Context(), `INSERT INTO auth.users(id,email,password_hash,email_confirmed_at,raw_user_meta_data) VALUES($1,$2,$3,$4,$5) RETURNING created_at,updated_at`, id, strings.ToLower(req.Email), h, func() any {
+		email := strings.ToLower(strings.TrimSpace(req.Email))
+		e := tx.QueryRow(r.Context(), `INSERT INTO auth.users(id,email,password_hash,email_confirmed_at,raw_user_meta_data) VALUES($1,$2,$3,$4,$5) RETURNING created_at,updated_at`, id, email, h, func() any {
 			if req.EmailConfirm {
 				return c
 			}
@@ -531,7 +535,7 @@ func (s *Server) authAdminCreate(w http.ResponseWriter, r *http.Request) {
 					return banErr
 				}
 			}
-			u = userJSON(id, strings.ToLower(req.Email), req.EmailConfirm, m, a, b)
+			u = userJSON(id, email, req.EmailConfirm, m, a, b)
 		}
 		return e
 	})

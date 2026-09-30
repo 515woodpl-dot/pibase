@@ -181,6 +181,7 @@ CREATE POLICY owner_only ON public.private_rows FOR SELECT TO ` + pgx.Identifier
 	}
 	authURL := databaseURL(t, adminURL, "_control", "authenticator", password)
 	t.Setenv("PIBASE_AUTH_EXPOSE_TOKENS", "true")
+	t.Setenv("PIBASE_ENV", "test")
 	server, err := New(ctx, authURL, masterKey, 0, false)
 	if err != nil {
 		t.Fatal(err)

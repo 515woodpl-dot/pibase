@@ -45,7 +45,7 @@ func Run(ctx context.Context, adminURL, projectID, statement string) (Result, er
 		return Result{}, err
 	}
 	defer func() { _ = tx.Rollback(context.Background()) }()
-	if _, err := tx.Exec(ctx, `SET LOCAL ROLE `+pgx.Identifier{p.role}.Sanitize()+`; SET LOCAL statement_timeout='30s'`); err != nil {
+	if _, err := tx.Exec(ctx, `SET SESSION AUTHORIZATION authenticator; SET LOCAL ROLE `+pgx.Identifier{p.role}.Sanitize()+`; SET LOCAL statement_timeout='30s'`); err != nil {
 		return Result{}, err
 	}
 	rows, err := tx.Query(ctx, statement)
@@ -101,7 +101,7 @@ func ApplyMigration(ctx context.Context, adminURL, projectID, name, sql string) 
 		return err
 	}
 	defer func() { _ = tx.Rollback(context.Background()) }()
-	if _, err := tx.Exec(ctx, `SET LOCAL ROLE `+pgx.Identifier{p.role}.Sanitize()+`; SET LOCAL statement_timeout='30s'; SELECT pg_advisory_xact_lock(1885957734)`); err != nil {
+	if _, err := tx.Exec(ctx, `SET SESSION AUTHORIZATION authenticator; SET LOCAL ROLE `+pgx.Identifier{p.role}.Sanitize()+`; SET LOCAL statement_timeout='30s'; SELECT pg_advisory_xact_lock(1885957734)`); err != nil {
 		return err
 	}
 	if _, err := tx.Exec(ctx, `CREATE TABLE IF NOT EXISTS public.pibase_migrations (

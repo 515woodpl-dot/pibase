@@ -71,6 +71,11 @@ func New(ctx context.Context, databaseURL string, masterKey []byte, activeProjec
 		}
 		storageQuotaBytes = parsed
 	}
+	exposeAuthTokens := os.Getenv("PIBASE_AUTH_EXPOSE_TOKENS") == "true"
+	if exposeAuthTokens && os.Getenv("PIBASE_ENV") != "test" {
+		controlPool.Close()
+		return nil, fmt.Errorf("PIBASE_AUTH_EXPOSE_TOKENS requires PIBASE_ENV=test")
+	}
 	s := &Server{
 		control:           controlPool,
 		databaseURL:       databaseURL,
@@ -79,7 +84,7 @@ func New(ctx context.Context, databaseURL string, masterKey []byte, activeProjec
 		databaseSlots:     make(chan struct{}, 32),
 		rates:             make(map[string]rateWindow),
 		authRates:         make(map[string]rateWindow),
-		exposeAuthTokens:  os.Getenv("PIBASE_AUTH_EXPOSE_TOKENS") == "true",
+		exposeAuthTokens:  exposeAuthTokens,
 		storageRoot:       storageRoot,
 		storageQuotaBytes: storageQuotaBytes,
 	}
@@ -111,8 +116,8 @@ func New(ctx context.Context, databaseURL string, masterKey []byte, activeProjec
 				return nil, err
 			}
 			cfg.ConnConfig.Database = database
-			cfg.MaxConns, cfg.MinConns = 2, 0
-			cfg.MaxConnIdleTime = 30 * time.Second
+			cfg.MaxConns, cfg.MinConns = 1, 0
+			cfg.MaxConnIdleTime = 1 * time.Second
 			cfg.AfterConnect = config.AfterConnect
 			pool, err := pgxpool.NewWithConfig(ctx, cfg)
 			if err != nil {
