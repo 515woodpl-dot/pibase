@@ -6,6 +6,7 @@ import (
 	"log/slog"
 	"net/http"
 	"os"
+	"strconv"
 	"sync"
 	"time"
 
@@ -14,16 +15,18 @@ import (
 )
 
 type Server struct {
-	control          *pgxpool.Pool
-	projects         []*pgxpool.Pool
-	databaseURL      string
-	masterKey        []byte
-	poolMu           sync.Mutex
-	pools            map[string]*pgxpool.Pool
-	databaseSlots    chan struct{}
-	rateMu           sync.Mutex
-	rates            map[string]rateWindow
-	exposeAuthTokens bool
+	control           *pgxpool.Pool
+	projects          []*pgxpool.Pool
+	databaseURL       string
+	masterKey         []byte
+	poolMu            sync.Mutex
+	pools             map[string]*pgxpool.Pool
+	databaseSlots     chan struct{}
+	rateMu            sync.Mutex
+	rates             map[string]rateWindow
+	exposeAuthTokens  bool
+	storageRoot       string
+	storageQuotaBytes int64
 }
 
 func New(ctx context.Context, databaseURL string, masterKey []byte, activeProjects int, lightLoad bool) (*Server, error) {
@@ -49,14 +52,33 @@ func New(ctx context.Context, databaseURL string, masterKey []byte, activeProjec
 		controlPool.Close()
 		return nil, err
 	}
+	storageRoot := os.Getenv("PIBASE_STORAGE_ROOT")
+	if storageRoot == "" {
+		storageRoot = "/data/files"
+	}
+	if err := os.MkdirAll(storageRoot, 0o750); err != nil {
+		controlPool.Close()
+		return nil, fmt.Errorf("create storage root: %w", err)
+	}
+	storageQuotaBytes := int64(1 << 30)
+	if raw := os.Getenv("PIBASE_STORAGE_MAX_BYTES"); raw != "" {
+		parsed, parseErr := strconv.ParseInt(raw, 10, 64)
+		if parseErr != nil || parsed <= 0 {
+			controlPool.Close()
+			return nil, fmt.Errorf("PIBASE_STORAGE_MAX_BYTES must be a positive integer")
+		}
+		storageQuotaBytes = parsed
+	}
 	s := &Server{
-		control:          controlPool,
-		databaseURL:      databaseURL,
-		masterKey:        append([]byte(nil), masterKey...),
-		pools:            make(map[string]*pgxpool.Pool),
-		databaseSlots:    make(chan struct{}, 32),
-		rates:            make(map[string]rateWindow),
-		exposeAuthTokens: os.Getenv("PIBASE_AUTH_EXPOSE_TOKENS") == "true",
+		control:           controlPool,
+		databaseURL:       databaseURL,
+		masterKey:         append([]byte(nil), masterKey...),
+		pools:             make(map[string]*pgxpool.Pool),
+		databaseSlots:     make(chan struct{}, 32),
+		rates:             make(map[string]rateWindow),
+		exposeAuthTokens:  os.Getenv("PIBASE_AUTH_EXPOSE_TOKENS") == "true",
+		storageRoot:       storageRoot,
+		storageQuotaBytes: storageQuotaBytes,
 	}
 	if activeProjects > 0 {
 		rows, err := controlPool.Query(ctx, `SELECT database_name FROM control.project_catalog ORDER BY id LIMIT $1`, activeProjects)
@@ -145,6 +167,20 @@ func (s *Server) Handler() http.Handler {
 	mux.HandleFunc("POST /auth/v1/admin/users", s.authAdminCreate)
 	mux.HandleFunc("PUT /auth/v1/admin/users/{id}", s.authAdminUpdate)
 	mux.HandleFunc("DELETE /auth/v1/admin/users/{id}", s.authAdminDelete)
+	mux.HandleFunc("GET /storage/v1/bucket", s.storageListBuckets)
+	mux.HandleFunc("POST /storage/v1/bucket", s.storageCreateBucket)
+	mux.HandleFunc("GET /storage/v1/bucket/{bucket}", s.storageGetBucket)
+	mux.HandleFunc("PUT /storage/v1/bucket/{bucket}", s.storageUpdateBucket)
+	mux.HandleFunc("DELETE /storage/v1/bucket/{bucket}", s.storageDeleteBucket)
+	mux.HandleFunc("POST /storage/v1/object/list/{bucket}", s.storageListObjects)
+	mux.HandleFunc("GET /storage/v1/object/sign/{bucket}/{path}", s.storageSignObject)
+	mux.HandleFunc("GET /storage/v1/object/sign/{bucket}/{path...}", s.storageSignObject)
+	mux.HandleFunc("POST /storage/v1/object/sign/{bucket}/{path...}", s.storageSignObject)
+	mux.HandleFunc("GET /storage/v1/object/public/{bucket}/{path...}", s.storagePublicObject)
+	mux.HandleFunc("GET /storage/v1/object/{bucket}/{path...}", s.storageDownloadObject)
+	mux.HandleFunc("POST /storage/v1/object/{bucket}/{path...}", s.storageUploadObject)
+	mux.HandleFunc("PUT /storage/v1/object/{bucket}/{path...}", s.storageUploadObject)
+	mux.HandleFunc("DELETE /storage/v1/object/{bucket}", s.storageDeleteObjects)
 	mux.HandleFunc("GET /rest/v1/{relation}", s.restHandler)
 	mux.HandleFunc("HEAD /rest/v1/{relation}", s.restHandler)
 	mux.HandleFunc("POST /rest/v1/{relation}", s.restHandler)

@@ -113,10 +113,51 @@ CREATE TABLE auth.refresh_tokens (
   created_at timestamptz NOT NULL DEFAULT now()
 );
 CREATE INDEX refresh_tokens_user_idx ON auth.refresh_tokens(user_id);
+CREATE TABLE storage.buckets (
+  id text PRIMARY KEY,
+  name text NOT NULL UNIQUE,
+  owner_id uuid,
+  public boolean NOT NULL DEFAULT false,
+  file_size_limit bigint,
+  allowed_mime_types text[],
+  created_at timestamptz NOT NULL DEFAULT now(),
+  updated_at timestamptz NOT NULL DEFAULT now()
+);
+CREATE TABLE storage.objects (
+  id uuid PRIMARY KEY,
+  bucket_id text NOT NULL REFERENCES storage.buckets(id) ON DELETE CASCADE,
+  name text NOT NULL,
+  owner_id uuid,
+  metadata jsonb NOT NULL DEFAULT '{}'::jsonb,
+  size bigint NOT NULL CHECK (size >= 0),
+  mime_type text,
+  created_at timestamptz NOT NULL DEFAULT now(),
+  updated_at timestamptz NOT NULL DEFAULT now(),
+  UNIQUE(bucket_id,name)
+);
+CREATE INDEX storage_objects_bucket_idx ON storage.objects(bucket_id,name);
 REVOKE ALL ON SCHEMA auth FROM PUBLIC;
 REVOKE ALL ON ALL TABLES IN SCHEMA auth FROM PUBLIC;
 GRANT USAGE ON SCHEMA auth TO ` + pgx.Identifier{anon}.Sanitize() + `, ` + pgx.Identifier{authenticated}.Sanitize() + `, ` + pgx.Identifier{service}.Sanitize() + `, ` + pgx.Identifier{admin}.Sanitize() + `;
 GRANT ALL PRIVILEGES ON ALL TABLES IN SCHEMA auth TO ` + pgx.Identifier{admin}.Sanitize() + `;
+REVOKE ALL ON SCHEMA storage FROM PUBLIC;
+REVOKE ALL ON ALL TABLES IN SCHEMA storage FROM PUBLIC;
+GRANT USAGE ON SCHEMA storage TO ` + pgx.Identifier{anon}.Sanitize() + `, ` + pgx.Identifier{authenticated}.Sanitize() + `, ` + pgx.Identifier{service}.Sanitize() + `, ` + pgx.Identifier{admin}.Sanitize() + `;
+GRANT SELECT ON storage.buckets,storage.objects TO ` + pgx.Identifier{anon}.Sanitize() + `, ` + pgx.Identifier{authenticated}.Sanitize() + `;
+GRANT INSERT,UPDATE,DELETE ON storage.objects TO ` + pgx.Identifier{authenticated}.Sanitize() + `;
+GRANT SELECT,INSERT,UPDATE,DELETE ON storage.buckets,storage.objects TO ` + pgx.Identifier{service}.Sanitize() + `;
+GRANT ALL PRIVILEGES ON ALL TABLES IN SCHEMA storage TO ` + pgx.Identifier{admin}.Sanitize() + `;
+ALTER TABLE storage.buckets ENABLE ROW LEVEL SECURITY;
+ALTER TABLE storage.objects ENABLE ROW LEVEL SECURITY;
+CREATE OR REPLACE FUNCTION auth.uid() RETURNS uuid
+LANGUAGE sql STABLE SECURITY DEFINER SET search_path = pg_catalog, auth
+AS $$ SELECT CASE WHEN current_setting('request.jwt.claims', true) ~ '"sub"\s*:\s*"[0-9a-fA-F-]{36}"' THEN
+  (current_setting('request.jwt.claims', true)::jsonb ->> 'sub')::uuid ELSE NULL END $$;
+CREATE POLICY storage_bucket_read ON storage.buckets FOR SELECT TO ` + pgx.Identifier{anon}.Sanitize() + `, ` + pgx.Identifier{authenticated}.Sanitize() + ` USING (public OR owner_id = auth.uid() OR auth.uid() IS NOT NULL);
+CREATE POLICY storage_bucket_service ON storage.buckets FOR ALL TO ` + pgx.Identifier{service}.Sanitize() + ` USING (true) WITH CHECK (true);
+CREATE POLICY storage_object_read ON storage.objects FOR SELECT TO ` + pgx.Identifier{anon}.Sanitize() + `, ` + pgx.Identifier{authenticated}.Sanitize() + ` USING (EXISTS (SELECT 1 FROM storage.buckets b WHERE b.id = bucket_id AND (b.public OR b.owner_id = auth.uid())) OR owner_id = auth.uid());
+CREATE POLICY storage_object_owner ON storage.objects FOR ALL TO ` + pgx.Identifier{authenticated}.Sanitize() + ` USING (owner_id = auth.uid()) WITH CHECK (owner_id = auth.uid());
+CREATE POLICY storage_object_service ON storage.objects FOR ALL TO ` + pgx.Identifier{service}.Sanitize() + ` USING (true) WITH CHECK (true);
 CREATE OR REPLACE FUNCTION auth.uid() RETURNS uuid
 LANGUAGE sql STABLE SECURITY DEFINER SET search_path = pg_catalog, auth
 AS $$ SELECT CASE WHEN current_setting('request.jwt.claims', true) ~ '"sub"\s*:\s*"[0-9a-fA-F-]{36}"' THEN

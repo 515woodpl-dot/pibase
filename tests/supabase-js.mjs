@@ -97,4 +97,19 @@ assert(adminCreated.user.id);
 raw = await fetch(`${url}/auth/v1/admin/users/${adminCreated.user.id}`, { method: "DELETE", headers: { apikey: serviceKey } });
 assert.equal(raw.status, 204);
 
-console.log("supabase-js M2 acceptance passed");
+result = await service.storage.createBucket("m3-public", { public: true, fileSizeLimit: 1024 });
+assert.ifError(result.error);
+result = await service.storage.from("m3-public").upload("hello.txt", new Blob(["hello storage"]), { contentType: "text/plain", upsert: true });
+assert.ifError(result.error);
+result = await anon.storage.from("m3-public").download("hello.txt");
+assert.ifError(result.error);
+assert.equal(await result.data.text(), "hello storage");
+result = await anon.storage.from("m3-public").list();
+assert.ifError(result.error);
+assert.equal(result.data[0].name, "hello.txt");
+result = await service.storage.from("m3-public").remove(["hello.txt"]);
+assert.ifError(result.error);
+result = await service.storage.deleteBucket("m3-public");
+assert.ifError(result.error);
+
+console.log("supabase-js M3 acceptance passed");

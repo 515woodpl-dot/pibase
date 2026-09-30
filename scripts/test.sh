@@ -4,11 +4,12 @@ set -eu
 cd "$(dirname "$0")/.."
 ./scripts/init-env.sh
 docker run --rm -v "$PWD:/src" -v pibase-go-mod:/go/pkg/mod -v pibase-go-build:/root/.cache/go-build -w /src golang:1.23-bookworm sh -c 'go mod tidy && gofmt -w cmd internal && go vet ./... && go test ./...'
-if ! docker image inspect pibase:m2 >/dev/null 2>&1; then
-  docker build --tag pibase:m2 .
+production_image="${PIBASE_IMAGE:-pibase:m3}"
+if ! docker image inspect "$production_image" >/dev/null 2>&1; then
+  docker build --tag "$production_image" .
 fi
-docker tag pibase:m2 pibase-m0-bootstrap:latest
-docker tag pibase:m2 pibase-m0-gateway:latest
+docker tag "$production_image" pibase-m0-bootstrap:latest
+docker tag "$production_image" pibase-m0-gateway:latest
 docker compose up -d postgres
 docker compose run --rm bootstrap
 postgres_password="${POSTGRES_PASSWORD:-$(sed -n 's/^POSTGRES_PASSWORD=//p' .env)}"

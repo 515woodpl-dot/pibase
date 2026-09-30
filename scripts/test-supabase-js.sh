@@ -19,11 +19,12 @@ cleanup() {
 }
 trap cleanup EXIT INT TERM
 
-if ! docker image inspect pibase:m2 >/dev/null 2>&1; then
-  docker build --tag pibase:m2 .
+storage_image="${PIBASE_IMAGE:-pibase:m3}"
+if ! docker image inspect "$storage_image" >/dev/null 2>&1; then
+  docker build --tag "$storage_image" .
 fi
-docker tag pibase:m2 pibase-m0-bootstrap:latest
-docker tag pibase:m2 pibase-m0-gateway:latest
+docker tag "$storage_image" pibase-m0-bootstrap:latest
+docker tag "$storage_image" pibase-m0-gateway:latest
 docker compose up -d postgres
 docker compose run --rm bootstrap
 PIBASE_M0_ACTIVE_PROJECTS=0 PIBASE_M0_LIGHT_LOAD=false PIBASE_AUTH_EXPOSE_TOKENS=true docker compose up -d --force-recreate gateway

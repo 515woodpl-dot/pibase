@@ -43,11 +43,15 @@ services:
       PIBASE_M0_ACTIVE_PROJECTS: ${PIBASE_M0_ACTIVE_PROJECTS:-0}
       PIBASE_M0_LIGHT_LOAD: ${PIBASE_M0_LIGHT_LOAD:-false}
       PIBASE_AUTH_EXPOSE_TOKENS: ${PIBASE_AUTH_EXPOSE_TOKENS:-false}
+      PIBASE_STORAGE_ROOT: /data/files
     depends_on:
       bootstrap:
         condition: service_completed_successfully
     ports:
       - "127.0.0.1:18080:8080"
+    volumes:
+      - storage-data:/data/files
 
 volumes:
   postgres-data:
+  storage-data:

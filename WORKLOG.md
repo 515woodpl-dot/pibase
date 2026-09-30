@@ -58,6 +58,21 @@ authoritative scope and security rules are in `PLAN.md`.
 - Production image `pibase:m2` built successfully and the static ARM64
   artifact checksum is recorded in `reports/M2.md`.
 
+## M3 contract
+
+- Per-project storage buckets and objects with PostgreSQL RLS metadata.
+- Filesystem-backed upload/download/list/delete, public objects, signed URLs,
+  MIME/file limits, and project storage quotas.
+- Real PostgreSQL RLS integration, real Supabase JS storage acceptance,
+  production image, ARM64 artifact, and `reports/M3.md`.
+
+## Completed M3 evidence
+
+- Gate report: `reports/M3.md`.
+- Consolidated static/unit/real-Postgres/image/ARM64 gate passes.
+- Supabase JS acceptance passes Blob upload, public download, list, object
+  removal, and bucket deletion.
+
 ## M1 contract
 
 - PostgREST-shaped REST subset: CRUD, filters, ordering, pagination, exact
