@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"log/slog"
 	"net/http"
+	"os"
 	"sync"
 	"time"
 
@@ -13,15 +14,16 @@ import (
 )
 
 type Server struct {
-	control       *pgxpool.Pool
-	projects      []*pgxpool.Pool
-	databaseURL   string
-	masterKey     []byte
-	poolMu        sync.Mutex
-	pools         map[string]*pgxpool.Pool
-	databaseSlots chan struct{}
-	rateMu        sync.Mutex
-	rates         map[string]rateWindow
+	control          *pgxpool.Pool
+	projects         []*pgxpool.Pool
+	databaseURL      string
+	masterKey        []byte
+	poolMu           sync.Mutex
+	pools            map[string]*pgxpool.Pool
+	databaseSlots    chan struct{}
+	rateMu           sync.Mutex
+	rates            map[string]rateWindow
+	exposeAuthTokens bool
 }
 
 func New(ctx context.Context, databaseURL string, masterKey []byte, activeProjects int, lightLoad bool) (*Server, error) {
@@ -48,12 +50,13 @@ func New(ctx context.Context, databaseURL string, masterKey []byte, activeProjec
 		return nil, err
 	}
 	s := &Server{
-		control:       controlPool,
-		databaseURL:   databaseURL,
-		masterKey:     append([]byte(nil), masterKey...),
-		pools:         make(map[string]*pgxpool.Pool),
-		databaseSlots: make(chan struct{}, 32),
-		rates:         make(map[string]rateWindow),
+		control:          controlPool,
+		databaseURL:      databaseURL,
+		masterKey:        append([]byte(nil), masterKey...),
+		pools:            make(map[string]*pgxpool.Pool),
+		databaseSlots:    make(chan struct{}, 32),
+		rates:            make(map[string]rateWindow),
+		exposeAuthTokens: os.Getenv("PIBASE_AUTH_EXPOSE_TOKENS") == "true",
 	}
 	if activeProjects > 0 {
 		rows, err := controlPool.Query(ctx, `SELECT database_name FROM control.project_catalog ORDER BY id LIMIT $1`, activeProjects)
@@ -131,6 +134,17 @@ func (s *Server) lightLoad(ctx context.Context) {
 
 func (s *Server) Handler() http.Handler {
 	mux := http.NewServeMux()
+	mux.HandleFunc("POST /auth/v1/signup", s.authSignup)
+	mux.HandleFunc("POST /auth/v1/token", s.authToken)
+	mux.HandleFunc("GET /auth/v1/verify", s.authVerify)
+	mux.HandleFunc("POST /auth/v1/verify", s.authVerify)
+	mux.HandleFunc("POST /auth/v1/recover", s.authRecover)
+	mux.HandleFunc("GET /auth/v1/user", s.authUser)
+	mux.HandleFunc("PATCH /auth/v1/user", s.authUpdateUser)
+	mux.HandleFunc("GET /auth/v1/admin/users", s.authAdminList)
+	mux.HandleFunc("POST /auth/v1/admin/users", s.authAdminCreate)
+	mux.HandleFunc("PUT /auth/v1/admin/users/{id}", s.authAdminUpdate)
+	mux.HandleFunc("DELETE /auth/v1/admin/users/{id}", s.authAdminDelete)
 	mux.HandleFunc("GET /rest/v1/{relation}", s.restHandler)
 	mux.HandleFunc("HEAD /rest/v1/{relation}", s.restHandler)
 	mux.HandleFunc("POST /rest/v1/{relation}", s.restHandler)

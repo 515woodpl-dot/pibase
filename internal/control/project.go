@@ -88,7 +88,41 @@ func CreateProject(ctx context.Context, adminURL, name string, masterKey []byte)
 CREATE SCHEMA auth AUTHORIZATION ` + pgx.Identifier{admin}.Sanitize() + `;
 CREATE SCHEMA storage AUTHORIZATION ` + pgx.Identifier{admin}.Sanitize() + `;
 REVOKE ALL ON SCHEMA auth, storage FROM PUBLIC;
-GRANT USAGE ON SCHEMA public TO ` + pgx.Identifier{anon}.Sanitize() + `, ` + pgx.Identifier{authenticated}.Sanitize() + `, ` + pgx.Identifier{service}.Sanitize() + `;`
+GRANT USAGE ON SCHEMA public TO ` + pgx.Identifier{anon}.Sanitize() + `, ` + pgx.Identifier{authenticated}.Sanitize() + `, ` + pgx.Identifier{service}.Sanitize() + `;
+CREATE TABLE auth.users (
+  id uuid PRIMARY KEY,
+  email text NOT NULL UNIQUE,
+  password_hash text NOT NULL,
+  email_confirmed_at timestamptz,
+  confirmation_token_hash bytea,
+  confirmation_expires_at timestamptz,
+  reset_token_hash bytea,
+  reset_expires_at timestamptz,
+  raw_user_meta_data jsonb NOT NULL DEFAULT '{}'::jsonb,
+  banned_until timestamptz,
+  created_at timestamptz NOT NULL DEFAULT now(),
+  updated_at timestamptz NOT NULL DEFAULT now()
+);
+CREATE TABLE auth.refresh_tokens (
+  id uuid PRIMARY KEY,
+  user_id uuid NOT NULL REFERENCES auth.users(id) ON DELETE CASCADE,
+  token_hash bytea NOT NULL UNIQUE,
+  expires_at timestamptz NOT NULL,
+  revoked_at timestamptz,
+  replaced_by uuid REFERENCES auth.refresh_tokens(id),
+  created_at timestamptz NOT NULL DEFAULT now()
+);
+CREATE INDEX refresh_tokens_user_idx ON auth.refresh_tokens(user_id);
+REVOKE ALL ON SCHEMA auth FROM PUBLIC;
+REVOKE ALL ON ALL TABLES IN SCHEMA auth FROM PUBLIC;
+GRANT USAGE ON SCHEMA auth TO ` + pgx.Identifier{anon}.Sanitize() + `, ` + pgx.Identifier{authenticated}.Sanitize() + `, ` + pgx.Identifier{service}.Sanitize() + `, ` + pgx.Identifier{admin}.Sanitize() + `;
+GRANT ALL PRIVILEGES ON ALL TABLES IN SCHEMA auth TO ` + pgx.Identifier{admin}.Sanitize() + `;
+CREATE OR REPLACE FUNCTION auth.uid() RETURNS uuid
+LANGUAGE sql STABLE SECURITY DEFINER SET search_path = pg_catalog, auth
+AS $$ SELECT CASE WHEN current_setting('request.jwt.claims', true) ~ '"sub"\s*:\s*"[0-9a-fA-F-]{36}"' THEN
+  (current_setting('request.jwt.claims', true)::jsonb ->> 'sub')::uuid ELSE NULL END $$;
+REVOKE ALL ON FUNCTION auth.uid() FROM PUBLIC;
+GRANT EXECUTE ON FUNCTION auth.uid() TO ` + pgx.Identifier{anon}.Sanitize() + `, ` + pgx.Identifier{authenticated}.Sanitize() + `, ` + pgx.Identifier{service}.Sanitize() + `, ` + pgx.Identifier{admin}.Sanitize() + `;`
 	_, err = projectDB.Exec(ctx, setup)
 	projectDB.Close(ctx)
 	if err != nil {

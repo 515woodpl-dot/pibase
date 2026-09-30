@@ -4,7 +4,7 @@ COPY go.mod go.sum ./
 RUN go mod download
 COPY cmd ./cmd
 COPY internal ./internal
-RUN CGO_ENABLED=0 go build -trimpath -ldflags="-s -w" -o /out/pibase ./cmd/pibase
+RUN CGO_ENABLED=0 go build -p 1 -trimpath -ldflags="-s -w" -o /out/pibase ./cmd/pibase
 
 FROM gcr.io/distroless/static-debian12:nonroot
 COPY --from=build /out/pibase /pibase

@@ -22,7 +22,7 @@ trap cleanup EXIT INT TERM
 docker compose build
 docker compose up -d postgres
 docker compose run --rm bootstrap
-PIBASE_M0_ACTIVE_PROJECTS=0 PIBASE_M0_LIGHT_LOAD=false docker compose up -d --force-recreate gateway
+PIBASE_M0_ACTIVE_PROJECTS=0 PIBASE_M0_LIGHT_LOAD=false PIBASE_AUTH_EXPOSE_TOKENS=true docker compose up -d --force-recreate gateway
 
 docker compose run --rm \
   -e PIBASE_ADMIN_DATABASE_URL="$admin_url" \
@@ -50,4 +50,5 @@ docker run --rm --network host -v "$PWD:/src" -w /src \
   -e PIBASE_TEST_URL=http://127.0.0.1:18080 \
   -e PIBASE_TEST_ANON_KEY="$anon_key" \
   -e PIBASE_TEST_SERVICE_KEY="$service_key" \
+  -e PIBASE_AUTH_EXPOSE_TOKENS=true \
   node:22-bookworm npm run test:supabase

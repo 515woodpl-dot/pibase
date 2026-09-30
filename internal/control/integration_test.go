@@ -57,12 +57,12 @@ func TestCreateProjectIsolation(t *testing.T) {
 		t.Fatal(err)
 	}
 	defer projectConn.Close(ctx)
-	var authUsage bool
-	if err := projectConn.QueryRow(ctx, `SELECT has_schema_privilege($1,'auth','USAGE')`, "p_"+a.ID+"_anon").Scan(&authUsage); err != nil {
+	var authTable bool
+	if err := projectConn.QueryRow(ctx, `SELECT has_table_privilege($1,'auth.users','SELECT')`, "p_"+a.ID+"_anon").Scan(&authTable); err != nil {
 		t.Fatal(err)
 	}
-	if authUsage {
-		t.Fatal("anon role has auth schema access")
+	if authTable {
+		t.Fatal("anon role has auth table access")
 	}
 	controlURL, _ := withDatabase(adminURL, "_control")
 	controlConn, err := pgx.Connect(ctx, controlURL)

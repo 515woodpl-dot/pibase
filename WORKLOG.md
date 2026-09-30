@@ -4,10 +4,9 @@ Last updated: 2026-09-30
 
 ## Current milestone
 
-M1 — data API and SQL — implementation and verification complete on
-2026-09-30; awaiting owner/auditor gate review. The M0 gate was approved by the
-owner on 2026-09-30. The authoritative scope and security rules are in
-`PLAN.md`.
+M2 — authentication — active after M1 was pushed as commit `2df8396` on
+2026-09-30. The owner requested continuing through M2 before review. The
+authoritative scope and security rules are in `PLAN.md`.
 
 ## Completed M0
 
@@ -21,6 +20,39 @@ owner on 2026-09-30. The authoritative scope and security rules are in
   `b7562a8a6eceec26ebf46caa0793ccaf62fc783b8fd365d848c79c107e2eb056`.
 - The dedicated measurement stack was restored after integration testing and
   was healthy with 100 idle project pools at handoff.
+
+## M2 contract
+
+- `/auth/v1/signup`, password login, refresh-token rotation, email confirmation,
+  password recovery/reset, and authenticated `/auth/v1/user` access.
+- Argon2id password hashes; opaque refresh/action tokens are stored only as
+  hashes and expire/revoke server-side.
+- Access JWTs carry `sub`, `role=authenticated`, `aud`, `email`, and session
+  claims. `auth.uid()` in each project database reads the request claims under
+  a locked-down `SECURITY DEFINER` function.
+- Service-key admin user listing, creation, update, ban/delete, with no admin
+  endpoint available to anon/authenticated keys.
+- Real PostgreSQL isolation/RLS tests, real `@supabase/supabase-js` auth tests,
+  ARM64 verification, and `reports/M2.md`.
+
+## M2 implementation order
+
+1. Per-project `auth.users`, refresh-token, and action-token tables plus
+   `auth.uid()` function and grants.
+2. Password/opaque-token primitives and access-token claims.
+3. Signup, password login, refresh rotation, verify/confirmation, recovery,
+   reset, and `/auth/v1/user` endpoints.
+4. Service-key admin user management and abuse-safe boundaries.
+5. Supabase client and real-Postgres acceptance, docs, gate report, ARM64
+   build, and push.
+
+## Completed M2 evidence
+
+- Gate report: `reports/M2.md`.
+- Containerized static checks and all Go tests pass.
+- Real PostgreSQL isolation/gateway tests pass, and a live gateway auth flow
+  was exercised through signup, confirmation, login, and `/auth/v1/user`.
+- Supabase JS auth acceptance covers signup, confirmation, login, and refresh.
 
 ## M1 contract
 

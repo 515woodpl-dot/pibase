@@ -35,6 +35,54 @@ func (s *Server) authenticate(ctx context.Context, r *http.Request) (principal, 
 	if apiKey == "" {
 		return principal{}, httpError(http.StatusUnauthorized, "missing apikey")
 	}
+	p, anonHash, serviceHash, err := s.resolveProject(ctx, apiKey)
+	if err != nil {
+		return principal{}, err
+	}
+	project := p
+	if authorization := r.Header.Get("Authorization"); authorization != "" {
+		const prefix = "Bearer "
+		if !strings.HasPrefix(authorization, prefix) || len(authorization) == len(prefix) {
+			return principal{}, httpError(http.StatusUnauthorized, "invalid Authorization header")
+		}
+		token := strings.TrimSpace(strings.TrimPrefix(authorization, prefix))
+		claims, verifyErr := keys.VerifyJWT(token, project.secret, time.Now())
+		if verifyErr != nil {
+			return principal{}, httpError(http.StatusUnauthorized, "invalid JWT")
+		}
+		var databaseRole string
+		switch claims.Role {
+		case "anon":
+			databaseRole = project.anonRole
+		case "authenticated":
+			databaseRole = project.authenticatedRole
+		case "service_role":
+			if !keys.EqualHash(apiKey, serviceHash) {
+				return principal{}, httpError(http.StatusForbidden, "service role requires service apikey")
+			}
+			databaseRole = project.serviceRole
+		default:
+			return principal{}, httpError(http.StatusForbidden, "JWT role is not allowed")
+		}
+		if len(claims.JSON) == 0 {
+			claims.JSON, _ = json.Marshal(claims)
+		}
+		return principal{project: &project, role: databaseRole, claims: claims.JSON}, nil
+	}
+	if !keys.EqualHash(apiKey, anonHash) && !keys.EqualHash(apiKey, serviceHash) {
+		return principal{}, httpError(http.StatusUnauthorized, "invalid apikey")
+	}
+	// An API key by itself is an anonymous request. Service keys are permitted
+	// for the data API but still receive the service database role.
+	role := project.anonRole
+	if keys.EqualHash(apiKey, serviceHash) {
+		role = project.serviceRole
+	}
+	claims, _ := json.Marshal(map[string]any{"role": "anon"})
+	return principal{project: &project, role: role, claims: claims}, nil
+}
+
+func (s *Server) resolveProject(ctx context.Context, apiKey string) (project, []byte, []byte, error) {
 	hash := keys.Hash(apiKey)
 	var p project
 	var encrypted, anonHash, serviceHash []byte
@@ -43,47 +91,18 @@ FROM control.project_catalog WHERE anon_key_hash=$1 OR service_key_hash=$1`, has
 		&p.id, &p.database, &p.anonRole, &p.authenticatedRole, &p.serviceRole, &p.adminRole, &encrypted, &anonHash, &serviceHash, &p.maxDatabaseBytes)
 	if err != nil {
 		if err == pgx.ErrNoRows {
-			return principal{}, httpError(http.StatusUnauthorized, "invalid apikey")
+			return project{}, nil, nil, httpError(http.StatusUnauthorized, "invalid apikey")
 		}
-		return principal{}, fmt.Errorf("lookup project: %w", err)
+		return project{}, nil, nil, fmt.Errorf("lookup project: %w", err)
 	}
 	if !keys.EqualHash(apiKey, anonHash) && !keys.EqualHash(apiKey, serviceHash) {
-		return principal{}, httpError(http.StatusUnauthorized, "invalid apikey")
+		return project{}, nil, nil, httpError(http.StatusUnauthorized, "invalid apikey")
 	}
 	p.secret, err = secretbox.Decrypt(s.masterKey, encrypted)
 	if err != nil {
-		return principal{}, fmt.Errorf("decrypt project secret: %w", err)
+		return project{}, nil, nil, fmt.Errorf("decrypt project secret: %w", err)
 	}
-	token := apiKey
-	if authorization := r.Header.Get("Authorization"); authorization != "" {
-		const prefix = "Bearer "
-		if !strings.HasPrefix(authorization, prefix) || len(authorization) == len(prefix) {
-			return principal{}, httpError(http.StatusUnauthorized, "invalid Authorization header")
-		}
-		token = strings.TrimSpace(strings.TrimPrefix(authorization, prefix))
-	}
-	claims, err := keys.VerifyJWT(token, p.secret, time.Now())
-	if err != nil {
-		return principal{}, httpError(http.StatusUnauthorized, "invalid JWT")
-	}
-	var databaseRole string
-	switch claims.Role {
-	case "anon":
-		databaseRole = p.anonRole
-	case "authenticated":
-		databaseRole = p.authenticatedRole
-	case "service_role":
-		if !keys.EqualHash(apiKey, serviceHash) {
-			return principal{}, httpError(http.StatusForbidden, "service role requires service apikey")
-		}
-		databaseRole = p.serviceRole
-	default:
-		return principal{}, httpError(http.StatusForbidden, "JWT role is not allowed")
-	}
-	if len(claims.JSON) == 0 {
-		claims.JSON, _ = json.Marshal(claims)
-	}
-	return principal{project: &p, role: databaseRole, claims: claims.JSON}, nil
+	return p, anonHash, serviceHash, nil
 }
 
 type requestError struct {

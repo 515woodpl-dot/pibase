@@ -17,6 +17,6 @@ docker run --rm --network host -v "$PWD:/src" -v pibase-go-mod:/go/pkg/mod -v pi
   golang:1.23-bookworm go test -p 1 -count=1 ./internal/control ./internal/gateway
 restore_authenticator
 trap - EXIT INT TERM
-docker build --tag pibase:m1 .
+docker build --tag pibase:m2 .
 docker run --rm -v "$PWD:/src" -v pibase-go-mod:/go/pkg/mod -v pibase-go-build:/root/.cache/go-build -w /src -e GOOS=linux -e GOARCH=arm64 -e CGO_ENABLED=0 \
   golang:1.23-bookworm go build -buildvcs=false -trimpath -o /tmp/pibase-linux-arm64 ./cmd/pibase
