@@ -31,7 +31,6 @@ func writeJSON(w http.ResponseWriter, status int, value any) {
 
 func decodeJSON(r *http.Request, dst any) error {
 	dec := json.NewDecoder(r.Body)
-	dec.DisallowUnknownFields()
 	if err := dec.Decode(dst); err != nil {
 		return httpError(http.StatusBadRequest, "invalid JSON body")
 	}
@@ -116,7 +115,8 @@ func (s *Server) issueSession(ctx context.Context, p project, tx pgx.Tx, id, ema
 	if err != nil {
 		return nil, err
 	}
-	return map[string]any{"access_token": access, "refresh_token": refresh, "expires_in": 3600, "token_type": "bearer"}, nil
+	now := time.Now()
+	return map[string]any{"access_token": access, "refresh_token": refresh, "expires_in": 3600, "token_type": "bearer", "user": userJSON(id, email, true, []byte(`{}`), now, now)}, nil
 }
 
 func (s *Server) authSignup(w http.ResponseWriter, r *http.Request) {
@@ -276,6 +276,10 @@ func (s *Server) authVerify(w http.ResponseWriter, r *http.Request) {
 			}
 			var e error
 			out, e = s.issueSession(r.Context(), p, tx, id, email)
+			if e != nil {
+				return e
+			}
+			_, e = tx.Exec(r.Context(), `UPDATE auth.users SET reset_token_hash=NULL,reset_expires_at=NULL,updated_at=now() WHERE id=$1`, id)
 			return e
 		})
 		if err != nil {
@@ -456,20 +460,6 @@ func (s *Server) authAdminCreate(w http.ResponseWriter, r *http.Request) {
 		if req.EmailConfirm {
 			c = time.Now()
 		}
-		if req.BanDuration != "" {
-			var until *time.Time
-			if req.BanDuration != "none" {
-				d, e := time.ParseDuration(req.BanDuration)
-				if e != nil || d < 0 {
-					return httpError(400, "invalid ban_duration")
-				}
-				t := time.Now().Add(d)
-				until = &t
-			}
-			if _, e := tx.Exec(r.Context(), `UPDATE auth.users SET banned_until=$1,updated_at=now() WHERE id=$2`, until, id); e != nil {
-				return e
-			}
-		}
 		e := tx.QueryRow(r.Context(), `INSERT INTO auth.users(id,email,password_hash,email_confirmed_at,raw_user_meta_data) VALUES($1,$2,$3,$4,$5) RETURNING created_at,updated_at`, id, strings.ToLower(req.Email), h, func() any {
 			if req.EmailConfirm {
 				return c
@@ -477,6 +467,20 @@ func (s *Server) authAdminCreate(w http.ResponseWriter, r *http.Request) {
 			return nil
 		}(), m).Scan(&a, &b)
 		if e == nil {
+			if req.BanDuration != "" {
+				var until *time.Time
+				if req.BanDuration != "none" {
+					d, banErr := time.ParseDuration(req.BanDuration)
+					if banErr != nil || d < 0 {
+						return httpError(400, "invalid ban_duration")
+					}
+					t := time.Now().Add(d)
+					until = &t
+				}
+				if _, banErr := tx.Exec(r.Context(), `UPDATE auth.users SET banned_until=$1,updated_at=now() WHERE id=$2`, until, id); banErr != nil {
+					return banErr
+				}
+			}
 			u = userJSON(id, strings.ToLower(req.Email), req.EmailConfirm, m, a, b)
 		}
 		return e
@@ -517,6 +521,20 @@ func (s *Server) authAdminUpdate(w http.ResponseWriter, r *http.Request) {
 		}
 		if req.EmailConfirm {
 			if _, e := tx.Exec(r.Context(), `UPDATE auth.users SET email_confirmed_at=COALESCE(email_confirmed_at,now()),updated_at=now() WHERE id=$1`, id); e != nil {
+				return e
+			}
+		}
+		if req.BanDuration != "" {
+			var until *time.Time
+			if req.BanDuration != "none" {
+				d, e := time.ParseDuration(req.BanDuration)
+				if e != nil || d < 0 {
+					return httpError(400, "invalid ban_duration")
+				}
+				t := time.Now().Add(d)
+				until = &t
+			}
+			if _, e := tx.Exec(r.Context(), `UPDATE auth.users SET banned_until=$1,updated_at=now() WHERE id=$2`, until, id); e != nil {
 				return e
 			}
 		}

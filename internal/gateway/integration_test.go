@@ -155,6 +155,148 @@ GRANT EXECUTE ON FUNCTION public.add_numbers(integer,integer) TO ` + pgx.Identif
 		`{"title":"over-quota"}`, "", http.StatusInsufficientStorage)
 }
 
+func TestM2AuthAndUID(t *testing.T) {
+	adminURL := os.Getenv("PIBASE_TEST_ADMIN_DATABASE_URL")
+	if adminURL == "" {
+		t.Skip("PIBASE_TEST_ADMIN_DATABASE_URL is not set")
+	}
+	ctx := context.Background()
+	const password = "integration-auth-password"
+	masterKey := bytes.Repeat([]byte{7}, 32)
+	if err := control.Bootstrap(ctx, adminURL, password); err != nil {
+		t.Fatal(err)
+	}
+	p, err := control.CreateProject(ctx, adminURL, "gateway-m2-auth", masterKey)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer cleanupGatewayProject(t, adminURL, p)
+	prefix := "p_" + p.ID
+	fixture := `CREATE TABLE public.private_rows (id bigint GENERATED ALWAYS AS IDENTITY PRIMARY KEY, user_id uuid NOT NULL, value text NOT NULL);
+ALTER TABLE public.private_rows ENABLE ROW LEVEL SECURITY;
+GRANT SELECT ON public.private_rows TO ` + pgx.Identifier{prefix + "_authenticated"}.Sanitize() + `;
+CREATE POLICY owner_only ON public.private_rows FOR SELECT TO ` + pgx.Identifier{prefix + "_authenticated"}.Sanitize() + ` USING (auth.uid() = user_id);`
+	if err := adminsql.ApplyMigration(ctx, adminURL, p.ID, "0001_m2_auth", fixture); err != nil {
+		t.Fatal(err)
+	}
+	authURL := databaseURL(t, adminURL, "_control", "authenticator", password)
+	t.Setenv("PIBASE_AUTH_EXPOSE_TOKENS", "true")
+	server, err := New(ctx, authURL, masterKey, 0, false)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer server.Close()
+	httpServer := httptest.NewServer(server.Handler())
+	defer httpServer.Close()
+	email := "m2-" + p.ID + "@example.test"
+	signup := requestAuthJSON(t, httpServer.Client(), http.MethodPost, httpServer.URL+"/auth/v1/signup", p.AnonKey, `{"email":"`+email+`","password":"correct horse battery staple"}`, http.StatusOK)
+	var created struct {
+		User struct {
+			ID string `json:"id"`
+		} `json:"user"`
+		Confirmation string `json:"confirmation_token"`
+	}
+	if err := json.Unmarshal(signup, &created); err != nil || created.User.ID == "" || created.Confirmation == "" {
+		t.Fatalf("signup response: %s", signup)
+	}
+	requestAuthJSON(t, httpServer.Client(), http.MethodGet, httpServer.URL+"/auth/v1/verify?token="+url.QueryEscape(created.Confirmation)+"&type=signup", p.AnonKey, "", http.StatusOK)
+	login := requestAuthJSON(t, httpServer.Client(), http.MethodPost, httpServer.URL+"/auth/v1/token?grant_type=password", p.AnonKey, `{"email":"`+email+`","password":"correct horse battery staple"}`, http.StatusOK)
+	var session struct {
+		Access  string `json:"access_token"`
+		Refresh string `json:"refresh_token"`
+	}
+	if err := json.Unmarshal(login, &session); err != nil || session.Access == "" || session.Refresh == "" {
+		t.Fatalf("login response: %s", login)
+	}
+	rows, err := pgx.Connect(ctx, databaseURL(t, adminURL, p.Database, "postgres", urlPassword(t, adminURL)))
+	if err != nil {
+		t.Fatal(err)
+	}
+	_, err = rows.Exec(ctx, `INSERT INTO public.private_rows(user_id,value) VALUES($1,'owned'),('00000000-0000-0000-0000-000000000001','other')`, created.User.ID)
+	rows.Close(ctx)
+	if err != nil {
+		t.Fatal(err)
+	}
+	response := requestAuthenticated(t, httpServer.Client(), httpServer.URL+"/rest/v1/private_rows?select=value", p.AnonKey, session.Access)
+	var ownedRows []map[string]string
+	if err := json.Unmarshal(response, &ownedRows); err != nil || len(ownedRows) != 1 || ownedRows[0]["value"] != "owned" {
+		t.Fatalf("auth.uid RLS response: %s", response)
+	}
+	rotated := requestAuthJSON(t, httpServer.Client(), http.MethodPost, httpServer.URL+"/auth/v1/token?grant_type=refresh_token", p.AnonKey, `{"refresh_token":"`+session.Refresh+`"}`, http.StatusOK)
+	var next struct {
+		Access  string `json:"access_token"`
+		Refresh string `json:"refresh_token"`
+	}
+	if err := json.Unmarshal(rotated, &next); err != nil || next.Access == "" || next.Refresh == "" {
+		t.Fatalf("refresh response: %s", rotated)
+	}
+	requestAuthJSON(t, httpServer.Client(), http.MethodPost, httpServer.URL+"/auth/v1/token?grant_type=refresh_token", p.AnonKey, `{"refresh_token":"`+session.Refresh+`"}`, http.StatusBadRequest)
+	recovery := requestAuthJSON(t, httpServer.Client(), http.MethodPost, httpServer.URL+"/auth/v1/recover", p.AnonKey, `{"email":"`+email+`"}`, http.StatusOK)
+	var reset struct {
+		Token string `json:"reset_token"`
+	}
+	if err := json.Unmarshal(recovery, &reset); err != nil || reset.Token == "" {
+		t.Fatalf("recovery response: %s", recovery)
+	}
+	resetSession := requestAuthJSON(t, httpServer.Client(), http.MethodGet, httpServer.URL+"/auth/v1/verify?token="+url.QueryEscape(reset.Token)+"&type=recovery", p.AnonKey, "", http.StatusOK)
+	var resetTokens struct {
+		Access string `json:"access_token"`
+	}
+	if err := json.Unmarshal(resetSession, &resetTokens); err != nil || resetTokens.Access == "" {
+		t.Fatalf("recovery verify response: %s", resetSession)
+	}
+	requestAuthJSONBearer(t, httpServer.Client(), http.MethodPatch, httpServer.URL+"/auth/v1/user", p.AnonKey, resetTokens.Access, `{"password":"new password 123"}`, http.StatusOK)
+	admin := requestAuthJSON(t, httpServer.Client(), http.MethodGet, httpServer.URL+"/auth/v1/admin/users", p.ServiceKey, "", http.StatusOK)
+	if !bytes.Contains(admin, []byte(email)) {
+		t.Fatalf("admin list response: %s", admin)
+	}
+	adminCreated := requestAuthJSON(t, httpServer.Client(), http.MethodPost, httpServer.URL+"/auth/v1/admin/users", p.ServiceKey, `{"email":"admin-`+p.ID+`@example.test","password":"admin password 123","email_confirm":true,"ban_duration":"1h"}`, http.StatusCreated)
+	var createdAdmin struct {
+		User struct {
+			ID string `json:"id"`
+		} `json:"user"`
+	}
+	if err := json.Unmarshal(adminCreated, &createdAdmin); err != nil || createdAdmin.User.ID == "" {
+		t.Fatalf("admin create response: %s", adminCreated)
+	}
+	requestAuthJSON(t, httpServer.Client(), http.MethodPut, httpServer.URL+"/auth/v1/admin/users/"+createdAdmin.User.ID, p.ServiceKey, `{"ban_duration":"none","user_metadata":{"admin":true}}`, http.StatusOK)
+	requestAuthJSON(t, httpServer.Client(), http.MethodDelete, httpServer.URL+"/auth/v1/admin/users/"+createdAdmin.User.ID, p.ServiceKey, "", http.StatusNoContent)
+	requestAuthJSON(t, httpServer.Client(), http.MethodGet, httpServer.URL+"/auth/v1/admin/users", p.AnonKey, "", http.StatusForbidden)
+}
+
+func requestAuthJSON(t *testing.T, client *http.Client, method, endpoint, apiKey, body string, want int) []byte {
+	return requestAuthJSONBearer(t, client, method, endpoint, apiKey, "", body, want)
+}
+
+func requestAuthJSONBearer(t *testing.T, client *http.Client, method, endpoint, apiKey, bearer, body string, want int) []byte {
+	t.Helper()
+	var reader io.Reader
+	if body != "" {
+		reader = bytes.NewBufferString(body)
+	}
+	req, err := http.NewRequest(method, endpoint, reader)
+	if err != nil {
+		t.Fatal(err)
+	}
+	req.Header.Set("apikey", apiKey)
+	if bearer != "" {
+		req.Header.Set("Authorization", "Bearer "+bearer)
+	}
+	if body != "" {
+		req.Header.Set("Content-Type", "application/json")
+	}
+	resp, err := client.Do(req)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer resp.Body.Close()
+	content, _ := io.ReadAll(resp.Body)
+	if resp.StatusCode != want {
+		t.Fatalf("%s %s: status=%d want=%d body=%s", method, endpoint, resp.StatusCode, want, content)
+	}
+	return content
+}
+
 func requestAuthenticated(t *testing.T, client *http.Client, endpoint, apiKey, token string) []byte {
 	t.Helper()
 	request, err := http.NewRequest(http.MethodGet, endpoint, nil)

@@ -53,6 +53,10 @@ authoritative scope and security rules are in `PLAN.md`.
 - Real PostgreSQL isolation/gateway tests pass, and a live gateway auth flow
   was exercised through signup, confirmation, login, and `/auth/v1/user`.
 - Supabase JS auth acceptance covers signup, confirmation, login, and refresh.
+- The consolidated M2 gate also covers recovery/reset, refresh replay
+  rejection, `auth.uid()` RLS, and service-admin user lifecycle operations.
+- Production image `pibase:m2` built successfully and the static ARM64
+  artifact checksum is recorded in `reports/M2.md`.
 
 ## M1 contract
 

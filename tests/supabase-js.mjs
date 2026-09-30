@@ -27,6 +27,25 @@ assert(result.data.session);
 result = await anon.auth.refreshSession({ refresh_token: result.data.session.refresh_token });
 assert.ifError(result.error);
 assert(result.data.session);
+raw = await fetch(`${url}/auth/v1/recover`, {
+  method: "POST", headers: { apikey: anonKey, "content-type": "application/json" },
+  body: JSON.stringify({ email }),
+});
+assert.equal(raw.status, 200);
+const recovery = await raw.json();
+assert(recovery.reset_token);
+raw = await fetch(`${url}/auth/v1/verify?token=${encodeURIComponent(recovery.reset_token)}&type=recovery`, { headers: { apikey: anonKey } });
+assert.equal(raw.status, 200);
+const recoverySession = await raw.json();
+assert(recoverySession.access_token);
+raw = await fetch(`${url}/auth/v1/user`, {
+  method: "PATCH", headers: { apikey: anonKey, authorization: `Bearer ${recoverySession.access_token}`, "content-type": "application/json" },
+  body: JSON.stringify({ password: "new correct horse battery" }),
+});
+assert.equal(raw.status, 200);
+result = await anon.auth.signInWithPassword({ email, password: "new correct horse battery" });
+assert.ifError(result.error);
+await anon.auth.signOut();
 
 result = await service.from("groups").insert({ name: "work" }).select().single();
 assert.ifError(result.error);
@@ -67,5 +86,15 @@ assert.equal(result.data, 42);
 result = await service.from("items").delete().eq("name", "private").select();
 assert.ifError(result.error);
 assert.equal(result.data.length, 1);
+
+raw = await fetch(`${url}/auth/v1/admin/users`, {
+  method: "POST", headers: { apikey: serviceKey, "content-type": "application/json" },
+  body: JSON.stringify({ email: `admin-${Date.now()}@example.test`, password: "admin password 123", email_confirm: true, ban_duration: "1h" }),
+});
+assert.equal(raw.status, 201);
+const adminCreated = await raw.json();
+assert(adminCreated.user.id);
+raw = await fetch(`${url}/auth/v1/admin/users/${adminCreated.user.id}`, { method: "DELETE", headers: { apikey: serviceKey } });
+assert.equal(raw.status, 204);
 
 console.log("supabase-js M2 acceptance passed");
