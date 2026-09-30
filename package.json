@@ -1,0 +1,9 @@
+{
+  "name": "pibase-acceptance",
+  "private": true,
+  "engines": { "node": ">=22" },
+  "scripts": { "test:supabase": "node tests/supabase-js.mjs" },
+  "devDependencies": {
+    "@supabase/supabase-js": "^2.117.2"
+  }
+}

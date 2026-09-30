@@ -1,1 +1,0 @@
-{ "tables": [ { "name": "gadgets", "fields": [ { "name": "maker", "type": "relation", "table": "ghosts" } ] } ] }

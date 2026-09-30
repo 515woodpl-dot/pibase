@@ -1,0 +1,52 @@
+name: pibase-m0
+
+services:
+  postgres:
+    image: postgres:16-bookworm
+    environment:
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:?set POSTGRES_PASSWORD in .env}
+    command:
+      - postgres
+      - -c
+      - shared_buffers=128MB
+      - -c
+      - max_connections=40
+      - -c
+      - work_mem=4MB
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U postgres"]
+      interval: 2s
+      timeout: 3s
+      retries: 30
+    ports:
+      - "127.0.0.1:55432:5432"
+    volumes:
+      - postgres-data:/var/lib/postgresql/data
+
+  bootstrap:
+    build: .
+    command: ["bootstrap"]
+    environment:
+      PIBASE_ADMIN_DATABASE_URL: postgres://postgres:${POSTGRES_PASSWORD}@postgres:5432/postgres
+      PIBASE_AUTHENTICATOR_PASSWORD: ${PIBASE_AUTHENTICATOR_PASSWORD:?set PIBASE_AUTHENTICATOR_PASSWORD in .env}
+    depends_on:
+      postgres:
+        condition: service_healthy
+    restart: "no"
+
+  gateway:
+    build: .
+    environment:
+      PIBASE_DATABASE_URL: postgres://authenticator:${PIBASE_AUTHENTICATOR_PASSWORD}@postgres:5432/_control
+      PIBASE_MASTER_KEY: ${PIBASE_MASTER_KEY:?set PIBASE_MASTER_KEY in .env}
+      PIBASE_LISTEN_ADDR: :8080
+      PIBASE_M0_ACTIVE_PROJECTS: ${PIBASE_M0_ACTIVE_PROJECTS:-0}
+      PIBASE_M0_LIGHT_LOAD: ${PIBASE_M0_LIGHT_LOAD:-false}
+    depends_on:
+      bootstrap:
+        condition: service_completed_successfully
+    ports:
+      - "127.0.0.1:18080:8080"
+
+volumes:
+  postgres-data:

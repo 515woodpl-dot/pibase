@@ -1,0 +1,180 @@
+package gateway
+
+import (
+	"context"
+	"fmt"
+	"log/slog"
+	"net/http"
+	"sync"
+	"time"
+
+	"github.com/jackc/pgx/v5"
+	"github.com/jackc/pgx/v5/pgxpool"
+)
+
+type Server struct {
+	control       *pgxpool.Pool
+	projects      []*pgxpool.Pool
+	databaseURL   string
+	masterKey     []byte
+	poolMu        sync.Mutex
+	pools         map[string]*pgxpool.Pool
+	databaseSlots chan struct{}
+	rateMu        sync.Mutex
+	rates         map[string]rateWindow
+}
+
+func New(ctx context.Context, databaseURL string, masterKey []byte, activeProjects int, lightLoad bool) (*Server, error) {
+	if len(masterKey) != 32 {
+		return nil, fmt.Errorf("master key must be 32 bytes")
+	}
+	config, err := pgxpool.ParseConfig(databaseURL)
+	if err != nil {
+		return nil, err
+	}
+	config.MaxConns = 2
+	config.MinConns = 1
+	config.MaxConnIdleTime = 30 * time.Second
+	config.AfterConnect = func(ctx context.Context, conn *pgx.Conn) error {
+		_, err := conn.Exec(ctx, `SET statement_timeout = '5s'`)
+		return err
+	}
+	controlPool, err := pgxpool.NewWithConfig(ctx, config)
+	if err != nil {
+		return nil, err
+	}
+	if err := controlPool.Ping(ctx); err != nil {
+		controlPool.Close()
+		return nil, err
+	}
+	s := &Server{
+		control:       controlPool,
+		databaseURL:   databaseURL,
+		masterKey:     append([]byte(nil), masterKey...),
+		pools:         make(map[string]*pgxpool.Pool),
+		databaseSlots: make(chan struct{}, 32),
+		rates:         make(map[string]rateWindow),
+	}
+	if activeProjects > 0 {
+		rows, err := controlPool.Query(ctx, `SELECT database_name FROM control.project_catalog ORDER BY id LIMIT $1`, activeProjects)
+		if err != nil {
+			s.Close()
+			return nil, err
+		}
+		var databases []string
+		for rows.Next() {
+			var db string
+			if err := rows.Scan(&db); err != nil {
+				rows.Close()
+				s.Close()
+				return nil, err
+			}
+			databases = append(databases, db)
+		}
+		rows.Close()
+		if len(databases) != activeProjects {
+			s.Close()
+			return nil, fmt.Errorf("requested %d active projects, found %d", activeProjects, len(databases))
+		}
+		for _, database := range databases {
+			cfg, err := pgxpool.ParseConfig(databaseURL)
+			if err != nil {
+				s.Close()
+				return nil, err
+			}
+			cfg.ConnConfig.Database = database
+			cfg.MaxConns, cfg.MinConns = 2, 0
+			cfg.MaxConnIdleTime = 30 * time.Second
+			cfg.AfterConnect = config.AfterConnect
+			pool, err := pgxpool.NewWithConfig(ctx, cfg)
+			if err != nil {
+				s.Close()
+				return nil, err
+			}
+			s.projects = append(s.projects, pool)
+		}
+	}
+	if lightLoad {
+		go s.lightLoad(ctx)
+	}
+	return s, nil
+}
+
+func (s *Server) lightLoad(ctx context.Context) {
+	ticker := time.NewTicker(250 * time.Millisecond)
+	defer ticker.Stop()
+	for {
+		select {
+		case <-ctx.Done():
+			return
+		case <-ticker.C:
+			semaphore := make(chan struct{}, 20)
+			var group sync.WaitGroup
+			for _, pool := range s.projects {
+				semaphore <- struct{}{}
+				group.Add(1)
+				go func(p *pgxpool.Pool) {
+					defer group.Done()
+					defer func() { <-semaphore }()
+					qctx, cancel := context.WithTimeout(ctx, 2*time.Second)
+					defer cancel()
+					if _, err := p.Exec(qctx, `SELECT 1`); err != nil {
+						slog.Warn("measurement query failed", "error", err)
+					}
+					p.Reset()
+				}(pool)
+			}
+			group.Wait()
+		}
+	}
+}
+
+func (s *Server) Handler() http.Handler {
+	mux := http.NewServeMux()
+	mux.HandleFunc("GET /rest/v1/{relation}", s.restHandler)
+	mux.HandleFunc("HEAD /rest/v1/{relation}", s.restHandler)
+	mux.HandleFunc("POST /rest/v1/{relation}", s.restHandler)
+	mux.HandleFunc("PATCH /rest/v1/{relation}", s.restHandler)
+	mux.HandleFunc("DELETE /rest/v1/{relation}", s.restHandler)
+	mux.HandleFunc("POST /rest/v1/rpc/{function}", s.rpcHandler)
+	mux.HandleFunc("GET /healthz", func(w http.ResponseWriter, r *http.Request) {
+		ctx, cancel := context.WithTimeout(r.Context(), 2*time.Second)
+		defer cancel()
+		if err := s.control.Ping(ctx); err != nil {
+			http.Error(w, "Postgres unavailable", http.StatusServiceUnavailable)
+			return
+		}
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = w.Write([]byte(`{"status":"ok"}`))
+	})
+	return cors(http.MaxBytesHandler(mux, 1<<20))
+}
+
+func cors(next http.Handler) http.Handler {
+	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Access-Control-Allow-Origin", "*")
+		w.Header().Set("Access-Control-Allow-Headers", "authorization, apikey, content-type, prefer, range, x-client-info")
+		w.Header().Set("Access-Control-Allow-Methods", "GET, HEAD, POST, PATCH, DELETE, OPTIONS")
+		w.Header().Set("Access-Control-Expose-Headers", "Content-Range, Range-Unit, X-Affected-Rows")
+		if r.Method == http.MethodOptions {
+			w.WriteHeader(http.StatusNoContent)
+			return
+		}
+		next.ServeHTTP(w, r)
+	})
+}
+
+func (s *Server) Close() {
+	for _, pool := range s.projects {
+		pool.Close()
+	}
+	s.poolMu.Lock()
+	for _, pool := range s.pools {
+		pool.Close()
+	}
+	s.pools = nil
+	s.poolMu.Unlock()
+	if s.control != nil {
+		s.control.Close()
+	}
+}
