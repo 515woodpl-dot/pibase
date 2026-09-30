@@ -47,7 +47,7 @@ func (s *Server) authenticate(ctx context.Context, r *http.Request) (principal, 
 		}
 		token := strings.TrimSpace(strings.TrimPrefix(authorization, prefix))
 		claims, verifyErr := keys.VerifyJWT(token, project.secret, time.Now())
-		if verifyErr != nil {
+		if verifyErr != nil || (claims.Role == "authenticated" && claims.Audience != "authenticated") {
 			return principal{}, httpError(http.StatusUnauthorized, "invalid JWT")
 		}
 		var databaseRole string
@@ -103,6 +103,24 @@ FROM control.project_catalog WHERE anon_key_hash=$1 OR service_key_hash=$1`, has
 		return project{}, nil, nil, fmt.Errorf("decrypt project secret: %w", err)
 	}
 	return p, anonHash, serviceHash, nil
+}
+
+func (s *Server) resolveProjectID(ctx context.Context, id string) (project, error) {
+	var p project
+	var encrypted []byte
+	err := s.control.QueryRow(ctx, `SELECT id,database_name,anon_role,authenticated_role,service_role,admin_role,jwt_secret_encrypted,max_database_bytes FROM control.project_catalog WHERE id=$1`, id).Scan(
+		&p.id, &p.database, &p.anonRole, &p.authenticatedRole, &p.serviceRole, &p.adminRole, &encrypted, &p.maxDatabaseBytes)
+	if err != nil {
+		if err == pgx.ErrNoRows {
+			return project{}, httpError(http.StatusNotFound, "project not found")
+		}
+		return project{}, err
+	}
+	p.secret, err = secretbox.Decrypt(s.masterKey, encrypted)
+	if err != nil {
+		return project{}, fmt.Errorf("decrypt project secret: %w", err)
+	}
+	return p, nil
 }
 
 type requestError struct {

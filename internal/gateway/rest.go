@@ -152,6 +152,53 @@ func buildQueryAt(values url.Values, table tableInfo, firstArg int) (queryPlan, 
 		case "select", "limit", "offset", "order":
 			continue
 		}
+		if name == "or" {
+			for _, expression := range expressions {
+				parts := strings.TrimSpace(expression)
+				if len(parts) < 2 || parts[0] != '(' || parts[len(parts)-1] != ')' {
+					return plan, httpError(http.StatusBadRequest, "or filter must use or=(column.operator.value,...) syntax")
+				}
+				items := splitFilterList(parts[1 : len(parts)-1])
+				if len(items) == 0 || len(items) > 20 {
+					return plan, httpError(http.StatusBadRequest, "or filter requires 1 to 20 expressions")
+				}
+				ors := make([]string, 0, len(items))
+				for _, item := range items {
+					bits := strings.SplitN(item, ".", 3)
+					if len(bits) != 3 {
+						return plan, httpError(http.StatusBadRequest, "invalid or filter expression")
+					}
+					column, columnErr := table.column(bits[0])
+					if columnErr != nil {
+						return plan, columnErr
+					}
+					predicate, args, filterErr := filterExpression(column, bits[1]+"."+bits[2], len(plan.args)+firstArg)
+					if filterErr != nil {
+						return plan, filterErr
+					}
+					ors = append(ors, predicate)
+					plan.args = append(plan.args, args...)
+				}
+				predicates = append(predicates, "("+strings.Join(ors, " OR ")+")")
+			}
+			continue
+		}
+		if strings.HasPrefix(name, "not.") {
+			columnName := strings.TrimPrefix(name, "not.")
+			column, columnErr := table.column(columnName)
+			if columnErr != nil {
+				return plan, columnErr
+			}
+			for _, expression := range expressions {
+				predicate, args, filterErr := filterExpression(column, expression, len(plan.args)+firstArg)
+				if filterErr != nil {
+					return plan, filterErr
+				}
+				predicates = append(predicates, "NOT ("+predicate+")")
+				plan.args = append(plan.args, args...)
+			}
+			continue
+		}
 		column, err := table.column(name)
 		if err != nil {
 			return plan, err
@@ -169,6 +216,30 @@ func buildQueryAt(values url.Values, table tableInfo, firstArg int) (queryPlan, 
 		plan.where = " WHERE " + strings.Join(predicates, " AND ")
 	}
 	return plan, nil
+}
+
+func splitFilterList(value string) []string {
+	var out []string
+	start, depth := 0, 0
+	for i, r := range value {
+		switch r {
+		case '(':
+			depth++
+		case ')':
+			if depth > 0 {
+				depth--
+			}
+		case ',':
+			if depth == 0 {
+				out = append(out, strings.TrimSpace(value[start:i]))
+				start = i + 1
+			}
+		}
+	}
+	if start < len(value) {
+		out = append(out, strings.TrimSpace(value[start:]))
+	}
+	return out
 }
 
 func writeFilters(values url.Values, table tableInfo, firstArg int) (queryPlan, error) {
@@ -557,12 +628,15 @@ func boundedInt(name, raw string, min, max int) (int, error) {
 func writeAPIError(w http.ResponseWriter, err error) {
 	status := http.StatusInternalServerError
 	message := "internal server error"
+	code := "PIBASE"
+	var details, hint any
 	var requestErr requestError
 	if errors.As(err, &requestErr) {
 		status, message = requestErr.status, requestErr.message
 	} else {
 		var pgErr *pgconn.PgError
 		if errors.As(err, &pgErr) {
+			code = pgErr.Code
 			switch pgErr.Code {
 			case "23505":
 				status = http.StatusConflict
@@ -574,9 +648,15 @@ func writeAPIError(w http.ResponseWriter, err error) {
 				status = http.StatusBadRequest
 			}
 			message = pgErr.Message
+			if pgErr.Detail != "" {
+				details = pgErr.Detail
+			}
+			if pgErr.Hint != "" {
+				hint = pgErr.Hint
+			}
 		}
 	}
 	w.Header().Set("Content-Type", "application/json")
 	w.WriteHeader(status)
-	_ = json.NewEncoder(w).Encode(map[string]any{"code": "PIBASE", "message": message, "details": nil, "hint": nil})
+	_ = json.NewEncoder(w).Encode(map[string]any{"code": code, "message": message, "details": details, "hint": hint})
 }

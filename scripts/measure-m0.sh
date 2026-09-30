@@ -13,7 +13,7 @@ docker compose down --volumes
 docker compose build
 docker compose up -d postgres bootstrap
 
-printf 'timestamp,projects,mode,sample,gateway_rss_kib,postgres_summed_rss_kib\n' > reports/raw/m0-memory.csv
+printf 'timestamp,projects,mode,sample,gateway_pss_kib,postgres_pss_kib,gateway_rss_kib,postgres_summed_rss_kib\n' > reports/raw/m0-memory.csv
 {
   uname -a
   free -m
@@ -42,7 +42,9 @@ for target in 1 20 100; do
     while [ "$sample" -le 3 ]; do
       gateway_rss="$(docker top pibase-m0-gateway-1 -eo pid,rss,comm | awk '$3=="pibase" {sum+=$2} END {print sum+0}')"
       postgres_rss="$(docker top pibase-m0-postgres-1 -eo pid,rss,comm | awk '$3=="postgres" {sum+=$2} END {print sum+0}')"
-      printf '%s,%s,%s,%s,%s,%s\n' "$(date -Iseconds)" "$target" "$mode" "$sample" "$gateway_rss" "$postgres_rss" >> reports/raw/m0-memory.csv
+      gateway_pss="$(docker top pibase-m0-gateway-1 -eo pid,comm | awk '$2=="pibase" {print $1}' | while read -r pid; do awk '/^Pss:/ {sum+=$2} END {print sum+0}' /proc/$pid/smaps_rollup; done | awk '{sum+=$1} END {print sum+0}')"
+      postgres_pss="$(docker top pibase-m0-postgres-1 -eo pid,comm | awk '$2=="postgres" {print $1}' | while read -r pid; do awk '/^Pss:/ {sum+=$2} END {print sum+0}' /proc/$pid/smaps_rollup; done | awk '{sum+=$1} END {print sum+0}')"
+      printf '%s,%s,%s,%s,%s,%s,%s,%s\n' "$(date -Iseconds)" "$target" "$mode" "$sample" "$gateway_pss" "$postgres_pss" "$gateway_rss" "$postgres_rss" >> reports/raw/m0-memory.csv
       sample=$((sample + 1))
       sleep 1
     done

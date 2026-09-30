@@ -1,6 +1,7 @@
 package gateway
 
 import (
+	"net/http/httptest"
 	"testing"
 	"time"
 )
@@ -18,5 +19,20 @@ func TestPerProjectRateWindow(t *testing.T) {
 	}
 	if !server.allowRequest("project", now.Add(time.Second)) {
 		t.Fatal("new rate window did not open")
+	}
+}
+
+func TestAuthRateWindow(t *testing.T) {
+	server := &Server{authRates: make(map[string]rateWindow)}
+	who := project{id: "project"}
+	r := httptest.NewRequest("POST", "/auth/v1/token", nil)
+	r.RemoteAddr = "192.0.2.10:1234"
+	for i := 0; i < 10; i++ {
+		if err := server.enforceAuthRate(who, r, "user@example.test"); err != nil {
+			t.Fatalf("request %d was rejected: %v", i+1, err)
+		}
+	}
+	if err := server.enforceAuthRate(who, r, "user@example.test"); err == nil {
+		t.Fatal("11th authentication request was accepted")
 	}
 }

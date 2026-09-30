@@ -134,6 +134,10 @@ func (s *Server) authSignup(w http.ResponseWriter, r *http.Request) {
 		writeAPIError(w, err)
 		return
 	}
+	if err := s.enforceAuthRate(p, r, req.Email); err != nil {
+		writeAPIError(w, err)
+		return
+	}
 	password, err := auth.HashPassword(req.Password)
 	if err != nil {
 		writeAPIError(w, httpError(400, err.Error()))
@@ -165,7 +169,9 @@ func (s *Server) authSignup(w http.ResponseWriter, r *http.Request) {
 	})
 	if err != nil {
 		if strings.Contains(err.Error(), "duplicate key") {
-			writeAPIError(w, httpError(409, "user already registered"))
+			// Do not disclose whether an account exists. The response shape
+			// matches an unconfirmed signup with no session.
+			writeJSON(w, http.StatusOK, map[string]any{"user": nil, "session": nil})
 		} else {
 			writeAPIError(w, err)
 		}
@@ -199,6 +205,10 @@ func (s *Server) authToken(w http.ResponseWriter, r *http.Request) {
 		writeAPIError(w, err)
 		return
 	}
+	if err := s.enforceAuthRate(p, r, req.Email); err != nil {
+		writeAPIError(w, err)
+		return
+	}
 	grant := r.URL.Query().Get("grant_type")
 	var out map[string]any
 	err = s.adminTx(r.Context(), p, func(tx pgx.Tx) error {
@@ -209,7 +219,11 @@ func (s *Server) authToken(w http.ResponseWriter, r *http.Request) {
 		var confirmed *time.Time
 		var banned *time.Time
 		err := tx.QueryRow(r.Context(), `SELECT id,email,password_hash,email_confirmed_at,banned_until FROM auth.users WHERE email=$1`, strings.ToLower(strings.TrimSpace(req.Email))).Scan(&id, &email, &hash, &confirmed, &banned)
-		if err != nil || !auth.VerifyPassword(req.Password, hash) {
+		if err != nil {
+			_ = auth.VerifyPassword(req.Password, auth.DummyPasswordHash())
+			return httpError(400, "invalid login credentials")
+		}
+		if !auth.VerifyPassword(req.Password, hash) {
 			return httpError(400, "invalid login credentials")
 		}
 		if banned != nil && banned.After(time.Now()) {
@@ -238,7 +252,11 @@ func (s *Server) refreshTx(ctx context.Context, p project, tx pgx.Tx, raw string
 	var revoked *time.Time
 	var email string
 	err := tx.QueryRow(ctx, `SELECT id,user_id,expires_at,revoked_at FROM auth.refresh_tokens WHERE token_hash=$1`, tokenHash(raw)).Scan(&id, &user, &expires, &revoked)
-	if err != nil || revoked != nil || expires.Before(time.Now()) {
+	if err != nil || expires.Before(time.Now()) {
+		return httpError(400, "invalid refresh token")
+	}
+	if revoked != nil {
+		_, _ = tx.Exec(ctx, `UPDATE auth.refresh_tokens SET revoked_at=COALESCE(revoked_at,now()) WHERE user_id=$1`, user)
 		return httpError(400, "invalid refresh token")
 	}
 	if err = tx.QueryRow(ctx, `SELECT email FROM auth.users WHERE id=$1`, user).Scan(&email); err != nil {
@@ -311,6 +329,10 @@ func (s *Server) authRecover(w http.ResponseWriter, r *http.Request) {
 		writeAPIError(w, err)
 		return
 	}
+	if err := s.enforceAuthRate(p, r, req.Email); err != nil {
+		writeAPIError(w, err)
+		return
+	}
 	raw, digest, err := auth.RandomToken(32)
 	if err != nil {
 		writeAPIError(w, err)
@@ -341,10 +363,38 @@ func (s *Server) bearerUser(r *http.Request) (project, keys.Claims, error) {
 		return project{}, keys.Claims{}, httpError(401, "missing bearer token")
 	}
 	c, err := keys.VerifyJWT(h, p.secret, time.Now())
-	if err != nil || c.Subject == "" {
+	if err != nil || c.Subject == "" || c.Audience != "authenticated" || c.Role != "authenticated" {
 		return project{}, keys.Claims{}, httpError(401, "invalid JWT")
 	}
 	return p, c, nil
+}
+
+func (s *Server) authLogout(w http.ResponseWriter, r *http.Request) {
+	p, c, err := s.bearerUser(r)
+	if err != nil {
+		writeAPIError(w, err)
+		return
+	}
+	err = s.adminTx(r.Context(), p, func(tx pgx.Tx) error {
+		if cSessionID(c) == "" {
+			return httpError(http.StatusUnauthorized, "invalid JWT session")
+		}
+		_, e := tx.Exec(r.Context(), `UPDATE auth.refresh_tokens SET revoked_at=COALESCE(revoked_at,now()) WHERE id=$1 AND user_id=$2`, cSessionID(c), c.Subject)
+		return e
+	})
+	if err != nil {
+		writeAPIError(w, err)
+		return
+	}
+	w.WriteHeader(http.StatusNoContent)
+}
+
+func cSessionID(c keys.Claims) string {
+	var claims struct {
+		SessionID string `json:"session_id"`
+	}
+	_ = json.Unmarshal(c.JSON, &claims)
+	return claims.SessionID
 }
 func (s *Server) authUser(w http.ResponseWriter, r *http.Request) {
 	p, c, err := s.bearerUser(r)

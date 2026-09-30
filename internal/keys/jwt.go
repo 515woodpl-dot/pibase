@@ -12,12 +12,13 @@ import (
 )
 
 type Claims struct {
-	Issuer  string `json:"iss"`
-	Role    string `json:"role"`
-	Subject string `json:"sub,omitempty"`
-	Issued  int64  `json:"iat"`
-	Expires int64  `json:"exp"`
-	JSON    []byte `json:"-"`
+	Issuer   string `json:"iss"`
+	Audience string `json:"aud"`
+	Role     string `json:"role"`
+	Subject  string `json:"sub,omitempty"`
+	Issued   int64  `json:"iat"`
+	Expires  int64  `json:"exp"`
+	JSON     []byte `json:"-"`
 }
 
 func JWT(secret []byte, role string) (string, error) {

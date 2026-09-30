@@ -6,6 +6,8 @@ import (
 	"encoding/hex"
 	"encoding/json"
 	"fmt"
+	"os"
+	"path/filepath"
 
 	"github.com/515woodpl-dot/pibase/internal/keys"
 	"github.com/515woodpl-dot/pibase/internal/secretbox"
@@ -247,6 +249,13 @@ func DeleteProject(ctx context.Context, adminURL, id string) error {
 		if _, err := root.Exec(ctx, `DROP ROLE `+pgx.Identifier{role}.Sanitize()); err != nil {
 			return err
 		}
+	}
+	storageRoot := os.Getenv("PIBASE_STORAGE_ROOT")
+	if storageRoot == "" {
+		storageRoot = "/data/files"
+	}
+	if err := os.RemoveAll(filepath.Join(storageRoot, id)); err != nil {
+		return fmt.Errorf("remove project storage: %w", err)
 	}
 	return nil
 }

@@ -1,9 +1,10 @@
 package gateway
 
 import (
-	"bytes"
 	"context"
+	"encoding/base64"
 	"encoding/json"
+	"errors"
 	"io"
 	"mime"
 	"mime/multipart"
@@ -20,7 +21,7 @@ import (
 	"github.com/jackc/pgx/v5"
 )
 
-const maxStorageObjectBytes = 1 << 20
+const maxStorageObjectBytes = 1 << 30
 
 type bucketRequest struct {
 	ID               string   `json:"id"`
@@ -45,6 +46,10 @@ func storagePrincipal(s *Server, r *http.Request, write bool) (principal, error)
 	if write && who.role == who.project.anonRole {
 		return principal{}, httpError(http.StatusUnauthorized, "authenticated storage session required")
 	}
+	if err := s.enforceRate(who); err != nil {
+		return principal{}, err
+	}
+	s.recordRequest(r.Context(), who.project.id)
 	return who, nil
 }
 
@@ -303,53 +308,11 @@ func (s *Server) storageUploadObject(w http.ResponseWriter, r *http.Request) {
 		writeAPIError(w, err)
 		return
 	}
-	data, err := io.ReadAll(io.LimitReader(r.Body, maxStorageObjectBytes+1))
-	if err != nil {
-		writeAPIError(w, err)
-		return
-	}
-	if len(data) > maxStorageObjectBytes {
-		writeAPIError(w, httpError(http.StatusRequestEntityTooLarge, "object exceeds 1 MiB request limit"))
-		return
-	}
 	mimeType := r.Header.Get("Content-Type")
 	if mimeType == "" {
 		mimeType = "application/octet-stream"
 	}
 	cacheControl := r.Header.Get("Cache-Control")
-	if strings.HasPrefix(strings.ToLower(mimeType), "multipart/form-data") {
-		mediaType, params, parseErr := mime.ParseMediaType(mimeType)
-		if parseErr != nil || mediaType != "multipart/form-data" || params["boundary"] == "" {
-			writeAPIError(w, httpError(http.StatusBadRequest, "invalid multipart body"))
-			return
-		}
-		reader := multipart.NewReader(bytes.NewReader(data), params["boundary"])
-		var fileData []byte
-		for {
-			part, nextErr := reader.NextPart()
-			if nextErr == io.EOF {
-				break
-			}
-			if nextErr != nil {
-				writeAPIError(w, httpError(http.StatusBadRequest, "invalid multipart body"))
-				return
-			}
-			partData, readErr := io.ReadAll(part)
-			if readErr != nil {
-				writeAPIError(w, readErr)
-				return
-			}
-			if part.FileName() != "" || part.FormName() == "" {
-				fileData = partData
-				if part.Header.Get("Content-Type") != "" {
-					mimeType = part.Header.Get("Content-Type")
-				}
-			} else if part.FormName() == "cacheControl" {
-				cacheControl = string(partData)
-			}
-		}
-		data = fileData
-	}
 	upsert := strings.EqualFold(r.Header.Get("x-upsert"), "true")
 	owner := storageSubject(who)
 	if owner == "" && who.role != who.project.serviceRole {
@@ -368,7 +331,77 @@ func (s *Server) storageUploadObject(w http.ResponseWriter, r *http.Request) {
 		writeAPIError(w, err)
 		return
 	}
-	if err = os.WriteFile(tmpPath, data, 0o640); err != nil {
+	tmp, openErr := os.OpenFile(tmpPath, os.O_WRONLY|os.O_CREATE|os.O_EXCL, 0o640)
+	if openErr != nil {
+		writeAPIError(w, openErr)
+		return
+	}
+	var size int64
+	if strings.HasPrefix(strings.ToLower(mimeType), "multipart/form-data") {
+		mediaType, params, parseErr := mime.ParseMediaType(mimeType)
+		if parseErr != nil || mediaType != "multipart/form-data" || params["boundary"] == "" {
+			_ = tmp.Close()
+			writeAPIError(w, httpError(http.StatusBadRequest, "invalid multipart body"))
+			return
+		}
+		reader := multipart.NewReader(r.Body, params["boundary"])
+		foundFile := false
+		for {
+			part, nextErr := reader.NextPart()
+			if nextErr == io.EOF {
+				break
+			}
+			if nextErr != nil {
+				_ = tmp.Close()
+				writeAPIError(w, httpError(http.StatusBadRequest, "invalid multipart body"))
+				return
+			}
+			if part.FileName() != "" || part.FormName() == "" {
+				if foundFile {
+					continue
+				}
+				foundFile = true
+				if part.Header.Get("Content-Type") != "" {
+					mimeType = part.Header.Get("Content-Type")
+				}
+				size, err = copyLimited(tmp, part, maxStorageObjectBytes)
+				if err != nil {
+					_ = tmp.Close()
+					if errors.Is(err, errStorageObjectTooLarge) {
+						writeAPIError(w, httpError(http.StatusRequestEntityTooLarge, "object exceeds 1 GiB limit"))
+					} else {
+						writeAPIError(w, err)
+					}
+					return
+				}
+			} else if part.FormName() == "cacheControl" {
+				value, readErr := io.ReadAll(io.LimitReader(part, 4096))
+				if readErr != nil {
+					_ = tmp.Close()
+					writeAPIError(w, readErr)
+					return
+				}
+				cacheControl = string(value)
+			}
+		}
+		if !foundFile {
+			_ = tmp.Close()
+			writeAPIError(w, httpError(http.StatusBadRequest, "multipart file is required"))
+			return
+		}
+	} else {
+		size, err = copyLimited(tmp, r.Body, maxStorageObjectBytes)
+		if err != nil {
+			_ = tmp.Close()
+			if errors.Is(err, errStorageObjectTooLarge) {
+				writeAPIError(w, httpError(http.StatusRequestEntityTooLarge, "object exceeds 1 GiB limit"))
+			} else {
+				writeAPIError(w, err)
+			}
+			return
+		}
+	}
+	if err = tmp.Close(); err != nil {
 		writeAPIError(w, err)
 		return
 	}
@@ -379,7 +412,7 @@ func (s *Server) storageUploadObject(w http.ResponseWriter, r *http.Request) {
 		if e := tx.QueryRow(r.Context(), `SELECT public,file_size_limit,allowed_mime_types FROM storage.buckets WHERE id=$1`, bucket).Scan(new(bool), &limit, &allowed); e != nil {
 			return httpError(http.StatusNotFound, "bucket not found or inaccessible")
 		}
-		if limit != nil && int64(len(data)) > *limit {
+		if limit != nil && size > *limit {
 			return httpError(http.StatusRequestEntityTooLarge, "object exceeds bucket file size limit")
 		}
 		if len(allowed) > 0 {
@@ -405,7 +438,7 @@ func (s *Server) storageUploadObject(w http.ResponseWriter, r *http.Request) {
 		if usageErr != nil {
 			return usageErr
 		}
-		if usage-int64(previousSize)+int64(len(data)) > s.storageQuotaBytes {
+		if usage-previousSize+size > s.storageQuotaBytes {
 			return httpError(http.StatusInsufficientStorage, "storage quota exceeded")
 		}
 		if objectID == "" {
@@ -413,9 +446,9 @@ func (s *Server) storageUploadObject(w http.ResponseWriter, r *http.Request) {
 			if err != nil {
 				return err
 			}
-			_, err = tx.Exec(r.Context(), `INSERT INTO storage.objects(id,bucket_id,name,owner_id,metadata,size,mime_type) VALUES($1,$2,$3,$4,$5,$6,$7)`, objectID, bucket, name, nullableUUID(owner), map[string]any{"mimetype": mimeType, "cacheControl": cacheControl}, len(data), mimeType)
+			_, err = tx.Exec(r.Context(), `INSERT INTO storage.objects(id,bucket_id,name,owner_id,metadata,size,mime_type) VALUES($1,$2,$3,$4,$5,$6,$7)`, objectID, bucket, name, nullableUUID(owner), map[string]any{"mimetype": mimeType, "cacheControl": cacheControl}, size, mimeType)
 		} else {
-			_, err = tx.Exec(r.Context(), `UPDATE storage.objects SET metadata=$1,size=$2,mime_type=$3,updated_at=now() WHERE id=$4`, map[string]any{"mimetype": mimeType, "cacheControl": cacheControl}, len(data), mimeType, objectID)
+			_, err = tx.Exec(r.Context(), `UPDATE storage.objects SET metadata=$1,size=$2,mime_type=$3,updated_at=now() WHERE id=$4`, map[string]any{"mimetype": mimeType, "cacheControl": cacheControl}, size, mimeType, objectID)
 		}
 		return err
 	})
@@ -430,6 +463,20 @@ func (s *Server) storageUploadObject(w http.ResponseWriter, r *http.Request) {
 	}
 	committed = true
 	writeJSON(w, http.StatusOK, map[string]any{"Key": bucket + "/" + name, "Id": objectID, "FullPath": bucket + "/" + name})
+}
+
+var errStorageObjectTooLarge = errors.New("storage object too large")
+
+func copyLimited(dst io.Writer, src io.Reader, maximum int64) (int64, error) {
+	limited := io.LimitReader(src, maximum+1)
+	n, err := io.Copy(dst, limited)
+	if err != nil {
+		return n, err
+	}
+	if n > maximum {
+		return n, errStorageObjectTooLarge
+	}
+	return n, nil
 }
 
 func nullableUUID(value string) any {
@@ -478,6 +525,8 @@ func (s *Server) serveStorageObject(w http.ResponseWriter, r *http.Request, p *p
 	}
 	w.Header().Set("Content-Type", object.Mime)
 	w.Header().Set("Content-Length", strconv.FormatInt(object.Size, 10))
+	w.Header().Set("X-Content-Type-Options", "nosniff")
+	w.Header().Set("Content-Disposition", "attachment; filename*=UTF-8''"+url.PathEscape(filepath.Base(object.Name)))
 	http.ServeFile(w, r, file)
 }
 
@@ -506,7 +555,63 @@ func (s *Server) storageDownloadObject(w http.ResponseWriter, r *http.Request) {
 }
 
 func (s *Server) storagePublicObject(w http.ResponseWriter, r *http.Request) {
-	s.storageDownloadObject(w, r)
+	bucket, err := storageBucketName(r.PathValue("bucket"))
+	if err != nil {
+		writeAPIError(w, err)
+		return
+	}
+	name, err := storageObjectName(r.PathValue("path"))
+	if err != nil {
+		writeAPIError(w, err)
+		return
+	}
+	var p project
+	var object objectInfo
+	if strings.TrimSpace(r.Header.Get("apikey")) != "" {
+		who, authErr := storagePrincipal(s, r, false)
+		if authErr != nil {
+			writeAPIError(w, authErr)
+			return
+		}
+		p = *who.project
+		object, err = s.readStorageObject(r.Context(), who, bucket, name)
+	} else {
+		p, object, err = s.findPublicObject(r.Context(), bucket, name)
+	}
+	if err != nil {
+		writeAPIError(w, err)
+		return
+	}
+	s.serveStorageObject(w, r, &p, object)
+}
+
+func (s *Server) findPublicObject(ctx context.Context, bucket, name string) (project, objectInfo, error) {
+	rows, err := s.control.Query(ctx, `SELECT id FROM control.project_catalog ORDER BY id`)
+	if err != nil {
+		return project{}, objectInfo{}, err
+	}
+	defer rows.Close()
+	for rows.Next() {
+		var id string
+		if err := rows.Scan(&id); err != nil {
+			return project{}, objectInfo{}, err
+		}
+		p, err := s.resolveProjectID(ctx, id)
+		if err != nil {
+			continue
+		}
+		var object objectInfo
+		err = s.storageTransaction(ctx, storageServicePrincipal(p), func(tx pgx.Tx) error {
+			return tx.QueryRow(ctx, `SELECT o.bucket_id,o.name,o.size,COALESCE(o.mime_type,'application/octet-stream') FROM storage.objects o JOIN storage.buckets b ON b.id=o.bucket_id WHERE b.id=$1 AND b.public AND o.name=$2`, bucket, name).Scan(&object.Bucket, &object.Name, &object.Size, &object.Mime)
+		})
+		if err == nil {
+			return p, object, nil
+		}
+	}
+	if err := rows.Err(); err != nil {
+		return project{}, objectInfo{}, err
+	}
+	return project{}, objectInfo{}, httpError(http.StatusNotFound, "object not found")
 }
 
 func (s *Server) storageListObjects(w http.ResponseWriter, r *http.Request) {
@@ -631,12 +736,29 @@ func (s *Server) storageSignObject(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	if r.Method == http.MethodGet {
-		p, err := s.resolveAuthProject(r)
-		if err != nil {
-			writeAPIError(w, err)
+		token := r.URL.Query().Get("token")
+		var tokenMeta struct {
+			ProjectID string `json:"project_id"`
+		}
+		parts := strings.Split(token, ".")
+		if len(parts) == 3 {
+			if payload, decodeErr := base64.RawURLEncoding.DecodeString(parts[1]); decodeErr == nil {
+				_ = json.Unmarshal(payload, &tokenMeta)
+			}
+		}
+		var p project
+		var resolveErr error
+		if strings.TrimSpace(r.Header.Get("apikey")) != "" {
+			p, resolveErr = s.resolveAuthProject(r)
+		} else if tokenMeta.ProjectID != "" {
+			p, resolveErr = s.resolveProjectID(r.Context(), tokenMeta.ProjectID)
+		} else {
+			resolveErr = httpError(http.StatusUnauthorized, "invalid signed URL")
+		}
+		if resolveErr != nil {
+			writeAPIError(w, resolveErr)
 			return
 		}
-		token := r.URL.Query().Get("token")
 		claims, verifyErr := keys.VerifyJWT(token, p.secret, time.Now())
 		if verifyErr != nil {
 			writeAPIError(w, httpError(http.StatusUnauthorized, "invalid signed URL"))
@@ -674,7 +796,7 @@ func (s *Server) storageSignObject(w http.ResponseWriter, r *http.Request) {
 		writeAPIError(w, err)
 		return
 	}
-	token, err := keys.SignJWT(who.project.secret, map[string]any{"iss": "pibase", "role": "storage", "bucket": bucket, "path": name, "iat": time.Now().Unix(), "exp": time.Now().Add(time.Duration(req.ExpiresIn) * time.Second).Unix()})
+	token, err := keys.SignJWT(who.project.secret, map[string]any{"iss": "pibase", "role": "storage", "project_id": who.project.id, "bucket": bucket, "path": name, "iat": time.Now().Unix(), "exp": time.Now().Add(time.Duration(req.ExpiresIn) * time.Second).Unix()})
 	if err != nil {
 		writeAPIError(w, err)
 		return

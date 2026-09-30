@@ -7,6 +7,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"net/url"
+	"strings"
 	"time"
 
 	"github.com/jackc/pgx/v5"
@@ -26,6 +27,9 @@ type Result struct {
 func Run(ctx context.Context, adminURL, projectID, statement string) (Result, error) {
 	if statement == "" {
 		return Result{}, fmt.Errorf("SQL statement is required")
+	}
+	if err := validateOwnerSQL(statement); err != nil {
+		return Result{}, err
 	}
 	p, err := lookupProject(ctx, adminURL, projectID)
 	if err != nil {
@@ -54,6 +58,10 @@ func Run(ctx context.Context, adminURL, projectID, statement string) (Result, er
 		result.Columns = append(result.Columns, field.Name)
 	}
 	for rows.Next() {
+		if len(result.Rows) >= 1000 {
+			rows.Close()
+			return Result{}, fmt.Errorf("SQL result exceeds 1000-row limit")
+		}
 		values, err := rows.Values()
 		if err != nil {
 			rows.Close()
@@ -120,6 +128,16 @@ name text PRIMARY KEY, checksum text NOT NULL, applied_at timestamptz NOT NULL D
 		return err
 	}
 	return tx.Commit(ctx)
+}
+
+func validateOwnerSQL(statement string) error {
+	lower := strings.ToLower(statement)
+	for _, forbidden := range []string{"reset role", "set role", "set session authorization", "reset session authorization", "create role", "alter role", "drop role", "grant ", "revoke ", "copy ", "program"} {
+		if strings.Contains(lower, forbidden) {
+			return fmt.Errorf("owner SQL contains a forbidden privilege-changing construct")
+		}
+	}
+	return nil
 }
 
 func MarshalResult(result Result) ([]byte, error) {

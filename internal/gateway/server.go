@@ -7,6 +7,7 @@ import (
 	"net/http"
 	"os"
 	"strconv"
+	"strings"
 	"sync"
 	"time"
 
@@ -24,6 +25,7 @@ type Server struct {
 	databaseSlots     chan struct{}
 	rateMu            sync.Mutex
 	rates             map[string]rateWindow
+	authRates         map[string]rateWindow
 	exposeAuthTokens  bool
 	storageRoot       string
 	storageQuotaBytes int64
@@ -76,6 +78,7 @@ func New(ctx context.Context, databaseURL string, masterKey []byte, activeProjec
 		pools:             make(map[string]*pgxpool.Pool),
 		databaseSlots:     make(chan struct{}, 32),
 		rates:             make(map[string]rateWindow),
+		authRates:         make(map[string]rateWindow),
 		exposeAuthTokens:  os.Getenv("PIBASE_AUTH_EXPOSE_TOKENS") == "true",
 		storageRoot:       storageRoot,
 		storageQuotaBytes: storageQuotaBytes,
@@ -158,6 +161,7 @@ func (s *Server) Handler() http.Handler {
 	mux := http.NewServeMux()
 	mux.HandleFunc("POST /auth/v1/signup", s.authSignup)
 	mux.HandleFunc("POST /auth/v1/token", s.authToken)
+	mux.HandleFunc("POST /auth/v1/logout", s.authLogout)
 	mux.HandleFunc("GET /auth/v1/verify", s.authVerify)
 	mux.HandleFunc("POST /auth/v1/verify", s.authVerify)
 	mux.HandleFunc("POST /auth/v1/recover", s.authRecover)
@@ -197,7 +201,16 @@ func (s *Server) Handler() http.Handler {
 		w.Header().Set("Content-Type", "application/json")
 		_, _ = w.Write([]byte(`{"status":"ok"}`))
 	})
-	return cors(http.MaxBytesHandler(mux, 1<<20))
+	limited := http.MaxBytesHandler(mux, 1<<20)
+	return cors(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		// Storage uploads stream directly to disk and enforce their own 1 GiB
+		// object limit; all other API requests retain the 1 MiB body cap.
+		if (r.Method == http.MethodPost || r.Method == http.MethodPut) && strings.HasPrefix(r.URL.Path, "/storage/v1/object/") && !strings.HasPrefix(r.URL.Path, "/storage/v1/object/list/") && !strings.HasPrefix(r.URL.Path, "/storage/v1/object/sign/") {
+			mux.ServeHTTP(w, r)
+			return
+		}
+		limited.ServeHTTP(w, r)
+	}))
 }
 
 func cors(next http.Handler) http.Handler {

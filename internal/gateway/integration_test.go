@@ -97,7 +97,7 @@ GRANT EXECUTE ON FUNCTION public.add_numbers(integer,integer) TO ` + pgx.Identif
 		t.Fatalf("RLS response: %s", response)
 	}
 	jwtSecret := gatewayJWTSecret(t, adminURL, p.ID, masterKey)
-	userToken, err := keys.SignJWT(jwtSecret, map[string]any{"iss": "pibase", "role": "authenticated", "sub": "user-1", "iat": time.Now().Unix(), "exp": time.Now().Add(time.Hour).Unix()})
+	userToken, err := keys.SignJWT(jwtSecret, map[string]any{"iss": "pibase", "aud": "authenticated", "role": "authenticated", "sub": "user-1", "iat": time.Now().Unix(), "exp": time.Now().Add(time.Hour).Unix()})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -135,7 +135,7 @@ GRANT EXECUTE ON FUNCTION public.add_numbers(integer,integer) TO ` + pgx.Identif
 	if string(response) != "5" {
 		t.Fatalf("RPC response: %s", response)
 	}
-	requestJSON(t, httpServer.Client(), http.MethodGet, httpServer.URL+"/rest/v1/todos?or=(title.eq.public)", p.ServiceKey, "", "", http.StatusBadRequest)
+	requestJSON(t, httpServer.Client(), http.MethodGet, httpServer.URL+"/rest/v1/todos?or=(title.eq.public)", p.ServiceKey, "", "", http.StatusOK)
 	requestJSON(t, httpServer.Client(), http.MethodGet, httpServer.URL+"/rest/v1/todos", "not-a-key", "", "", http.StatusUnauthorized)
 
 	controlURL := databaseURL(t, adminURL, "_control", parsedUsername(t, adminURL), urlPassword(t, adminURL))
@@ -231,6 +231,8 @@ CREATE POLICY owner_only ON public.private_rows FOR SELECT TO ` + pgx.Identifier
 		t.Fatalf("refresh response: %s", rotated)
 	}
 	requestAuthJSON(t, httpServer.Client(), http.MethodPost, httpServer.URL+"/auth/v1/token?grant_type=refresh_token", p.AnonKey, `{"refresh_token":"`+session.Refresh+`"}`, http.StatusBadRequest)
+	requestAuthJSONBearer(t, httpServer.Client(), http.MethodPost, httpServer.URL+"/auth/v1/logout", p.AnonKey, next.Access, "{}", http.StatusNoContent)
+	requestAuthJSON(t, httpServer.Client(), http.MethodPost, httpServer.URL+"/auth/v1/token?grant_type=refresh_token", p.AnonKey, `{"refresh_token":"`+next.Refresh+`"}`, http.StatusBadRequest)
 	recovery := requestAuthJSON(t, httpServer.Client(), http.MethodPost, httpServer.URL+"/auth/v1/recover", p.AnonKey, `{"email":"`+email+`"}`, http.StatusOK)
 	var reset struct {
 		Token string `json:"reset_token"`

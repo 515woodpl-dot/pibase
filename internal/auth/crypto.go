@@ -7,6 +7,7 @@ import (
 	"encoding/base64"
 	"fmt"
 	"strings"
+	"sync"
 
 	"golang.org/x/crypto/argon2"
 )
@@ -19,6 +20,16 @@ const (
 	passwordSaltLen = 16
 )
 
+var passwordSlots = make(chan struct{}, 2)
+var dummyHashOnce sync.Once
+var dummyHash string
+
+func withPasswordSlot(fn func() string) string {
+	passwordSlots <- struct{}{}
+	defer func() { <-passwordSlots }()
+	return fn()
+}
+
 func HashPassword(password string) (string, error) {
 	if len(password) < 6 || len(password) > 1024 {
 		return "", fmt.Errorf("password must be between 6 and 1024 characters")
@@ -27,9 +38,11 @@ func HashPassword(password string) (string, error) {
 	if _, err := rand.Read(salt); err != nil {
 		return "", err
 	}
-	hash := argon2.IDKey([]byte(password), salt, passwordTime, passwordMemory, passwordThreads, passwordKeyLen)
+	hash := withPasswordSlot(func() string {
+		return base64.RawStdEncoding.EncodeToString(argon2.IDKey([]byte(password), salt, passwordTime, passwordMemory, passwordThreads, passwordKeyLen))
+	})
 	enc := base64.RawStdEncoding
-	return fmt.Sprintf("$pibase$argon2id$v=19$m=%d,t=%d,p=%d$%s$%s", passwordMemory, passwordTime, passwordThreads, enc.EncodeToString(salt), enc.EncodeToString(hash)), nil
+	return fmt.Sprintf("$pibase$argon2id$v=19$m=%d,t=%d,p=%d$%s$%s", passwordMemory, passwordTime, passwordThreads, enc.EncodeToString(salt), hash), nil
 }
 
 func VerifyPassword(password, encoded string) bool {
@@ -50,8 +63,25 @@ func VerifyPassword(password, encoded string) bool {
 	if err != nil || len(want) == 0 {
 		return false
 	}
-	got := argon2.IDKey([]byte(password), salt, iterations, memory, uint8(threads), uint32(len(want)))
-	return subtle.ConstantTimeCompare(got, want) == 1
+	return withPasswordSlot(func() string {
+		got := argon2.IDKey([]byte(password), salt, iterations, memory, uint8(threads), uint32(len(want)))
+		if subtle.ConstantTimeCompare(got, want) == 1 {
+			return "true"
+		}
+		return "false"
+	}) == "true"
+}
+
+// DummyPasswordHash returns a stable valid hash for equal-cost verification
+// when a login email does not exist. It is never stored or returned.
+func DummyPasswordHash() string {
+	dummyHashOnce.Do(func() {
+		salt := []byte("pibase-dummy-salt")
+		hash := argon2.IDKey([]byte("pibase-dummy-password"), salt, passwordTime, passwordMemory, passwordThreads, passwordKeyLen)
+		dummyHash = fmt.Sprintf("$pibase$argon2id$v=19$m=%d,t=%d,p=%d$%s$%s", passwordMemory, passwordTime, passwordThreads,
+			base64.RawStdEncoding.EncodeToString(salt), base64.RawStdEncoding.EncodeToString(hash))
+	})
+	return dummyHash
 }
 
 func RandomToken(size int) (string, []byte, error) {

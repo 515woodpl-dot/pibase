@@ -115,6 +115,20 @@ gateway, rerun the Compose bootstrap and recreate the gateway. M1 should give
 integration tests a disposable database/cluster path or restore the original
 password automatically.
 
+## Audit fix pass
+
+- Added per-IP/email auth rate limits, constant-cost unknown-user login,
+  two-slot Argon2 concurrency, audience validation, non-enumerating duplicate
+  signup responses, logout refresh-session revocation, and refresh-family
+  revocation on replay.
+- Added `or`/`not` REST filters, owner-SQL privilege keyword guards and a
+  1,000-row result cap.
+- Added streamed storage writes up to 1 GiB, no-key public/signed downloads,
+  safe download headers, storage rate/usage accounting, project storage cleanup,
+  and committed M0 raw measurement evidence with a PSS-capable harness.
+- Re-ran static/unit/real-Postgres/image/ARM64 gates and Supabase JS acceptance;
+  the updated ARM64 artifact checksum is recorded in the milestone reports.
+
 ## Repository state
 
 The `pibase/m0` worktree intentionally contains the large replacement of the
