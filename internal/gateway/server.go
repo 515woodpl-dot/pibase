@@ -34,6 +34,7 @@ type Server struct {
 	operatorToken     string
 	startedAt         time.Time
 	requestCount      atomic.Uint64
+	realtime          *realtimeHub
 }
 
 func New(ctx context.Context, databaseURL string, masterKey []byte, activeProjects int, lightLoad bool) (*Server, error) {
@@ -95,6 +96,10 @@ func New(ctx context.Context, databaseURL string, masterKey []byte, activeProjec
 		adminDatabaseURL:  os.Getenv("PIBASE_ADMIN_DATABASE_URL"),
 		operatorToken:     os.Getenv("PIBASE_OPERATOR_TOKEN"),
 		startedAt:         time.Now(),
+	}
+	if s.realtime, err = newRealtimeHub(s); err != nil {
+		s.Close()
+		return nil, err
 	}
 	if activeProjects > 0 {
 		rows, err := controlPool.Query(ctx, `SELECT database_name FROM control.project_catalog ORDER BY id LIMIT $1`, activeProjects)
@@ -177,6 +182,7 @@ func (s *Server) Handler() http.Handler {
 	mux.HandleFunc("GET /dashboard/", s.dashboardHandler)
 	mux.HandleFunc("GET /_pibase/projects", s.operatorProjects)
 	mux.HandleFunc("POST /_pibase/projects/{id}/sql", s.operatorSQL)
+	mux.HandleFunc("GET /realtime/v1/websocket", s.realtime.websocket)
 	mux.HandleFunc("POST /auth/v1/signup", s.authSignup)
 	mux.HandleFunc("POST /auth/v1/token", s.authToken)
 	mux.HandleFunc("POST /auth/v1/logout", s.authLogout)
@@ -247,6 +253,9 @@ func cors(next http.Handler) http.Handler {
 }
 
 func (s *Server) Close() {
+	if s.realtime != nil {
+		s.realtime.Close()
+	}
 	for _, pool := range s.projects {
 		pool.Close()
 	}

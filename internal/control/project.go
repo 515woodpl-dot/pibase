@@ -236,6 +236,36 @@ AS $$ SELECT CASE WHEN current_setting('request.jwt.claims', true) ~ '"sub"\s*:\
   (current_setting('request.jwt.claims', true)::jsonb ->> 'sub')::uuid ELSE NULL END $$;
 REVOKE ALL ON FUNCTION auth.uid() FROM PUBLIC;
 GRANT EXECUTE ON FUNCTION auth.uid() TO ` + pgx.Identifier{anon}.Sanitize() + `, ` + pgx.Identifier{authenticated}.Sanitize() + `, ` + pgx.Identifier{service}.Sanitize() + `, ` + pgx.Identifier{admin}.Sanitize() + `;`
+	setup += `
+CREATE SCHEMA realtime AUTHORIZATION ` + pgx.Identifier{admin}.Sanitize() + `;
+REVOKE ALL ON SCHEMA realtime FROM PUBLIC;
+CREATE FUNCTION realtime.notify_change() RETURNS trigger
+LANGUAGE plpgsql SECURITY DEFINER SET search_path=pg_catalog
+AS $$
+DECLARE change_id text;
+BEGIN
+  change_id := COALESCE(to_jsonb(NEW)->>'id', to_jsonb(OLD)->>'id');
+  IF change_id IS NOT NULL THEN
+    PERFORM pg_notify('pibase_changes', json_build_object('table',TG_TABLE_NAME,'op',TG_OP,'id',change_id)::text);
+  END IF;
+  RETURN COALESCE(NEW, OLD);
+END $$;
+CREATE FUNCTION realtime.enable_table(target regclass) RETURNS void
+LANGUAGE plpgsql SECURITY DEFINER SET search_path=pg_catalog
+AS $$
+DECLARE target_schema text; target_table text;
+BEGIN
+  SELECT n.nspname,c.relname INTO target_schema,target_table
+  FROM pg_class c JOIN pg_namespace n ON n.oid=c.relnamespace WHERE c.oid=target;
+  IF target_schema <> 'public' OR target_table IS NULL THEN
+    RAISE EXCEPTION 'only public tables can be enabled for realtime';
+  END IF;
+  EXECUTE format('DROP TRIGGER IF EXISTS pibase_realtime_change ON %I.%I',target_schema,target_table);
+  EXECUTE format('CREATE TRIGGER pibase_realtime_change AFTER INSERT OR UPDATE OR DELETE ON %I.%I FOR EACH ROW EXECUTE FUNCTION realtime.notify_change()',target_schema,target_table);
+END $$;
+REVOKE ALL ON FUNCTION realtime.notify_change(), realtime.enable_table(regclass) FROM PUBLIC;
+GRANT USAGE ON SCHEMA realtime TO ` + pgx.Identifier{admin}.Sanitize() + `;
+GRANT EXECUTE ON FUNCTION realtime.enable_table(regclass) TO ` + pgx.Identifier{admin}.Sanitize() + `;`
 	_, err = projectDB.Exec(ctx, setup)
 	projectDB.Close(ctx)
 	if err != nil {
