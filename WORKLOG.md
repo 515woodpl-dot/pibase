@@ -4,9 +4,10 @@ Last updated: 2026-10-01
 
 ## Current milestone
 
-M4 — operations — implementation complete on `pibase/m4`, pending independent
-audit and a fresh-Pi setup drill. The authoritative scope and security rules
-remain in `PLAN.md`; current evidence and known limits are in `reports/M4.md`.
+M4 — operations — independently approved with follow-up fixes on `pibase/m4`.
+M5 may proceed. A fresh-Pi setup drill remains required before a release claim;
+the authoritative scope and security rules remain in `PLAN.md`, with current
+evidence and known limits in `reports/M4.md`.
 
 ## M4 implementation
 
