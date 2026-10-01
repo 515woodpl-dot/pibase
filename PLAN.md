@@ -104,7 +104,25 @@ Each milestone ends with a written **GATE REPORT** (`reports/Mx.md`): what was b
 - **M2, auth:** email/password, refresh, confirm, reset, `auth.uid()`, admin user management.
 - **M3, storage:** buckets, RLS on objects, signed URLs, quotas.
 - **M4, operations:** dashboard, backups/restore, usage, monitoring, Pi setup and branching.
-- **M5:** realtime, cron, webhooks and pgvector toggle.
+- **M5a, realtime changes and delivery foundation:**
+  - Supabase-compatible `postgres_changes` WebSockets only. PostgreSQL
+    `LISTEN`/`NOTIFY` messages contain table, operation, and row id only; the
+    gateway fetches the row and re-checks RLS for every subscribed socket before
+    delivery. Broadcast and presence are deferred.
+  - Per-project WebSocket cap and idle timeout, with a measured RAM figure on
+    the Pi. A two-user live test must prove a subscriber never receives another
+    user's row.
+  - Gateway-owned scheduler and retry outbox. `cron.jobs` runs scheduled SQL or
+    webhook jobs; event-driven webhook delivery uses the same worker and
+    durable outbox. Do not use `pg_cron`: it runs in only one database per
+    cluster.
+  - Outbound webhook SSRF guard rejects loopback, private, link-local,
+    multicast, and otherwise non-public destinations after DNS resolution; the
+    guard is a gate test.
+  - Operator-only pgvector extension toggle. Customers cannot install arbitrary
+    extensions through SQL.
+- **M5b, deferred realtime ergonomics:** in-memory broadcast and presence, plus
+  any remaining cron surface not needed by the M5a scheduler/outbox gate.
 - **M6, only on request:** OAuth, MFA, PITR, image transforms, S3 API, PostGIS.
 
 ## 6. Security rules (auditor checks every gate)
