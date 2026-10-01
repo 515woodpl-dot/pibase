@@ -8,6 +8,7 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"strings"
 	"time"
 
 	"github.com/515woodpl-dot/pibase/internal/keys"
@@ -37,6 +38,58 @@ type ProjectUsage struct {
 	ProjectID string    `json:"project_id"`
 	Day       time.Time `json:"day"`
 	Requests  int64     `json:"requests"`
+}
+
+type ProjectStat struct {
+	ProjectSummary
+	DatabaseBytes int64 `json:"database_bytes"`
+	StorageBytes  int64 `json:"storage_bytes"`
+	Requests30d   int64 `json:"requests_30d"`
+}
+
+// ProjectStats returns bounded operator telemetry without keys or encrypted material.
+func ProjectStats(ctx context.Context, adminURL, storageRoot string) ([]ProjectStat, error) {
+	controlURL, err := withDatabase(adminURL, "_control")
+	if err != nil {
+		return nil, err
+	}
+	conn, err := pgx.Connect(ctx, controlURL)
+	if err != nil {
+		return nil, err
+	}
+	defer conn.Close(ctx)
+	rows, err := conn.Query(ctx, `SELECT p.id,p.name,p.database_name,p.created_at,p.max_database_bytes,
+pg_database_size(p.database_name),COALESCE((SELECT sum(requests) FROM control.project_usage u WHERE u.project_id=p.id AND u.day>=current_date-29),0)
+	FROM control.project_catalog p ORDER BY p.created_at,p.id`)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	var result []ProjectStat
+	for rows.Next() {
+		var item ProjectStat
+		if err := rows.Scan(&item.ID, &item.Name, &item.Database, &item.CreatedAt, &item.MaxDatabase, &item.DatabaseBytes, &item.Requests30d); err != nil {
+			return nil, err
+		}
+		root := filepath.Join(storageRoot, item.ID)
+		err := filepath.Walk(root, func(_ string, info os.FileInfo, walkErr error) error {
+			if os.IsNotExist(walkErr) {
+				return nil
+			}
+			if walkErr != nil {
+				return walkErr
+			}
+			if !info.IsDir() && !strings.Contains(info.Name(), ".tmp-") {
+				item.StorageBytes += info.Size()
+			}
+			return nil
+		})
+		if err != nil {
+			return nil, err
+		}
+		result = append(result, item)
+	}
+	return result, rows.Err()
 }
 
 func CreateProject(ctx context.Context, adminURL, name string, masterKey []byte) (_ Project, err error) {

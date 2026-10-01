@@ -1,0 +1,12 @@
+services:
+  postgres:
+    volumes:
+      - ${PIBASE_DATA_ROOT:-/srv/pibase}/postgres:/var/lib/postgresql/data
+  gateway:
+    volumes:
+      - ${PIBASE_DATA_ROOT:-/srv/pibase}/files:/data/files
+      - ${PIBASE_DATA_ROOT:-/srv/pibase}/backups:/data/backups
+  ops:
+    volumes:
+      - ${PIBASE_DATA_ROOT:-/srv/pibase}/files:/data/files
+      - ${PIBASE_DATA_ROOT:-/srv/pibase}/backups:/data/backups

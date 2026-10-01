@@ -1,12 +1,23 @@
 # Codex worklog
 
-Last updated: 2026-09-30
+Last updated: 2026-10-01
 
 ## Current milestone
 
-M2 — authentication — active after M1 was pushed as commit `2df8396` on
-2026-09-30. The owner requested continuing through M2 before review. The
-authoritative scope and security rules are in `PLAN.md`.
+M4 — operations — implementation complete on `pibase/m4`, pending independent
+audit and a fresh-Pi setup drill. The authoritative scope and security rules
+remain in `PLAN.md`; current evidence and known limits are in `reports/M4.md`.
+
+## M4 implementation
+
+- Added authenticated static dashboard, owner SQL UI, health/Prometheus
+  metrics, and per-project request/database/storage usage.
+- Added streaming authenticated encrypted backup/restore with database and file
+  state, guarded project matching, and an ephemeral PostgreSQL-client ops image.
+- Added safe public-schema/data branching with fresh roles and keys, explicitly
+  excluding auth and storage state.
+- Added Pi setup/operations runbook and verified unit, real-Postgres,
+  production-image, ARM64, live restore/branch, and Supabase JS regression gates.
 
 ## Completed M0
 

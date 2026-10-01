@@ -4,7 +4,7 @@ set -eu
 cd "$(dirname "$0")/.."
 ./scripts/init-env.sh
 docker run --rm -v "$PWD:/src" -v pibase-go-mod:/go/pkg/mod -v pibase-go-build:/root/.cache/go-build -w /src golang:1.23-bookworm sh -c 'go mod tidy && gofmt -w cmd internal && go vet ./... && go test ./...'
-production_image="${PIBASE_IMAGE:-pibase:m3}"
+production_image="${PIBASE_IMAGE:-pibase:m4}"
 if ! docker image inspect "$production_image" >/dev/null 2>&1; then
   docker build --tag "$production_image" .
 fi

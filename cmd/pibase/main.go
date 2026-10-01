@@ -14,6 +14,7 @@ import (
 	"time"
 
 	"github.com/515woodpl-dot/pibase/internal/adminsql"
+	"github.com/515woodpl-dot/pibase/internal/backup"
 	"github.com/515woodpl-dot/pibase/internal/config"
 	"github.com/515woodpl-dot/pibase/internal/control"
 	"github.com/515woodpl-dot/pibase/internal/gateway"
@@ -29,7 +30,7 @@ func main() {
 
 func run() error {
 	if len(os.Args) < 2 {
-		return errors.New("usage: pibase <bootstrap|project-create|project-delete|project-list|project-usage|migration-apply|sql|serve>")
+		return errors.New("usage: pibase <bootstrap|project-create|project-branch|project-delete|project-list|project-usage|backup|restore|migration-apply|sql|serve>")
 	}
 	ctx := context.Background()
 	switch os.Args[1] {
@@ -78,6 +79,32 @@ func run() error {
 			return err
 		}
 		return control.DeleteProject(ctx, url, os.Args[2])
+	case "project-branch":
+		if len(os.Args) != 4 {
+			return errors.New("usage: pibase project-branch <source-project-id> <new-name>")
+		}
+		url, err := config.Required("PIBASE_ADMIN_DATABASE_URL")
+		if err != nil {
+			return err
+		}
+		encodedKey, err := config.Required("PIBASE_MASTER_KEY")
+		if err != nil {
+			return err
+		}
+		key, err := secretbox.DecodeKey(encodedKey)
+		if err != nil {
+			return err
+		}
+		project, err := control.BranchProject(ctx, url, os.Args[2], os.Args[3], key)
+		if err != nil {
+			return err
+		}
+		output, err := control.JSON(project)
+		if err != nil {
+			return err
+		}
+		fmt.Println(string(output))
+		return nil
 	case "project-list":
 		if len(os.Args) != 2 {
 			return errors.New("usage: pibase project-list")
@@ -114,13 +141,42 @@ func run() error {
 		}
 		fmt.Println(string(output))
 		return nil
+	case "backup", "restore":
+		if len(os.Args) != 4 {
+			return fmt.Errorf("usage: pibase %s <project-id> <destination-or-backup>", os.Args[1])
+		}
+		url, err := config.Required("PIBASE_ADMIN_DATABASE_URL")
+		if err != nil {
+			return err
+		}
+		encodedKey, err := config.Required("PIBASE_BACKUP_KEY")
+		if err != nil {
+			return err
+		}
+		keyBytes, err := secretbox.DecodeKey(encodedKey)
+		if err != nil {
+			return fmt.Errorf("decode backup key: %w", err)
+		}
+		var key [32]byte
+		copy(key[:], keyBytes)
+		storageRoot := os.Getenv("PIBASE_STORAGE_ROOT")
+		if storageRoot == "" {
+			storageRoot = "/data/files"
+		}
+		if os.Args[1] == "backup" {
+			return backup.Backup(ctx, url, os.Args[2], storageRoot, os.Args[3], key)
+		}
+		if os.Getenv("PIBASE_RESTORE_CONFIRM") != os.Args[2] {
+			return errors.New("restore is destructive; set PIBASE_RESTORE_CONFIRM to the project id")
+		}
+		return backup.Restore(ctx, url, os.Args[2], storageRoot, os.Args[3], key)
 	case "serve":
 		return serve()
 	case "migration-apply":
 		if len(os.Args) != 4 {
 			return errors.New("usage: pibase migration-apply <project-id> <name> < migration.sql")
 		}
-		url, err := config.Required("PIBASE_ADMIN_DATABASE_URL")
+		url, err := config.Required("PIBASE_DATABASE_URL")
 		if err != nil {
 			return err
 		}
@@ -133,7 +189,7 @@ func run() error {
 		if len(os.Args) != 3 {
 			return errors.New("usage: pibase sql <project-id> < statement.sql")
 		}
-		url, err := config.Required("PIBASE_ADMIN_DATABASE_URL")
+		url, err := config.Required("PIBASE_DATABASE_URL")
 		if err != nil {
 			return err
 		}

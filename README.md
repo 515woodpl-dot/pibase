@@ -3,7 +3,7 @@
 A small Supabase-shaped backend for Raspberry Pi 4. It runs one PostgreSQL 16
 cluster and one Go gateway. M1 provides a PostgREST-compatible data subset,
 database-enforced RLS, RPC, migrations, and owner SQL tooling. Auth user
-management, storage, realtime, and the dashboard belong to later milestones.
+management, storage, operations, and project branching. Realtime belongs to M5.
 
 ## Requirements
 
@@ -60,18 +60,17 @@ returns a clear JSON 400 response.
 
 ## Migrations and owner SQL
 
-Migration and arbitrary SQL commands require the operator-only admin database
-URL and execute as the selected project's admin role inside that project's
-database. SQL is read from standard input so it does not appear in process
-arguments.
+Migration and arbitrary SQL commands execute through the constrained
+`authenticator` database URL, then assume only the selected project's admin
+role inside that project's database. A superuser database URL is deliberately
+rejected so submitted SQL cannot recover superuser privileges. SQL is read from
+standard input so it does not appear in process arguments.
 
 ```sh
 docker compose run --rm -T \
-  -e PIBASE_ADMIN_DATABASE_URL='postgres://postgres:...@postgres:5432/postgres' \
   gateway migration-apply PROJECT_ID 0001_create_todos < migration.sql
 
 printf 'select current_user, now()' | docker compose run --rm -T \
-  -e PIBASE_ADMIN_DATABASE_URL='postgres://postgres:...@postgres:5432/postgres' \
   gateway sql PROJECT_ID
 ```
 
@@ -91,6 +90,20 @@ data tests, builds the production image, and cross-compiles for Linux ARM64.
 The Supabase acceptance script creates a temporary isolated project, exercises
 M1 through the real `@supabase/supabase-js` client, and deletes that project.
 The M0 measurement harness remains available for reproducing Pi memory data.
+
+## Operations (M4)
+
+`/healthz` is the readiness check, `/metrics` exposes compact Prometheus text
+metrics, and `/dashboard` is a static, no-Node operator UI. The dashboard lists
+request, database, and file-storage usage and provides the owner SQL editor.
+Dashboard API calls require `PIBASE_OPERATOR_TOKEN`; owner SQL executes through
+the M1 authenticator boundary, with a 30-second timeout and 1,000-row cap.
+
+The binary also provides encrypted per-project `backup` and guarded `restore`
+commands plus `project-branch`. Branches receive fresh roles and keys and copy
+only the source `public` schema/data—not users, sessions, or private files.
+See [docs/PI-OPERATIONS.md](docs/PI-OPERATIONS.md) for Pi setup, backup-key
+handling, restore drills, monitoring, and branching semantics.
 
 ## Stop
 

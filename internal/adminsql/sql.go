@@ -45,7 +45,7 @@ func Run(ctx context.Context, adminURL, projectID, statement string) (Result, er
 		return Result{}, err
 	}
 	defer func() { _ = tx.Rollback(context.Background()) }()
-	if _, err := tx.Exec(ctx, `SET SESSION AUTHORIZATION authenticator; SET LOCAL ROLE `+pgx.Identifier{p.role}.Sanitize()+`; SET LOCAL statement_timeout='30s'`); err != nil {
+	if _, err := tx.Exec(ctx, `SET LOCAL ROLE `+pgx.Identifier{p.role}.Sanitize()+`; SET LOCAL statement_timeout='30s'`); err != nil {
 		return Result{}, err
 	}
 	rows, err := tx.Query(ctx, statement)
@@ -101,7 +101,7 @@ func ApplyMigration(ctx context.Context, adminURL, projectID, name, sql string) 
 		return err
 	}
 	defer func() { _ = tx.Rollback(context.Background()) }()
-	if _, err := tx.Exec(ctx, `SET SESSION AUTHORIZATION authenticator; SET LOCAL ROLE `+pgx.Identifier{p.role}.Sanitize()+`; SET LOCAL statement_timeout='30s'; SELECT pg_advisory_xact_lock(1885957734)`); err != nil {
+	if _, err := tx.Exec(ctx, `SET LOCAL ROLE `+pgx.Identifier{p.role}.Sanitize()+`; SET LOCAL statement_timeout='30s'; SELECT pg_advisory_xact_lock(1885957734)`); err != nil {
 		return err
 	}
 	if _, err := tx.Exec(ctx, `CREATE TABLE IF NOT EXISTS public.pibase_migrations (
@@ -155,7 +155,7 @@ func lookupProject(ctx context.Context, adminURL, id string) (project, error) {
 	}
 	defer conn.Close(ctx)
 	var p project
-	if err := conn.QueryRow(ctx, `SELECT database_name,admin_role FROM control.projects WHERE id=$1`, id).Scan(&p.database, &p.role); err != nil {
+	if err := conn.QueryRow(ctx, `SELECT database_name,admin_role FROM control.project_catalog WHERE id=$1`, id).Scan(&p.database, &p.role); err != nil {
 		if err == pgx.ErrNoRows {
 			return project{}, fmt.Errorf("project %q not found", id)
 		}
@@ -172,6 +172,13 @@ func connectProject(ctx context.Context, adminURL, database string) (*pgx.Conn, 
 	config, err := pgx.ParseConfig(projectURL)
 	if err != nil {
 		return nil, err
+	}
+	// Raw owner SQL must never inherit a superuser session. In particular,
+	// PostgreSQL accepts comments between RESET SESSION AUTHORIZATION tokens, so
+	// a keyword filter cannot safely contain a superuser connection. The gateway
+	// and operator tools therefore connect only as the constrained runtime role.
+	if config.User != "authenticator" {
+		return nil, fmt.Errorf("owner SQL requires a PIBASE_DATABASE_URL for the authenticator role")
 	}
 	config.ConnectTimeout = 5 * time.Second
 	return pgx.ConnectConfig(ctx, config)

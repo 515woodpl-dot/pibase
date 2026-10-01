@@ -64,18 +64,18 @@ CREATE POLICY service_all ON public.todos FOR ALL TO ` + pgx.Identifier{prefix +
 CREATE FUNCTION public.add_numbers(a integer,b integer) RETURNS integer LANGUAGE sql IMMUTABLE AS 'SELECT a+b';
 REVOKE ALL ON FUNCTION public.add_numbers(integer,integer) FROM PUBLIC;
 GRANT EXECUTE ON FUNCTION public.add_numbers(integer,integer) TO ` + pgx.Identifier{prefix + "_anon"}.Sanitize() + `;`
-	if err := adminsql.ApplyMigration(ctx, adminURL, p.ID, "0001_rest_fixture", setup); err != nil {
+	authURL := databaseURL(t, adminURL, "_control", "authenticator", password)
+	if err := adminsql.ApplyMigration(ctx, authURL, p.ID, "0001_rest_fixture", setup); err != nil {
 		t.Fatal(err)
 	}
-	if err := adminsql.ApplyMigration(ctx, adminURL, p.ID, "0001_rest_fixture", setup); err != nil {
+	if err := adminsql.ApplyMigration(ctx, authURL, p.ID, "0001_rest_fixture", setup); err != nil {
 		t.Fatalf("idempotent migration: %v", err)
 	}
-	result, err := adminsql.Run(ctx, adminURL, p.ID, `SELECT current_user AS role`)
+	result, err := adminsql.Run(ctx, authURL, p.ID, `SELECT current_user AS role`)
 	if err != nil || len(result.Rows) != 1 || result.Rows[0]["role"] != prefix+"_admin" {
 		t.Fatalf("owner SQL boundary: %+v, %v", result, err)
 	}
 
-	authURL := databaseURL(t, adminURL, "_control", "authenticator", password)
 	server, err := New(ctx, authURL, masterKey, 0, false)
 	if err != nil {
 		t.Fatal(err)
@@ -176,10 +176,10 @@ func TestM2AuthAndUID(t *testing.T) {
 ALTER TABLE public.private_rows ENABLE ROW LEVEL SECURITY;
 GRANT SELECT ON public.private_rows TO ` + pgx.Identifier{prefix + "_authenticated"}.Sanitize() + `;
 CREATE POLICY owner_only ON public.private_rows FOR SELECT TO ` + pgx.Identifier{prefix + "_authenticated"}.Sanitize() + ` USING (auth.uid() = user_id);`
-	if err := adminsql.ApplyMigration(ctx, adminURL, p.ID, "0001_m2_auth", fixture); err != nil {
+	authURL := databaseURL(t, adminURL, "_control", "authenticator", password)
+	if err := adminsql.ApplyMigration(ctx, authURL, p.ID, "0001_m2_auth", fixture); err != nil {
 		t.Fatal(err)
 	}
-	authURL := databaseURL(t, adminURL, "_control", "authenticator", password)
 	t.Setenv("PIBASE_AUTH_EXPOSE_TOKENS", "true")
 	t.Setenv("PIBASE_ENV", "test")
 	server, err := New(ctx, authURL, masterKey, 0, false)

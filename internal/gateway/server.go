@@ -9,6 +9,7 @@ import (
 	"strconv"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"time"
 
 	"github.com/jackc/pgx/v5"
@@ -29,6 +30,10 @@ type Server struct {
 	exposeAuthTokens  bool
 	storageRoot       string
 	storageQuotaBytes int64
+	adminDatabaseURL  string
+	operatorToken     string
+	startedAt         time.Time
+	requestCount      atomic.Uint64
 }
 
 func New(ctx context.Context, databaseURL string, masterKey []byte, activeProjects int, lightLoad bool) (*Server, error) {
@@ -87,6 +92,9 @@ func New(ctx context.Context, databaseURL string, masterKey []byte, activeProjec
 		exposeAuthTokens:  exposeAuthTokens,
 		storageRoot:       storageRoot,
 		storageQuotaBytes: storageQuotaBytes,
+		adminDatabaseURL:  os.Getenv("PIBASE_ADMIN_DATABASE_URL"),
+		operatorToken:     os.Getenv("PIBASE_OPERATOR_TOKEN"),
+		startedAt:         time.Now(),
 	}
 	if activeProjects > 0 {
 		rows, err := controlPool.Query(ctx, `SELECT database_name FROM control.project_catalog ORDER BY id LIMIT $1`, activeProjects)
@@ -164,6 +172,11 @@ func (s *Server) lightLoad(ctx context.Context) {
 
 func (s *Server) Handler() http.Handler {
 	mux := http.NewServeMux()
+	mux.HandleFunc("GET /metrics", s.metricsHandler)
+	mux.HandleFunc("GET /dashboard", s.dashboardHandler)
+	mux.HandleFunc("GET /dashboard/", s.dashboardHandler)
+	mux.HandleFunc("GET /_pibase/projects", s.operatorProjects)
+	mux.HandleFunc("POST /_pibase/projects/{id}/sql", s.operatorSQL)
 	mux.HandleFunc("POST /auth/v1/signup", s.authSignup)
 	mux.HandleFunc("POST /auth/v1/token", s.authToken)
 	mux.HandleFunc("POST /auth/v1/logout", s.authLogout)
@@ -208,6 +221,7 @@ func (s *Server) Handler() http.Handler {
 	})
 	limited := http.MaxBytesHandler(mux, 1<<20)
 	return cors(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		s.requestCount.Add(1)
 		// Storage uploads stream directly to disk and enforce their own 1 GiB
 		// object limit; all other API requests retain the 1 MiB body cap.
 		if (r.Method == http.MethodPost || r.Method == http.MethodPut) && strings.HasPrefix(r.URL.Path, "/storage/v1/object/") && !strings.HasPrefix(r.URL.Path, "/storage/v1/object/list/") && !strings.HasPrefix(r.URL.Path, "/storage/v1/object/sign/") {

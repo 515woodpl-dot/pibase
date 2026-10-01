@@ -36,7 +36,7 @@ CREATE TABLE IF NOT EXISTS control.project_usage (
 CREATE OR REPLACE VIEW control.project_catalog AS
   SELECT id, database_name, anon_role, authenticated_role, service_role,
          admin_role, jwt_secret_encrypted, anon_key_hash, service_key_hash,
-         max_database_bytes
+         max_database_bytes, name, created_at
   FROM control.projects;
 GRANT USAGE ON SCHEMA control TO authenticator;
 GRANT SELECT ON control.project_catalog TO authenticator;

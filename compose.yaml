@@ -35,7 +35,9 @@ services:
     restart: "no"
 
   gateway:
-    build: .
+    build:
+      context: .
+      target: gateway
     environment:
       PIBASE_DATABASE_URL: postgres://authenticator:${PIBASE_AUTHENTICATOR_PASSWORD}@postgres:5432/_control
       PIBASE_MASTER_KEY: ${PIBASE_MASTER_KEY:?set PIBASE_MASTER_KEY in .env}
@@ -45,6 +47,9 @@ services:
       PIBASE_ENV: ${PIBASE_ENV:-production}
       PIBASE_AUTH_EXPOSE_TOKENS: ${PIBASE_AUTH_EXPOSE_TOKENS:-false}
       PIBASE_STORAGE_ROOT: /data/files
+      PIBASE_ADMIN_DATABASE_URL: postgres://authenticator:${PIBASE_AUTHENTICATOR_PASSWORD}@postgres:5432/_control
+      PIBASE_OPERATOR_TOKEN: ${PIBASE_OPERATOR_TOKEN:-}
+      PIBASE_BACKUP_KEY: ${PIBASE_BACKUP_KEY:-}
     depends_on:
       bootstrap:
         condition: service_completed_successfully
@@ -52,7 +57,26 @@ services:
       - "127.0.0.1:18080:8080"
     volumes:
       - storage-data:/data/files
+      - backup-data:/data/backups
+
+  ops:
+    profiles: ["tools"]
+    build:
+      context: .
+      target: ops
+    environment:
+      PIBASE_ADMIN_DATABASE_URL: postgres://postgres:${POSTGRES_PASSWORD}@postgres:5432/postgres
+      PIBASE_MASTER_KEY: ${PIBASE_MASTER_KEY:?set PIBASE_MASTER_KEY in .env}
+      PIBASE_BACKUP_KEY: ${PIBASE_BACKUP_KEY:-}
+      PIBASE_STORAGE_ROOT: /data/files
+    depends_on:
+      postgres:
+        condition: service_healthy
+    volumes:
+      - storage-data:/data/files
+      - backup-data:/data/backups
 
 volumes:
   postgres-data:
   storage-data:
+  backup-data:
