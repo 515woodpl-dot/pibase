@@ -8,6 +8,7 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"time"
 
 	"github.com/515woodpl-dot/pibase/internal/keys"
 	"github.com/515woodpl-dot/pibase/internal/secretbox"
@@ -20,6 +21,22 @@ type Project struct {
 	Database   string `json:"database"`
 	AnonKey    string `json:"anon_key"`
 	ServiceKey string `json:"service_key"`
+}
+
+// ProjectSummary is the operator-facing, non-secret project inventory record.
+// API keys and encrypted signing material are deliberately excluded.
+type ProjectSummary struct {
+	ID          string    `json:"id"`
+	Name        string    `json:"name"`
+	Database    string    `json:"database"`
+	CreatedAt   time.Time `json:"created_at"`
+	MaxDatabase int64     `json:"max_database_bytes"`
+}
+
+type ProjectUsage struct {
+	ProjectID string    `json:"project_id"`
+	Day       time.Time `json:"day"`
+	Requests  int64     `json:"requests"`
 }
 
 func CreateProject(ctx context.Context, adminURL, name string, masterKey []byte) (_ Project, err error) {
@@ -208,6 +225,81 @@ GRANT EXECUTE ON FUNCTION auth.uid() TO ` + pgx.Identifier{anon}.Sanitize() + `,
 }
 
 func JSON(project Project) ([]byte, error) { return json.MarshalIndent(project, "", "  ") }
+
+// ListProjects returns inventory metadata only. It must be called with the
+// operator/admin database URL; the authenticator role cannot read this table.
+func ListProjects(ctx context.Context, adminURL string) ([]ProjectSummary, error) {
+	controlURL, err := withDatabase(adminURL, "_control")
+	if err != nil {
+		return nil, err
+	}
+	conn, err := pgx.Connect(ctx, controlURL)
+	if err != nil {
+		return nil, fmt.Errorf("connect control database: %w", err)
+	}
+	defer conn.Close(ctx)
+	rows, err := conn.Query(ctx, `SELECT id,name,database_name,created_at,max_database_bytes FROM control.projects ORDER BY created_at,id`)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	var projects []ProjectSummary
+	for rows.Next() {
+		var project ProjectSummary
+		if err := rows.Scan(&project.ID, &project.Name, &project.Database, &project.CreatedAt, &project.MaxDatabase); err != nil {
+			return nil, err
+		}
+		projects = append(projects, project)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	return projects, nil
+}
+
+// Usage returns request counters for one project. Missing projects and missing
+// days are reported as errors/zero rows rather than silently mixing projects.
+func Usage(ctx context.Context, adminURL, projectID string, from, to time.Time) ([]ProjectUsage, error) {
+	if projectID == "" {
+		return nil, fmt.Errorf("project id is required")
+	}
+	controlURL, err := withDatabase(adminURL, "_control")
+	if err != nil {
+		return nil, err
+	}
+	conn, err := pgx.Connect(ctx, controlURL)
+	if err != nil {
+		return nil, fmt.Errorf("connect control database: %w", err)
+	}
+	defer conn.Close(ctx)
+	var exists bool
+	if err := conn.QueryRow(ctx, `SELECT EXISTS (SELECT 1 FROM control.projects WHERE id=$1)`, projectID).Scan(&exists); err != nil {
+		return nil, err
+	}
+	if !exists {
+		return nil, fmt.Errorf("project %q not found", projectID)
+	}
+	if from.IsZero() {
+		from = time.Now().UTC().AddDate(0, 0, -30)
+	}
+	if to.IsZero() {
+		to = time.Now().UTC().AddDate(0, 0, 1)
+	}
+	rows, err := conn.Query(ctx, `SELECT project_id,day,requests FROM control.project_usage WHERE project_id=$1 AND day >= $2::date AND day < $3::date ORDER BY day`, projectID, from, to)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	var usage []ProjectUsage
+	for rows.Next() {
+		var item ProjectUsage
+		if err := rows.Scan(&item.ProjectID, &item.Day, &item.Requests); err != nil {
+			return nil, err
+		}
+		usage = append(usage, item)
+	}
+	return usage, rows.Err()
+}
 
 func DeleteProject(ctx context.Context, adminURL, id string) error {
 	controlURL, err := withDatabase(adminURL, "_control")

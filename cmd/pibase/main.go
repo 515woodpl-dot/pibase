@@ -2,6 +2,7 @@ package main
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"io"
@@ -28,7 +29,7 @@ func main() {
 
 func run() error {
 	if len(os.Args) < 2 {
-		return errors.New("usage: pibase <bootstrap|project-create|project-delete|migration-apply|sql|serve>")
+		return errors.New("usage: pibase <bootstrap|project-create|project-delete|project-list|project-usage|migration-apply|sql|serve>")
 	}
 	ctx := context.Background()
 	switch os.Args[1] {
@@ -77,6 +78,42 @@ func run() error {
 			return err
 		}
 		return control.DeleteProject(ctx, url, os.Args[2])
+	case "project-list":
+		if len(os.Args) != 2 {
+			return errors.New("usage: pibase project-list")
+		}
+		url, err := config.Required("PIBASE_ADMIN_DATABASE_URL")
+		if err != nil {
+			return err
+		}
+		projects, err := control.ListProjects(ctx, url)
+		if err != nil {
+			return err
+		}
+		output, err := json.MarshalIndent(projects, "", "  ")
+		if err != nil {
+			return err
+		}
+		fmt.Println(string(output))
+		return nil
+	case "project-usage":
+		if len(os.Args) != 3 {
+			return errors.New("usage: pibase project-usage <project-id>")
+		}
+		url, err := config.Required("PIBASE_ADMIN_DATABASE_URL")
+		if err != nil {
+			return err
+		}
+		usage, err := control.Usage(ctx, url, os.Args[2], time.Time{}, time.Time{})
+		if err != nil {
+			return err
+		}
+		output, err := json.MarshalIndent(usage, "", "  ")
+		if err != nil {
+			return err
+		}
+		fmt.Println(string(output))
+		return nil
 	case "serve":
 		return serve()
 	case "migration-apply":
