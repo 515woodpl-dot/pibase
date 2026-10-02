@@ -49,9 +49,9 @@ repository source left unchanged:
   scheduled SQL, scheduled webhook enqueue/delivery, loopback SSRF rejection,
   event-trigger outbox enqueue, and pending-outbox backpressure.
 
-The full Pi hardware gate still requires the measurement below and the
-auditor's live attack suite (including DNS rebinding and flapping endpoint
-coverage).
+The separate final M5a review records the auditor's live attack suite,
+including two-user ownership changes and webhook SSRF behavior. M5b's audit
+also reran the ownership-change regression after adding broadcast/presence.
 
 ## Remediation audit
 
@@ -65,13 +65,14 @@ coverage).
   outbox itself, so cron jobs, `cron.enqueue_webhook()` triggers, and ordinary
   owner inserts share the same bound. An advisory transaction lock prevents a
   concurrent-insert race past the cap.
-- **UNVERIFIED:** the Pi 4 RSS/socket measurement remains hardware-only.
+- **VERIFIED:** the Pi 4 PSS/socket measurement is recorded below.
 
-## Pi measurement — pending hardware gate
+## Pi measurement
 
-The required Pi 4 WebSocket RAM measurement has not been taken in this x86
-development environment. On the target Pi, record the gateway RSS before and
-after opening the configured number of idle sockets, along with the connection
-count, build revision, and `PIBASE_REALTIME_MAX_CONNECTIONS` setting. The
-result belongs here before auditor sign-off; no x86/Docker number substitutes
-for it.
+On a Raspberry Pi 4 Model B Rev 1.5 with 4 GB RAM, 32 external supabase-js
+clients increased the gateway test process's PSS from 12,333 KiB to 14,477
+KiB: a 2,144 KiB delta, or 68,608 bytes per connected socket. Client memory
+was excluded by running Node in a separate process. The test process includes
+the gateway plus the Go test harness, so the delta—not the absolute baseline—
+is the useful figure. **VERIFIED.** Raw command, environment, and output:
+[`reports/raw/m5b-realtime-pi4.txt`](raw/m5b-realtime-pi4.txt).

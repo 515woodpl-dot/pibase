@@ -105,8 +105,19 @@ func TestM5bBroadcastPresenceIsolation(t *testing.T) {
 		t.Fatalf("disconnect did not remove presence: %s", disconnectDiff)
 	}
 
-	pushRealtime(t, a3, "7", "realtime:room", "broadcast", map[string]any{"type": "broadcast", "event": "too-big", "payload": strings.Repeat("x", maxRealtimePayloadBytes+1)})
-	assertReply(t, a3, "7", "error")
+	pushRealtime(t, a1, "7", "realtime:room", "presence", map[string]any{"type": "presence", "event": "track", "payload": map[string]any{"second": true}})
+	assertRealtimeEvent(t, a1, "presence_diff", 2*time.Second)
+	assertReply(t, a1, "7", "ok")
+	assertRealtimeEvent(t, a3, "presence_diff", 2*time.Second)
+	pushRealtime(t, a1, "8", "realtime:room", "phx_leave", map[string]any{})
+	assertReply(t, a1, "8", "ok")
+	channelLeave := assertRealtimeEvent(t, a3, "presence_diff", 2*time.Second)
+	if !strings.Contains(string(channelLeave), `"leaves":{"a"`) {
+		t.Fatalf("channel leave did not remove presence: %s", channelLeave)
+	}
+
+	pushRealtime(t, a3, "9", "realtime:room", "broadcast", map[string]any{"type": "broadcast", "event": "too-big", "payload": strings.Repeat("x", maxRealtimePayloadBytes+1)})
+	assertReply(t, a3, "9", "error")
 	private := dialRealtime(t, httpServer.URL, projectA.AnonKey)
 	defer private.Close()
 	pushRealtime(t, private, "private", "realtime:private", "phx_join", map[string]any{"config": map[string]any{"private": true}})

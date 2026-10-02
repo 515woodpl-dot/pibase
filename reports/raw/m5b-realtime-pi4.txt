@@ -1,0 +1,37 @@
+M5b realtime socket memory evidence
+Date: 2026-10-02
+Commit tested: 44e2ced1018814cd11f91afc0250667ec4b0f0b7
+
+Host:
+Raspberry Pi 4 Model B Rev 1.5
+Linux gejg 6.18.34+rpt-rpi-v8 #1 SMP PREEMPT Debian 1:6.18.34-1+rpt1 (2026-06-09) aarch64 GNU/Linux
+Memory total: 3979137024 bytes
+Go: go1.23.12 linux/arm64
+PostgreSQL: 16.15 (Debian 16.15-1.pgdg12+2), aarch64
+
+Method:
+- The Go test process hosted the real gateway and read its own
+  /proc/self/smaps_rollup Pss value.
+- 32 supabase-js clients ran in a separate Node process, so client memory was
+  excluded from gateway PSS.
+- PIBASE_REALTIME_MAX_CONNECTIONS=32.
+- runtime.GC() ran before each PSS reading, with a one-second settle after all
+  clients reported SUBSCRIBED.
+
+Command (from internal/gateway):
+PIBASE_TEST_ADMIN_DATABASE_URL=<redacted local postgres URL> \
+PIBASE_STORAGE_ROOT=<temporary directory> \
+PIBASE_MEASURE_REALTIME=true \
+<compiled gateway test binary> \
+  -test.count=1 -test.run '^TestM5bRealtimePiMemory$' -test.v
+
+Raw result:
+=== RUN   TestM5bRealtimePiMemory
+PIBASE_REALTIME_MEMORY model="Raspberry Pi 4 Model B Rev 1.5" arch=arm64 connections=32 baseline_pss_kib=12333 loaded_pss_kib=14477 delta_pss_kib=2144 delta_bytes_per_socket=68608
+--- PASS: TestM5bRealtimePiMemory (5.04s)
+PASS
+
+Interpretation:
+32 idle joined sockets added 2144 KiB PSS total, approximately 67 KiB per
+socket. The 32-connection default therefore added about 2.1 MiB in this run.
+The absolute baseline includes the Go test harness, so only the delta is used.

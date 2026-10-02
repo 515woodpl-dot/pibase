@@ -5,4 +5,5 @@ reports/raw/*
 !reports/raw/m0-memory.csv
 !reports/raw/m0-environment.txt
 !reports/raw/m0-gateway.log
+!reports/raw/m5b-realtime-pi4.txt
 node_modules/
