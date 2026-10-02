@@ -14,6 +14,13 @@ if [ -e .env ]; then
 fi
 
 umask 077
+data_root="${PIBASE_DATA_ROOT:-/srv/pibase}"
+case "$data_root" in
+  *'|'*) echo "PIBASE_DATA_ROOT must not contain |" >&2; exit 1 ;;
+  *'/../'*|*'/..') echo "PIBASE_DATA_ROOT must not contain .." >&2; exit 1 ;;
+  /media/*|/mnt/*|/srv/*) ;;
+  *) echo "PIBASE_DATA_ROOT must be under /media, /mnt, or /srv" >&2; exit 1 ;;
+esac
 postgres_password="$(od -An -N32 -tx1 /dev/urandom | tr -d ' \n')"
 authenticator_password="$(od -An -N32 -tx1 /dev/urandom | tr -d ' \n')"
 master_key="$(head -c 32 /dev/urandom | base64 | tr -d '\n')"
@@ -25,5 +32,6 @@ sed \
   -e "s|^PIBASE_MASTER_KEY=.*|PIBASE_MASTER_KEY=$master_key|" \
   -e "s|^PIBASE_BACKUP_KEY=.*|PIBASE_BACKUP_KEY=$backup_key|" \
   -e "s|^PIBASE_OPERATOR_TOKEN=.*|PIBASE_OPERATOR_TOKEN=$operator_token|" \
+  -e "s|^PIBASE_DATA_ROOT=.*|PIBASE_DATA_ROOT=$data_root|" \
   .env.example > .env
 chmod 600 .env

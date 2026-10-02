@@ -2,6 +2,7 @@
 set -eu
 
 cd "$(dirname "$0")/.."
+./scripts/test-setup-pi.sh
 ./scripts/init-env.sh
 docker run --rm -v "$PWD:/src" -v pibase-go-mod:/go/pkg/mod -v pibase-go-build:/root/.cache/go-build -w /src golang:1.23-bookworm sh -c 'go mod tidy && gofmt -w cmd internal && go vet ./... && go test ./...'
 production_image="${PIBASE_IMAGE:-pibase:m4}"
