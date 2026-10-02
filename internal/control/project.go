@@ -300,6 +300,23 @@ CREATE TABLE cron.webhook_outbox (
   created_at timestamptz NOT NULL DEFAULT now()
 );
 CREATE INDEX webhook_outbox_ready_idx ON cron.webhook_outbox(next_attempt_at) WHERE delivered_at IS NULL AND dead_lettered_at IS NULL;
+CREATE INDEX webhook_outbox_pending_idx ON cron.webhook_outbox(id) WHERE delivered_at IS NULL AND dead_lettered_at IS NULL;
+-- A project database is the tenancy boundary, so this is a per-project cap.
+-- Serializing the count and insert prevents concurrent event triggers from
+-- exceeding it. At the 1 MiB body limit, 256 pending items bound payload
+-- storage to roughly 256 MiB before Postgres overhead.
+CREATE FUNCTION cron.enforce_outbox_limit() RETURNS trigger
+LANGUAGE plpgsql SECURITY DEFINER SET search_path=pg_catalog,cron
+AS $$
+BEGIN
+  PERFORM pg_advisory_xact_lock(hashtext('pibase:cron.webhook_outbox'));
+  IF (SELECT count(*) FROM cron.webhook_outbox WHERE delivered_at IS NULL AND dead_lettered_at IS NULL) >= 256 THEN
+    RAISE EXCEPTION 'cron webhook outbox pending limit (256) reached';
+  END IF;
+  RETURN NEW;
+END $$;
+CREATE TRIGGER cron_webhook_outbox_limit
+BEFORE INSERT ON cron.webhook_outbox FOR EACH ROW EXECUTE FUNCTION cron.enforce_outbox_limit();
 -- Attach this function to an owner-created AFTER row trigger to place an
 -- event in the same durable outbox used by scheduled webhooks.  The target
 -- URL and optional method are trigger arguments, so no network action occurs
@@ -324,7 +341,7 @@ BEGIN
   RETURN COALESCE(NEW, OLD);
 END $$;
 REVOKE ALL ON ALL TABLES IN SCHEMA cron FROM PUBLIC;
-REVOKE ALL ON FUNCTION cron.enqueue_webhook() FROM PUBLIC;
+REVOKE ALL ON FUNCTION cron.enforce_outbox_limit(), cron.enqueue_webhook() FROM PUBLIC;
 GRANT USAGE ON SCHEMA cron TO ` + pgx.Identifier{admin}.Sanitize() + `;
 GRANT ALL PRIVILEGES ON ALL TABLES IN SCHEMA cron TO ` + pgx.Identifier{admin}.Sanitize() + `;
 GRANT USAGE,SELECT ON ALL SEQUENCES IN SCHEMA cron TO ` + pgx.Identifier{admin}.Sanitize() + `;

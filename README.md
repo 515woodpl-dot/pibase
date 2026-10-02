@@ -137,6 +137,9 @@ FOR EACH ROW EXECUTE FUNCTION cron.enqueue_webhook('https://hooks.example/todos'
 
 The trigger stores the event and row JSON in the outbox as part of the same
 database transaction; the gateway performs the network delivery later. The
+outbox permits at most 256 pending items per project (about 256 MiB at the
+1 MiB body maximum), applying backpressure to scheduled, trigger, and direct
+owner inserts alike. The
 operator can enable pgvector only with:
 
 ```sh

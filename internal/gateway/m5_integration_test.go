@@ -132,6 +132,20 @@ CREATE POLICY realtime_service ON public.realtime_rows FOR ALL TO ` + pgx.Identi
 	if eventURL != "http://127.0.0.1/event" || !strings.Contains(eventBody, `"type" : "INSERT"`) && !strings.Contains(eventBody, `"type":"INSERT"`) {
 		t.Fatalf("event trigger did not enqueue expected payload: url=%q body=%s", eventURL, eventBody)
 	}
+	if _, err = adminsql.Run(ctx, authURL, p.ID, `INSERT INTO cron.webhook_outbox(url)
+SELECT 'https://hooks.example/filled' FROM generate_series(1, GREATEST(0, 256 - (SELECT count(*) FROM cron.webhook_outbox WHERE delivered_at IS NULL AND dead_lettered_at IS NULL)))`); err != nil {
+		t.Fatal(err)
+	}
+	if _, err = adminsql.Run(ctx, authURL, p.ID, `INSERT INTO cron.jobs(schedule,webhook_url) VALUES ('* * * * *','https://hooks.example/backpressure')`); err != nil {
+		t.Fatal(err)
+	}
+	server.runCronProject(ctx, who.project)
+	if err := projectConn.QueryRow(ctx, `SELECT last_error FROM cron.jobs WHERE webhook_url='https://hooks.example/backpressure'`).Scan(&lastError); err != nil || !strings.Contains(lastError, "pending limit") {
+		t.Fatalf("scheduler did not record outbox backpressure: %q err=%v", lastError, err)
+	}
+	if _, err = adminsql.Run(ctx, authURL, p.ID, `INSERT INTO cron.webhook_outbox(url) VALUES ('https://hooks.example/overflow')`); err == nil || !strings.Contains(err.Error(), "pending limit") {
+		t.Fatalf("outbox pending cap was not enforced: %v", err)
+	}
 }
 
 func joinRealtime(t *testing.T, baseURL, apiKey, token, id string) *websocket.Conn {

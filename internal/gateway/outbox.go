@@ -75,7 +75,11 @@ func (s *Server) runCronProject(ctx context.Context, p *project) {
 		} else {
 			_, err = tx.Exec(ctx, `INSERT INTO cron.webhook_outbox(url,method,headers,body) VALUES($1,$2,$3,$4)`, url, method, headers, body)
 			if err != nil {
-				return err
+				// A full outbox is backpressure, not a reason to spin on this
+				// due job every scheduler tick. Keep the error visible and retry
+				// on its normal schedule after delivery makes room.
+				_, _ = tx.Exec(ctx, `UPDATE cron.jobs SET last_error=$2,next_run_at=now()+$3::interval WHERE id=$1`, id, err.Error(), delay.String())
+				return nil
 			}
 		}
 		_, err = tx.Exec(ctx, `UPDATE cron.jobs SET last_run_at=now(),last_error=NULL,next_run_at=now()+$2::interval WHERE id=$1`, id, delay.String())
