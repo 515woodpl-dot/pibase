@@ -98,8 +98,8 @@ func retryDelay(attempts int) time.Duration {
 	if attempts < 1 {
 		return time.Minute
 	}
-	if attempts > 6 {
-		attempts = 6
+	if attempts > 7 {
+		return time.Hour
 	}
 	return time.Minute * time.Duration(1<<(attempts-1))
 }

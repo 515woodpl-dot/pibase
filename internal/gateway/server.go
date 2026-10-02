@@ -101,6 +101,9 @@ func New(ctx context.Context, databaseURL string, masterKey []byte, activeProjec
 		s.Close()
 		return nil, err
 	}
+	if os.Getenv("PIBASE_SCHEDULER_DISABLED") != "true" {
+		go s.runDeliveryWorker()
+	}
 	if activeProjects > 0 {
 		rows, err := controlPool.Query(ctx, `SELECT database_name FROM control.project_catalog ORDER BY id LIMIT $1`, activeProjects)
 		if err != nil {
