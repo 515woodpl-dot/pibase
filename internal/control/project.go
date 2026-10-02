@@ -266,6 +266,44 @@ END $$;
 REVOKE ALL ON FUNCTION realtime.notify_change(), realtime.enable_table(regclass) FROM PUBLIC;
 GRANT USAGE ON SCHEMA realtime TO ` + pgx.Identifier{admin}.Sanitize() + `;
 GRANT EXECUTE ON FUNCTION realtime.enable_table(regclass) TO ` + pgx.Identifier{admin}.Sanitize() + `;`
+	setup += `
+CREATE SCHEMA cron AUTHORIZATION ` + pgx.Identifier{admin}.Sanitize() + `;
+REVOKE ALL ON SCHEMA cron FROM PUBLIC;
+CREATE TABLE cron.jobs (
+  id bigint GENERATED ALWAYS AS IDENTITY PRIMARY KEY,
+  schedule text NOT NULL,
+  sql text,
+  webhook_url text,
+  webhook_method text NOT NULL DEFAULT 'POST',
+  webhook_headers jsonb NOT NULL DEFAULT '{}'::jsonb,
+  webhook_body bytea NOT NULL DEFAULT ''::bytea,
+  enabled boolean NOT NULL DEFAULT true,
+  next_run_at timestamptz NOT NULL DEFAULT now(),
+  last_run_at timestamptz,
+  last_error text,
+  CHECK ((sql IS NOT NULL) <> (webhook_url IS NOT NULL)),
+  CHECK (webhook_method IN ('POST','PUT','PATCH','DELETE')),
+  CHECK (octet_length(webhook_body) <= 1048576)
+);
+CREATE TABLE cron.webhook_outbox (
+  id bigint GENERATED ALWAYS AS IDENTITY PRIMARY KEY,
+  url text NOT NULL,
+  method text NOT NULL DEFAULT 'POST' CHECK (method IN ('POST','PUT','PATCH','DELETE')),
+  headers jsonb NOT NULL DEFAULT '{}'::jsonb,
+  body bytea NOT NULL DEFAULT ''::bytea CHECK (octet_length(body) <= 1048576),
+  attempts integer NOT NULL DEFAULT 0 CHECK (attempts >= 0),
+  next_attempt_at timestamptz NOT NULL DEFAULT now(),
+  leased_until timestamptz,
+  delivered_at timestamptz,
+  dead_lettered_at timestamptz,
+  last_error text,
+  created_at timestamptz NOT NULL DEFAULT now()
+);
+CREATE INDEX webhook_outbox_ready_idx ON cron.webhook_outbox(next_attempt_at) WHERE delivered_at IS NULL AND dead_lettered_at IS NULL;
+REVOKE ALL ON ALL TABLES IN SCHEMA cron FROM PUBLIC;
+GRANT USAGE ON SCHEMA cron TO ` + pgx.Identifier{admin}.Sanitize() + `;
+GRANT ALL PRIVILEGES ON ALL TABLES IN SCHEMA cron TO ` + pgx.Identifier{admin}.Sanitize() + `;
+GRANT USAGE,SELECT ON ALL SEQUENCES IN SCHEMA cron TO ` + pgx.Identifier{admin}.Sanitize() + `;`
 	_, err = projectDB.Exec(ctx, setup)
 	projectDB.Close(ctx)
 	if err != nil {
