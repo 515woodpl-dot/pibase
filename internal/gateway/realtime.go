@@ -82,19 +82,6 @@ func (h *realtimeHub) websocket(w http.ResponseWriter, r *http.Request) {
 		writeAPIError(w, err)
 		return
 	}
-	h.mu.Lock()
-	count := 0
-	for client := range h.clients {
-		if client.principal.project.id == who.project.id {
-			count++
-		}
-	}
-	if h.closed || count >= h.maxPerProject {
-		h.mu.Unlock()
-		writeAPIError(w, httpError(http.StatusTooManyRequests, "realtime connection limit reached"))
-		return
-	}
-	h.mu.Unlock()
 	upgrader := websocket.Upgrader{CheckOrigin: func(*http.Request) bool { return true }, ReadBufferSize: 4096, WriteBufferSize: 4096}
 	conn, err := upgrader.Upgrade(w, r, nil)
 	if err != nil {
@@ -102,7 +89,13 @@ func (h *realtimeHub) websocket(w http.ResponseWriter, r *http.Request) {
 	}
 	client := &realtimeClient{hub: h, conn: conn, principal: who, apiKey: r.Header.Get("apikey")}
 	h.mu.Lock()
-	if h.closed {
+	count := 0
+	for existing := range h.clients {
+		if existing.principal.project.id == who.project.id {
+			count++
+		}
+	}
+	if h.closed || count >= h.maxPerProject {
 		h.mu.Unlock()
 		_ = conn.Close()
 		return
@@ -154,7 +147,9 @@ func (c *realtimeClient) read() {
 				_ = c.reply(joinRef, ref, topic, "error", map[string]string{"reason": "invalid access token"})
 				continue
 			}
+			c.mu.Lock()
 			c.principal = who
+			c.mu.Unlock()
 		}
 		subs, err := c.join(topic, join)
 		if err != nil {
@@ -186,10 +181,14 @@ func (c *realtimeClient) join(topic string, join realtimeJoin) ([]realtimeSubscr
 			return nil, fmt.Errorf("only unfiltered public-table changes are supported")
 		}
 		event := change.Event
-		if event == "" {
-			event = "*"
+		// DELETE cannot be safely delivered from a NOTIFY-only feed: once the
+		// transaction commits there is no row left on which to re-run RLS. Keep
+		// that limitation explicit instead of accepting a subscription that can
+		// never receive an event.
+		if event == "DELETE" || event == "*" || event == "" {
+			return nil, fmt.Errorf("only INSERT and UPDATE postgres_changes are supported; DELETE and wildcard subscriptions are unavailable")
 		}
-		if event != "*" && event != "INSERT" && event != "UPDATE" && event != "DELETE" {
+		if event != "INSERT" && event != "UPDATE" {
 			return nil, fmt.Errorf("invalid postgres_changes event")
 		}
 		id := change.ID
@@ -199,9 +198,18 @@ func (c *realtimeClient) join(topic string, join realtimeJoin) ([]realtimeSubscr
 		subs = append(subs, realtimeSubscription{id: id, topic: topic, schema: change.Schema, table: change.Table, event: event})
 	}
 	c.mu.Lock()
-	c.subscriptions = append(c.subscriptions, subs...)
+	// A Phoenix topic can be rejoined after a reconnect. Replace, rather than
+	// append, its subscriptions so a client cannot receive duplicate events.
+	kept := c.subscriptions[:0]
+	for _, existing := range c.subscriptions {
+		if existing.topic != topic {
+			kept = append(kept, existing)
+		}
+	}
+	c.subscriptions = append(kept, subs...)
+	project := c.principal.project
 	c.mu.Unlock()
-	c.hub.ensureListener(c.principal.project)
+	c.hub.ensureListener(project)
 	return subs, nil
 }
 
@@ -259,30 +267,43 @@ func (h *realtimeHub) listen(p *project) {
 		delete(h.listeners, p.id)
 		h.mu.Unlock()
 	}()
-	config, err := pgx.ParseConfig(h.server.databaseURL)
-	if err != nil {
-		return
-	}
-	config.Database = p.database
-	ctx := h.ctx
-	conn, err := pgx.ConnectConfig(ctx, config)
-	if err != nil {
-		return
-	}
-	defer conn.Close(ctx)
-	if _, err = conn.Exec(ctx, "LISTEN "+pgx.Identifier{realtimeChannel}.Sanitize()); err != nil {
-		return
-	}
 	for {
-		notification, err := conn.WaitForNotification(ctx)
-		if err != nil {
+		if h.ctx.Err() != nil {
 			return
 		}
-		var change struct{ Table, Op, ID string }
-		if json.Unmarshal([]byte(notification.Payload), &change) != nil || change.Table == "" || change.ID == "" {
-			continue
+		config, err := pgx.ParseConfig(h.server.databaseURL)
+		if err == nil {
+			config.Database = p.database
+			conn, connectErr := pgx.ConnectConfig(h.ctx, config)
+			if connectErr == nil {
+				err = func() error {
+					defer conn.Close(h.ctx)
+					if _, err := conn.Exec(h.ctx, "LISTEN "+pgx.Identifier{realtimeChannel}.Sanitize()); err != nil {
+						return err
+					}
+					for {
+						notification, err := conn.WaitForNotification(h.ctx)
+						if err != nil {
+							return err
+						}
+						var change struct{ Table, Op, ID string }
+						if json.Unmarshal([]byte(notification.Payload), &change) == nil && change.Table != "" && change.ID != "" {
+							go h.deliver(p, change.Table, change.Op, change.ID)
+						}
+					}
+				}()
+			}
 		}
-		go h.deliver(p, change.Table, change.Op, change.ID)
+		if h.ctx.Err() != nil {
+			return
+		}
+		// A transient database restart must not leave existing subscriptions
+		// permanently inert.
+		select {
+		case <-h.ctx.Done():
+			return
+		case <-time.After(time.Second):
+		}
 	}
 }
 
@@ -303,19 +324,24 @@ func (h *realtimeHub) deliver(p *project, table, operation, id string) {
 		subs := append([]realtimeSubscription(nil), client.subscriptions...)
 		who := client.principal
 		client.mu.Unlock()
+		record, ok := h.visibleRecord(who, table, id)
 		for _, sub := range subs {
-			if sub.table != table || (sub.event != "*" && sub.event != operation) || !h.visible(who, table, id) {
+			if sub.table != table || (sub.event != "*" && sub.event != operation) || !ok {
 				continue
 			}
-			_ = client.write([]any{nil, nil, sub.topic, "postgres_changes", map[string]any{"ids": []string{sub.id}, "data": map[string]any{"schema": "public", "table": table, "type": operation, "record": map[string]string{"id": id}}}})
+			_ = client.write([]any{nil, nil, sub.topic, "postgres_changes", map[string]any{"ids": []string{sub.id}, "data": map[string]any{"schema": "public", "table": table, "type": operation, "record": record}}})
 		}
 	}
 }
 
-func (h *realtimeHub) visible(who principal, relation, id string) bool {
+// visibleRecord fetches the row inside the subscriber's database transaction.
+// Selecting it is the RLS check; never deliver data merely because a trigger
+// fired. Deletes deliberately do not reach this point because their row can no
+// longer be rechecked without retaining a potentially stale copy.
+func (h *realtimeHub) visibleRecord(who principal, relation, id string) (json.RawMessage, bool) {
 	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
 	defer cancel()
-	visible := false
+	var record json.RawMessage
 	err := h.server.transaction(ctx, who, func(tx pgx.Tx) error {
 		table, err := loadTable(ctx, tx, "public", relation)
 		if err != nil {
@@ -325,9 +351,9 @@ func (h *realtimeHub) visible(who principal, relation, id string) bool {
 		if err != nil {
 			return err
 		}
-		return tx.QueryRow(ctx, "SELECT EXISTS (SELECT 1 FROM "+table.identifier()+" WHERE "+pgx.Identifier{column.name}.Sanitize()+"="+column.cast("$1")+")", id).Scan(&visible)
+		return tx.QueryRow(ctx, "SELECT row_to_json(t)::jsonb FROM "+table.identifier()+" AS t WHERE "+pgx.Identifier{column.name}.Sanitize()+"="+column.cast("$1"), id).Scan(&record)
 	})
-	return err == nil && visible
+	return record, err == nil
 }
 
 func (h *realtimeHub) Close() {

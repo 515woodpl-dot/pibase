@@ -105,6 +105,46 @@ only the source `public` schema/data—not users, sessions, or private files.
 See [docs/PI-OPERATIONS.md](docs/PI-OPERATIONS.md) for Pi setup, backup-key
 handling, restore drills, monitoring, and branching semantics.
 
+## Realtime and delivery (M5a)
+
+`/realtime/v1/websocket` supports the `postgres_changes` channel used by
+supabase-js for unfiltered, explicit `INSERT` and `UPDATE` changes on `public`
+tables. Wildcard and `DELETE` subscriptions are rejected clearly.
+An owner enables a table explicitly through the SQL tool:
+
+```sql
+SELECT realtime.enable_table('public.todos'::regclass);
+```
+
+The gateway receives only a table, operation, and row id from PostgreSQL, then
+fetches the current row in every subscriber's RLS-scoped transaction before it
+sends anything. `DELETE` changes are explicitly unsupported: after commit the
+row cannot be rechecked without retaining an unsafe stale copy. The connection
+cap is 32 per project by default (set `PIBASE_REALTIME_MAX_CONNECTIONS` to an
+integer from 1 through 512); idle clients time out after five minutes.
+
+Each project has `cron.jobs` and `cron.webhook_outbox`. M5a accepts
+`* * * * *` and `*/N * * * *` schedules (N is 1–1440) for either SQL or an
+HTTP webhook. Webhooks are retried with bounded exponential backoff and cannot
+target loopback, private, link-local, multicast, or unspecified addresses;
+redirects are refused. An owner can enqueue durable event-driven webhooks with
+an `AFTER` row trigger, for example
+
+```sql
+CREATE TRIGGER todo_webhook AFTER INSERT OR UPDATE OR DELETE ON public.todos
+FOR EACH ROW EXECUTE FUNCTION cron.enqueue_webhook('https://hooks.example/todos', 'POST');
+```
+
+The trigger stores the event and row JSON in the outbox as part of the same
+database transaction; the gateway performs the network delivery later. The
+operator can enable pgvector only with:
+
+```sh
+docker compose run --rm ops pgvector-enable PROJECT_ID
+```
+
+The host PostgreSQL image must have the `vector` extension installed first.
+
 ## Stop
 
 ```sh

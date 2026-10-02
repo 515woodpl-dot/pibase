@@ -35,6 +35,8 @@ type Server struct {
 	startedAt         time.Time
 	requestCount      atomic.Uint64
 	realtime          *realtimeHub
+	schedulerStop     context.CancelFunc
+	schedulerWG       sync.WaitGroup
 }
 
 func New(ctx context.Context, databaseURL string, masterKey []byte, activeProjects int, lightLoad bool) (*Server, error) {
@@ -102,7 +104,10 @@ func New(ctx context.Context, databaseURL string, masterKey []byte, activeProjec
 		return nil, err
 	}
 	if os.Getenv("PIBASE_SCHEDULER_DISABLED") != "true" {
-		go s.runDeliveryWorker()
+		workerCtx, stop := context.WithCancel(context.Background())
+		s.schedulerStop = stop
+		s.schedulerWG.Add(1)
+		go func() { defer s.schedulerWG.Done(); s.runDeliveryWorker(workerCtx) }()
 	}
 	if activeProjects > 0 {
 		rows, err := controlPool.Query(ctx, `SELECT database_name FROM control.project_catalog ORDER BY id LIMIT $1`, activeProjects)
@@ -256,6 +261,10 @@ func cors(next http.Handler) http.Handler {
 }
 
 func (s *Server) Close() {
+	if s.schedulerStop != nil {
+		s.schedulerStop()
+		s.schedulerWG.Wait()
+	}
 	if s.realtime != nil {
 		s.realtime.Close()
 	}

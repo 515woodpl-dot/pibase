@@ -21,25 +21,77 @@ type outboxItem struct {
 	attempts    int
 }
 
-func (s *Server) runDeliveryWorker() {
+func (s *Server) runDeliveryWorker(ctx context.Context) {
 	t := time.NewTicker(time.Second)
 	defer t.Stop()
-	for range t.C {
-		ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
-		rows, err := s.control.Query(ctx, `SELECT id,database_name,anon_role,authenticated_role,service_role,admin_role,jwt_secret_encrypted,max_database_bytes FROM control.project_catalog`)
+	for {
+		select {
+		case <-ctx.Done():
+			return
+		case <-t.C:
+		}
+		cycle, cancel := context.WithTimeout(ctx, 10*time.Second)
+		rows, err := s.control.Query(cycle, `SELECT id,database_name,anon_role,authenticated_role,service_role,admin_role,jwt_secret_encrypted,max_database_bytes FROM control.project_catalog`)
 		if err == nil {
 			for rows.Next() {
 				var p project
 				var encrypted []byte
 				if rows.Scan(&p.id, &p.database, &p.anonRole, &p.authenticatedRole, &p.serviceRole, &p.adminRole, &encrypted, &p.maxDatabaseBytes) == nil {
 					p.secret, _ = secretbox.Decrypt(s.masterKey, encrypted)
-					s.deliverProject(ctx, &p)
+					s.runCronProject(cycle, &p)
+					s.deliverProject(cycle, &p)
 				}
 			}
 			rows.Close()
 		}
 		cancel()
 	}
+}
+
+func (s *Server) runCronProject(ctx context.Context, p *project) {
+	who := principal{project: p, role: p.adminRole, claims: []byte(`{"role":"service_role"}`)}
+	_ = s.transaction(ctx, who, func(tx pgx.Tx) error {
+		var id int64
+		var schedule, sql, url, method string
+		var headers []byte
+		var body []byte
+		err := tx.QueryRow(ctx, `SELECT id,schedule,COALESCE(sql,''),COALESCE(webhook_url,''),webhook_method,webhook_headers,webhook_body FROM cron.jobs WHERE enabled AND next_run_at<=now() ORDER BY next_run_at,id FOR UPDATE SKIP LOCKED LIMIT 1`).Scan(&id, &schedule, &sql, &url, &method, &headers, &body)
+		if err == pgx.ErrNoRows {
+			return nil
+		}
+		if err != nil {
+			return err
+		}
+		delay, err := cronInterval(schedule)
+		if err != nil {
+			_, _ = tx.Exec(ctx, `UPDATE cron.jobs SET enabled=false,last_error=$2 WHERE id=$1`, id, err.Error())
+			return nil
+		}
+		if sql != "" {
+			if _, err = tx.Exec(ctx, sql); err != nil {
+				_, _ = tx.Exec(ctx, `UPDATE cron.jobs SET last_error=$2,next_run_at=now()+$3::interval WHERE id=$1`, id, err.Error(), delay.String())
+				return nil
+			}
+		} else {
+			_, err = tx.Exec(ctx, `INSERT INTO cron.webhook_outbox(url,method,headers,body) VALUES($1,$2,$3,$4)`, url, method, headers, body)
+			if err != nil {
+				return err
+			}
+		}
+		_, err = tx.Exec(ctx, `UPDATE cron.jobs SET last_run_at=now(),last_error=NULL,next_run_at=now()+$2::interval WHERE id=$1`, id, delay.String())
+		return err
+	})
+}
+
+func cronInterval(value string) (time.Duration, error) {
+	if value == "* * * * *" {
+		return time.Minute, nil
+	}
+	var minutes int
+	if _, err := fmt.Sscanf(value, "*/%d * * * *", &minutes); err == nil && minutes > 0 && minutes <= 1440 {
+		return time.Duration(minutes) * time.Minute, nil
+	}
+	return 0, fmt.Errorf("supported cron schedules are '* * * * *' and '*/N * * * *'")
 }
 
 func (s *Server) deliverProject(ctx context.Context, p *project) {

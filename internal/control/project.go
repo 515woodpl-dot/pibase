@@ -300,10 +300,35 @@ CREATE TABLE cron.webhook_outbox (
   created_at timestamptz NOT NULL DEFAULT now()
 );
 CREATE INDEX webhook_outbox_ready_idx ON cron.webhook_outbox(next_attempt_at) WHERE delivered_at IS NULL AND dead_lettered_at IS NULL;
+-- Attach this function to an owner-created AFTER row trigger to place an
+-- event in the same durable outbox used by scheduled webhooks.  The target
+-- URL and optional method are trigger arguments, so no network action occurs
+-- in the customer transaction.
+CREATE FUNCTION cron.enqueue_webhook() RETURNS trigger
+LANGUAGE plpgsql SECURITY DEFINER SET search_path=pg_catalog,cron
+AS $$
+DECLARE target_url text := TG_ARGV[0]; target_method text := COALESCE(NULLIF(TG_ARGV[1], ''), 'POST');
+BEGIN
+  IF target_url IS NULL OR target_url = '' THEN
+    RAISE EXCEPTION 'cron.enqueue_webhook requires a URL trigger argument';
+  END IF;
+  IF target_method NOT IN ('POST','PUT','PATCH','DELETE') THEN
+    RAISE EXCEPTION 'cron.enqueue_webhook method must be POST, PUT, PATCH, or DELETE';
+  END IF;
+  INSERT INTO cron.webhook_outbox(url,method,body)
+  VALUES (target_url, target_method,
+    convert_to(json_build_object(
+      'schema', TG_TABLE_SCHEMA, 'table', TG_TABLE_NAME, 'type', TG_OP,
+      'record', CASE WHEN TG_OP = 'DELETE' THEN to_jsonb(OLD) ELSE to_jsonb(NEW) END
+    )::text, 'UTF8'));
+  RETURN COALESCE(NEW, OLD);
+END $$;
 REVOKE ALL ON ALL TABLES IN SCHEMA cron FROM PUBLIC;
+REVOKE ALL ON FUNCTION cron.enqueue_webhook() FROM PUBLIC;
 GRANT USAGE ON SCHEMA cron TO ` + pgx.Identifier{admin}.Sanitize() + `;
 GRANT ALL PRIVILEGES ON ALL TABLES IN SCHEMA cron TO ` + pgx.Identifier{admin}.Sanitize() + `;
-GRANT USAGE,SELECT ON ALL SEQUENCES IN SCHEMA cron TO ` + pgx.Identifier{admin}.Sanitize() + `;`
+GRANT USAGE,SELECT ON ALL SEQUENCES IN SCHEMA cron TO ` + pgx.Identifier{admin}.Sanitize() + `;
+GRANT EXECUTE ON FUNCTION cron.enqueue_webhook() TO ` + pgx.Identifier{admin}.Sanitize() + `;`
 	_, err = projectDB.Exec(ctx, setup)
 	projectDB.Close(ctx)
 	if err != nil {
@@ -346,6 +371,33 @@ GRANT USAGE,SELECT ON ALL SEQUENCES IN SCHEMA cron TO ` + pgx.Identifier{admin}.
 }
 
 func JSON(project Project) ([]byte, error) { return json.MarshalIndent(project, "", "  ") }
+
+// EnablePGVector is deliberately an operator-plane action. Customer requests
+// never receive a database-superuser connection or an extension allowlist.
+func EnablePGVector(ctx context.Context, adminURL, id string) error {
+	conn, err := pgx.Connect(ctx, adminURL)
+	if err != nil {
+		return err
+	}
+	defer conn.Close(ctx)
+	var database string
+	if err = conn.QueryRow(ctx, `SELECT database_name FROM control.projects WHERE id=$1`, id).Scan(&database); err != nil {
+		return fmt.Errorf("project %q not found: %w", id, err)
+	}
+	projectURL, err := withDatabase(adminURL, database)
+	if err != nil {
+		return err
+	}
+	project, err := pgx.Connect(ctx, projectURL)
+	if err != nil {
+		return err
+	}
+	defer project.Close(ctx)
+	if _, err = project.Exec(ctx, `CREATE EXTENSION IF NOT EXISTS vector`); err != nil {
+		return fmt.Errorf("enable pgvector (install the PostgreSQL vector extension on the host first): %w", err)
+	}
+	return nil
+}
 
 // ListProjects returns inventory metadata only. It must be called with the
 // operator/admin database URL; the authenticator role cannot read this table.
