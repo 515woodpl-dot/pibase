@@ -121,8 +121,27 @@ Each milestone ends with a written **GATE REPORT** (`reports/Mx.md`): what was b
     guard is a gate test.
   - Operator-only pgvector extension toggle. Customers cannot install arbitrary
     extensions through SQL.
-- **M5b, deferred realtime ergonomics:** in-memory broadcast and presence, plus
-  any remaining cron surface not needed by the M5a scheduler/outbox gate.
+- **M5b, deferred realtime ergonomics:**
+  - Supabase-compatible, in-memory WebSocket broadcast and presence on public
+    channels. State is intentionally single-gateway and ephemeral: no replay,
+    persistence, cross-node fanout, or HTTP broadcast endpoint.
+  - Channels are isolated by project id and topic. `private: true` joins are
+    rejected until a database-backed Realtime Authorization policy exists;
+    presence keys and payloads are untrusted client metadata, not identity.
+  - Support broadcast `self`/`ack`, presence initial state plus join/leave
+    diffs, track/untrack, channel leave, and cleanup on socket disconnect.
+    Support JSON messages and the supabase-js JSON broadcast binary envelope;
+    arbitrary binary broadcast payloads are deferred.
+  - Bound each socket to 20 joined topics, each inbound frame to 1 MiB, each
+    broadcast/presence payload to 16 KiB, names to 128 bytes, and realtime
+    client events to a per-socket burst/rate limit.
+  - The M5a owner-SQL `cron.jobs`/outbox interface is the complete cron surface
+    for this product. M5b adds no customer HTTP scheduler API: duplicating that
+    privileged surface would expand the attack boundary without a contract
+    requirement.
+  - **Gate:** live clients prove project/topic isolation, broadcast `self` and
+    `ack`, presence state/diff/untrack/disconnect cleanup, resource-limit
+    rejection, and no regression in the two-user postgres_changes RLS attack.
 - **M6, only on request:** OAuth, MFA, PITR, image transforms, S3 API, PostGIS.
 
 ## 6. Security rules (auditor checks every gate)
