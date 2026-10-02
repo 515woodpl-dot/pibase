@@ -40,6 +40,7 @@ func (s *Server) runDeliveryWorker(ctx context.Context) {
 					p.secret, _ = secretbox.Decrypt(s.masterKey, encrypted)
 					s.runCronProject(cycle, &p)
 					s.deliverProject(cycle, &p)
+					s.resetProjectPool(p.id)
 				}
 			}
 			rows.Close()

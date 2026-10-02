@@ -33,6 +33,20 @@ func (s *Server) projectPool(ctx context.Context, p *project) (*pgxpool.Pool, er
 	return pool, nil
 }
 
+// resetProjectPool drops idle physical connections without removing the
+// concurrency-safe pool object. The scheduler scans every project, including
+// idle ones, so retaining each scan connection would exhaust PostgreSQL's
+// deliberately small max_connections budget. Reset is safe with concurrent
+// acquired connections; pgxpool closes those when they are returned.
+func (s *Server) resetProjectPool(projectID string) {
+	s.poolMu.Lock()
+	pool := s.pools[projectID]
+	s.poolMu.Unlock()
+	if pool != nil {
+		pool.Reset()
+	}
+}
+
 func (s *Server) transaction(ctx context.Context, who principal, fn func(pgx.Tx) error) error {
 	select {
 	case s.databaseSlots <- struct{}{}:

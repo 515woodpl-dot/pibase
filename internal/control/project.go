@@ -182,9 +182,33 @@ CREATE TABLE auth.refresh_tokens (
   expires_at timestamptz NOT NULL,
   revoked_at timestamptz,
   replaced_by uuid REFERENCES auth.refresh_tokens(id),
+  aal text NOT NULL DEFAULT 'aal1' CHECK (aal IN ('aal1','aal2')),
   created_at timestamptz NOT NULL DEFAULT now()
 );
 CREATE INDEX refresh_tokens_user_idx ON auth.refresh_tokens(user_id);
+CREATE TABLE auth.mfa_factors (
+  id uuid PRIMARY KEY,
+  user_id uuid NOT NULL REFERENCES auth.users(id) ON DELETE CASCADE,
+  factor_type text NOT NULL CHECK (factor_type = 'totp'),
+  status text NOT NULL DEFAULT 'unverified' CHECK (status IN ('unverified','verified')),
+  friendly_name text,
+  secret_encrypted bytea NOT NULL,
+  last_used_counter bigint,
+  last_challenged_at timestamptz,
+  created_at timestamptz NOT NULL DEFAULT now(),
+  updated_at timestamptz NOT NULL DEFAULT now(),
+  UNIQUE(user_id,friendly_name)
+);
+CREATE INDEX mfa_factors_user_idx ON auth.mfa_factors(user_id);
+CREATE TABLE auth.mfa_challenges (
+  id uuid PRIMARY KEY,
+  factor_id uuid NOT NULL REFERENCES auth.mfa_factors(id) ON DELETE CASCADE,
+  user_id uuid NOT NULL REFERENCES auth.users(id) ON DELETE CASCADE,
+  expires_at timestamptz NOT NULL,
+  verified_at timestamptz,
+  created_at timestamptz NOT NULL DEFAULT now()
+);
+CREATE INDEX mfa_challenges_factor_idx ON auth.mfa_challenges(factor_id,created_at DESC);
 CREATE TABLE storage.buckets (
   id text PRIMARY KEY,
   name text NOT NULL UNIQUE,

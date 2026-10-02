@@ -146,7 +146,12 @@ Each milestone ends with a written **GATE REPORT** (`reports/Mx.md`): what was b
   - **Gate:** live clients prove project/topic isolation, broadcast `self` and
     `ack`, presence state/diff/untrack/disconnect cleanup, resource-limit
     rejection, and no regression in the two-user postgres_changes RLS attack.
-- **M6, only on request:** OAuth, MFA, PITR, image transforms, S3 API, PostGIS.
+- **M6, optional expansion (authorized 2026-10-02):** OAuth, MFA, PITR, image
+  transforms, S3 API, PostGIS. Deliver as separately gated slices.
+  - **M6a, TOTP MFA:** Supabase-compatible enroll/list/challenge/verify/unenroll,
+    encrypted factor secrets, replay-resistant TOTP, `aal`/`amr` JWT claims,
+    AAL-preserving refresh, and idempotent upgrades for existing auth-enabled
+    projects. Phone factors, WebAuthn, and recovery codes are deferred.
 
 ## 6. Security rules (auditor checks every gate)
 

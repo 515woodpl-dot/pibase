@@ -3,6 +3,7 @@ package control
 import (
 	"bytes"
 	"context"
+	"net/url"
 	"os"
 	"testing"
 
@@ -77,6 +78,63 @@ func TestCreateProjectIsolation(t *testing.T) {
 	if len(encrypted) <= 32 {
 		t.Fatalf("JWT secret was not stored as AES-GCM ciphertext: %d bytes", len(encrypted))
 	}
+}
+
+func TestBootstrapUpgradesExistingProjectMFA(t *testing.T) {
+	adminURL := os.Getenv("PIBASE_TEST_ADMIN_DATABASE_URL")
+	if adminURL == "" {
+		t.Skip("PIBASE_TEST_ADMIN_DATABASE_URL is not set")
+	}
+	ctx := context.Background()
+	const password = "integration-auth-password"
+	if err := Bootstrap(ctx, adminURL, password); err != nil {
+		t.Fatal(err)
+	}
+	p, err := CreateProject(ctx, adminURL, "upgrade-mfa", bytes.Repeat([]byte{5}, 32))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer cleanupProject(t, adminURL, p)
+	projectURL, _ := withDatabase(adminURL, p.Database)
+	conn, err := pgx.Connect(ctx, projectURL)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err = conn.Exec(ctx, `DROP TABLE auth.mfa_challenges,auth.mfa_factors; ALTER TABLE auth.refresh_tokens DROP COLUMN aal`); err != nil {
+		conn.Close(ctx)
+		t.Fatal(err)
+	}
+	conn.Close(ctx)
+
+	if err := Bootstrap(ctx, adminURL, password); err != nil {
+		t.Fatal(err)
+	}
+	conn, err = pgx.Connect(ctx, projectURL)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer conn.Close(ctx)
+	var factorOwner, challengeOwner string
+	var hasAAL bool
+	if err := conn.QueryRow(ctx, `SELECT
+  (SELECT pg_get_userbyid(relowner) FROM pg_class WHERE oid='auth.mfa_factors'::regclass),
+  (SELECT pg_get_userbyid(relowner) FROM pg_class WHERE oid='auth.mfa_challenges'::regclass),
+  EXISTS(SELECT 1 FROM information_schema.columns WHERE table_schema='auth' AND table_name='refresh_tokens' AND column_name='aal')`).Scan(&factorOwner, &challengeOwner, &hasAAL); err != nil {
+		t.Fatal(err)
+	}
+	wantOwner := parsedURLUser(t, adminURL)
+	if factorOwner != wantOwner || challengeOwner != wantOwner || !hasAAL {
+		t.Fatalf("upgrade ownership factors=%q challenges=%q aal=%v", factorOwner, challengeOwner, hasAAL)
+	}
+}
+
+func parsedURLUser(t *testing.T, raw string) string {
+	t.Helper()
+	parsed, err := url.Parse(raw)
+	if err != nil {
+		t.Fatal(err)
+	}
+	return parsed.User.Username()
 }
 
 func cleanupProject(t *testing.T, adminURL string, p Project) {

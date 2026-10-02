@@ -3,7 +3,8 @@
 A small Supabase-shaped backend for Raspberry Pi 4. It runs one PostgreSQL 16
 cluster and one Go gateway. M1 provides a PostgREST-compatible data subset,
 database-enforced RLS, RPC, migrations, and owner SQL tooling. Auth user
-management, storage, operations, and project branching. Realtime belongs to M5.
+management, storage, operations, project branching, realtime, and optional TOTP
+multi-factor authentication are included.
 
 ## Requirements
 
@@ -57,6 +58,20 @@ Every request has a 1 MiB body cap, five-second statement timeout, bounded
 database concurrency, a per-project 100 requests/second window, daily request
 counting, and a configurable database-size quota. Unsupported PostgREST syntax
 returns a clear JSON 400 response.
+
+## Auth and TOTP MFA
+
+Email/password authentication supports signup, confirmation, login, rotating
+refresh tokens, logout, password recovery, user updates, and service-key user
+administration. M6a adds the Supabase Auth TOTP factor flow used by
+`supabase-js`: enroll, list, challenge, verify, and unenroll.
+
+TOTP secrets are random 160-bit values encrypted at rest with the instance
+master key. Challenges expire after five minutes, codes are rate-limited and
+single-use per 30-second counter, and successful verification rotates the
+session to a JWT carrying `aal2` plus a TOTP authentication-method claim.
+Removing the last verified factor makes the next refresh return `aal1`.
+Phone factors, WebAuthn, and recovery codes are not part of M6a.
 
 ## Migrations and owner SQL
 

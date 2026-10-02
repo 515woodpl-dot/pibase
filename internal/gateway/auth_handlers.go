@@ -95,11 +95,17 @@ func userJSON(id, email string, confirmed bool, metadata []byte, created, update
 		"user_metadata": data, "created_at": created.UTC().Format(time.RFC3339Nano), "updated_at": updated.UTC().Format(time.RFC3339Nano)}
 }
 
-func accessToken(p project, id, email, session string) (string, error) {
-	return keys.SignJWT(p.secret, map[string]any{"iss": "pibase", "aud": "authenticated", "role": "authenticated", "sub": id, "email": email, "session_id": session, "iat": time.Now().Unix(), "exp": time.Now().Add(time.Hour).Unix()})
+func accessToken(p project, id, email, session, aal, method string) (string, error) {
+	now := time.Now()
+	return keys.SignJWT(p.secret, map[string]any{
+		"iss": "pibase", "aud": "authenticated", "role": "authenticated",
+		"sub": id, "email": email, "session_id": session, "aal": aal,
+		"amr": []map[string]any{{"method": method, "timestamp": now.Unix()}},
+		"iat": now.Unix(), "exp": now.Add(time.Hour).Unix(),
+	})
 }
 
-func (s *Server) issueSession(ctx context.Context, p project, tx pgx.Tx, id, email string) (map[string]any, error) {
+func (s *Server) issueSession(ctx context.Context, p project, tx pgx.Tx, id, email, aal, method string) (map[string]any, error) {
 	session, err := auth.UUID()
 	if err != nil {
 		return nil, err
@@ -108,10 +114,10 @@ func (s *Server) issueSession(ctx context.Context, p project, tx pgx.Tx, id, ema
 	if err != nil {
 		return nil, err
 	}
-	if _, err = tx.Exec(ctx, `INSERT INTO auth.refresh_tokens(id,user_id,token_hash,expires_at) VALUES($1,$2,$3,now()+interval '30 days')`, session, id, digest); err != nil {
+	if _, err = tx.Exec(ctx, `INSERT INTO auth.refresh_tokens(id,user_id,token_hash,expires_at,aal) VALUES($1,$2,$3,now()+interval '30 days',$4)`, session, id, digest, aal); err != nil {
 		return nil, err
 	}
-	access, err := accessToken(p, id, email, session)
+	access, err := accessToken(p, id, email, session, aal, method)
 	if err != nil {
 		return nil, err
 	}
@@ -234,7 +240,7 @@ func (s *Server) authToken(w http.ResponseWriter, r *http.Request) {
 		if confirmed == nil {
 			return httpError(400, "email not confirmed")
 		}
-		session, err := s.issueSession(r.Context(), p, tx, id, email)
+		session, err := s.issueSession(r.Context(), p, tx, id, email, "aal1", "password")
 		if err != nil {
 			return err
 		}
@@ -249,11 +255,11 @@ func (s *Server) authToken(w http.ResponseWriter, r *http.Request) {
 }
 
 func (s *Server) refreshTx(ctx context.Context, p project, tx pgx.Tx, raw string, out *map[string]any) error {
-	var id, user string
+	var id, user, aal string
 	var expires time.Time
 	var revoked *time.Time
 	var email string
-	err := tx.QueryRow(ctx, `SELECT id,user_id,expires_at,revoked_at FROM auth.refresh_tokens WHERE token_hash=$1`, tokenHash(raw)).Scan(&id, &user, &expires, &revoked)
+	err := tx.QueryRow(ctx, `SELECT id,user_id,expires_at,revoked_at,aal FROM auth.refresh_tokens WHERE token_hash=$1`, tokenHash(raw)).Scan(&id, &user, &expires, &revoked, &aal)
 	if err != nil || expires.Before(time.Now()) {
 		return httpError(400, "invalid refresh token")
 	}
@@ -264,7 +270,19 @@ func (s *Server) refreshTx(ctx context.Context, p project, tx pgx.Tx, raw string
 	if err = tx.QueryRow(ctx, `SELECT email FROM auth.users WHERE id=$1`, user).Scan(&email); err != nil {
 		return err
 	}
-	newSession, err := s.issueSession(ctx, p, tx, user, email)
+	method := "password"
+	if aal == "aal2" {
+		var verifiedFactor bool
+		if err = tx.QueryRow(ctx, `SELECT EXISTS(SELECT 1 FROM auth.mfa_factors WHERE user_id=$1 AND status='verified')`, user).Scan(&verifiedFactor); err != nil {
+			return err
+		}
+		if verifiedFactor {
+			method = "totp"
+		} else {
+			aal = "aal1"
+		}
+	}
+	newSession, err := s.issueSession(ctx, p, tx, user, email, aal, method)
 	if err != nil {
 		return err
 	}
@@ -295,7 +313,7 @@ func (s *Server) authVerify(w http.ResponseWriter, r *http.Request) {
 				return err
 			}
 			var e error
-			out, e = s.issueSession(r.Context(), p, tx, id, email)
+			out, e = s.issueSession(r.Context(), p, tx, id, email, "aal1", "recovery")
 			if e != nil {
 				return e
 			}
@@ -409,14 +427,22 @@ func (s *Server) authUser(w http.ResponseWriter, r *http.Request) {
 	var confirmed *time.Time
 	var meta []byte
 	var created, updated time.Time
+	var factors []mfaFactor
 	err = s.adminTx(r.Context(), p, func(tx pgx.Tx) error {
-		return tx.QueryRow(r.Context(), `SELECT id,email,email_confirmed_at,raw_user_meta_data,created_at,updated_at FROM auth.users WHERE id=$1`, c.Subject).Scan(&id, &email, &confirmed, &meta, &created, &updated)
+		if err := tx.QueryRow(r.Context(), `SELECT id,email,email_confirmed_at,raw_user_meta_data,created_at,updated_at FROM auth.users WHERE id=$1`, c.Subject).Scan(&id, &email, &confirmed, &meta, &created, &updated); err != nil {
+			return err
+		}
+		var err error
+		factors, err = loadMFAFactors(r.Context(), tx, c.Subject)
+		return err
 	})
 	if err != nil {
 		writeAPIError(w, httpError(404, "user not found"))
 		return
 	}
-	writeJSON(w, 200, userJSON(id, email, confirmed != nil, meta, created, updated))
+	user := userJSON(id, email, confirmed != nil, meta, created, updated)
+	user["factors"] = factors
+	writeJSON(w, 200, user)
 }
 
 func (s *Server) authUpdateUser(w http.ResponseWriter, r *http.Request) {

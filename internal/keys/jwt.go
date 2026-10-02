@@ -16,6 +16,7 @@ type Claims struct {
 	Audience string `json:"aud"`
 	Role     string `json:"role"`
 	Subject  string `json:"sub,omitempty"`
+	AAL      string `json:"aal,omitempty"`
 	Issued   int64  `json:"iat"`
 	Expires  int64  `json:"exp"`
 	JSON     []byte `json:"-"`

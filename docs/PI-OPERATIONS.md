@@ -15,6 +15,11 @@ curl --fail http://127.0.0.1:18080/healthz
 curl --fail http://127.0.0.1:18080/metrics
 ```
 
+The one-shot `bootstrap` service also applies idempotent gateway-owned auth
+schema upgrades to existing initialized projects before the gateway starts.
+Back up first for normal production upgrades; M0 measurement-only databases,
+which intentionally have no auth schema, are left unchanged.
+
 Expose port 18080 only through the trusted LAN/Tailnet or an HTTPS reverse
 proxy. The dashboard is at `/dashboard`; its token is entered in memory and is
 never persisted by the page. Rotate the operator token after suspected browser

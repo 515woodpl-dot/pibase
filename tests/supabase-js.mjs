@@ -1,4 +1,5 @@
 import assert from "node:assert/strict";
+import { createHmac } from "node:crypto";
 import { createClient } from "@supabase/supabase-js";
 
 const url = process.env.PIBASE_TEST_URL;
@@ -10,6 +11,24 @@ const options = { auth: { persistSession: false, autoRefreshToken: false } };
 const anon = createClient(url, anonKey, options);
 const service = createClient(url, serviceKey, options);
 let result;
+
+function totp(secret) {
+  const alphabet = "ABCDEFGHIJKLMNOPQRSTUVWXYZ234567";
+  let bits = "";
+  for (const char of secret.replaceAll("=", "").toUpperCase()) {
+    const value = alphabet.indexOf(char);
+    assert(value >= 0, "invalid base32 TOTP secret");
+    bits += value.toString(2).padStart(5, "0");
+  }
+  const key = Buffer.alloc(Math.floor(bits.length / 8));
+  for (let i = 0; i < key.length; i++) key[i] = Number.parseInt(bits.slice(i * 8, i * 8 + 8), 2);
+  const counter = Buffer.alloc(8);
+  counter.writeBigUInt64BE(BigInt(Math.floor(Date.now() / 30000)));
+  const digest = createHmac("sha1", key).update(counter).digest();
+  const offset = digest[digest.length - 1] & 15;
+  const value = (digest.readUInt32BE(offset) & 0x7fffffff) % 1000000;
+  return value.toString().padStart(6, "0");
+}
 
 const email = `m2-${Date.now()}@example.test`;
 let raw = await fetch(`${url}/auth/v1/signup`, {
@@ -44,6 +63,24 @@ raw = await fetch(`${url}/auth/v1/user`, {
 });
 assert.equal(raw.status, 200);
 result = await anon.auth.signInWithPassword({ email, password: "new correct horse battery" });
+assert.ifError(result.error);
+result = await anon.auth.mfa.enroll({ factorType: "totp", friendlyName: "phone" });
+assert.ifError(result.error);
+const factor = result.data;
+assert(factor.id && factor.totp.secret && factor.totp.qr_code.startsWith("data:image/svg+xml;utf-8,<svg"));
+result = await anon.auth.mfa.listFactors();
+assert.ifError(result.error);
+assert.equal(result.data.all.length, 1);
+assert.equal(result.data.all[0].status, "unverified");
+result = await anon.auth.mfa.challenge({ factorId: factor.id });
+assert.ifError(result.error);
+result = await anon.auth.mfa.verify({ factorId: factor.id, challengeId: result.data.id, code: totp(factor.totp.secret) });
+assert.ifError(result.error);
+result = await anon.auth.mfa.getAuthenticatorAssuranceLevel();
+assert.ifError(result.error);
+assert.equal(result.data.currentLevel, "aal2");
+assert.equal(result.data.nextLevel, "aal2");
+result = await anon.auth.mfa.unenroll({ factorId: factor.id });
 assert.ifError(result.error);
 await anon.auth.signOut();
 
@@ -112,4 +149,4 @@ assert.ifError(result.error);
 result = await service.storage.deleteBucket("m3-public");
 assert.ifError(result.error);
 
-console.log("supabase-js M3 acceptance passed");
+console.log("supabase-js M6a acceptance passed");
