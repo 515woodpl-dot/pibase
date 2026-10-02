@@ -13,7 +13,7 @@ func TestRealtimeRejectsDeleteSubscription(t *testing.T) {
 			Table  string `json:"table"`
 			Filter string `json:"filter"`
 		}{ID: "unsupported", Event: event, Schema: "public", Table: "todos"})
-		if _, err := client.join("realtime:unsupported", join); err == nil {
+		if _, _, err := client.join("realtime:unsupported", join); err == nil {
 			t.Fatalf("%q subscription was accepted", event)
 		}
 	}

@@ -148,6 +148,16 @@ docker compose run --rm ops pgvector-enable PROJECT_ID
 
 The host PostgreSQL image must have the `vector` extension installed first.
 
+M5b also supports ephemeral `broadcast` and `presence` events on public
+Realtime channels. Routing is isolated by project and topic; `self`/`ack`,
+presence state, track/untrack, and disconnect cleanup are supported. These
+messages live only in one gateway process and disappear on restart. Private
+channels, replay, cross-node fanout, HTTP broadcast, and arbitrary binary
+payloads are not supported. Presence keys and payloads are client-supplied
+metadata, not authenticated identity. Any browser origin may connect because
+the socket uses the public project key plus JWT/RLS boundaries; applications
+must apply their own trust rules to public broadcast and presence content.
+
 ## Stop
 
 ```sh

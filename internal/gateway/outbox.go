@@ -73,13 +73,24 @@ func (s *Server) runCronProject(ctx context.Context, p *project) {
 				return nil
 			}
 		} else {
-			_, err = tx.Exec(ctx, `INSERT INTO cron.webhook_outbox(url,method,headers,body) VALUES($1,$2,$3,$4)`, url, method, headers, body)
+			// Isolate enqueue errors in a savepoint. PostgreSQL marks a
+			// transaction aborted after the outbox-cap trigger raises, and the
+			// job status must still be writable in the outer transaction.
+			enqueue, beginErr := tx.Begin(ctx)
+			if beginErr != nil {
+				return beginErr
+			}
+			_, err = enqueue.Exec(ctx, `INSERT INTO cron.webhook_outbox(url,method,headers,body) VALUES($1,$2,$3,$4)`, url, method, headers, body)
 			if err != nil {
+				_ = enqueue.Rollback(ctx)
 				// A full outbox is backpressure, not a reason to spin on this
 				// due job every scheduler tick. Keep the error visible and retry
 				// on its normal schedule after delivery makes room.
 				_, _ = tx.Exec(ctx, `UPDATE cron.jobs SET last_error=$2,next_run_at=now()+$3::interval WHERE id=$1`, id, err.Error(), delay.String())
 				return nil
+			}
+			if err = enqueue.Commit(ctx); err != nil {
+				return err
 			}
 		}
 		_, err = tx.Exec(ctx, `UPDATE cron.jobs SET last_run_at=now(),last_error=NULL,next_run_at=now()+$2::interval WHERE id=$1`, id, delay.String())

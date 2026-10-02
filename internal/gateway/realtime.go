@@ -2,6 +2,8 @@ package gateway
 
 import (
 	"context"
+	"crypto/rand"
+	"encoding/hex"
 	"encoding/json"
 	"fmt"
 	"net/http"
@@ -19,9 +21,9 @@ const (
 	realtimeIdle    = 5 * time.Minute
 )
 
-// realtimeHub implements the narrow, auditable postgres_changes subset of the
-// Phoenix protocol used by supabase-js. It intentionally has no broadcast or
-// presence support: every event must pass a database RLS check.
+// realtimeHub implements the bounded Phoenix protocol subset used by
+// supabase-js. Database changes pass an RLS re-check; public broadcast and
+// presence are explicitly untrusted, ephemeral application messages.
 type realtimeHub struct {
 	server        *Server
 	maxPerProject int
@@ -37,9 +39,14 @@ type realtimeClient struct {
 	hub           *realtimeHub
 	conn          *websocket.Conn
 	principal     principal
+	projectID     string
+	id            string
 	apiKey        string
 	mu            sync.Mutex
 	subscriptions []realtimeSubscription
+	channels      map[string]*realtimeTopic
+	rateWindow    time.Time
+	rateEvents    int
 }
 
 type realtimeSubscription struct {
@@ -48,6 +55,15 @@ type realtimeSubscription struct {
 
 type realtimeJoin struct {
 	Config struct {
+		Broadcast struct {
+			Self bool `json:"self"`
+			Ack  bool `json:"ack"`
+		} `json:"broadcast"`
+		Presence struct {
+			Key     string `json:"key"`
+			Enabled bool   `json:"enabled"`
+		} `json:"presence"`
+		Private         bool `json:"private"`
 		PostgresChanges []struct {
 			ID     string `json:"id"`
 			Event  string `json:"event"`
@@ -57,6 +73,11 @@ type realtimeJoin struct {
 		} `json:"postgres_changes"`
 	} `json:"config"`
 	AccessToken string `json:"access_token"`
+}
+
+type realtimeFrame struct {
+	joinRef, ref, topic, event string
+	payload                    json.RawMessage
 }
 
 func newRealtimeHub(server *Server) (*realtimeHub, error) {
@@ -87,11 +108,11 @@ func (h *realtimeHub) websocket(w http.ResponseWriter, r *http.Request) {
 	if err != nil {
 		return
 	}
-	client := &realtimeClient{hub: h, conn: conn, principal: who, apiKey: r.Header.Get("apikey")}
+	client := &realtimeClient{hub: h, conn: conn, principal: who, projectID: who.project.id, id: realtimeID(), apiKey: r.Header.Get("apikey"), channels: make(map[string]*realtimeTopic)}
 	h.mu.Lock()
 	count := 0
 	for existing := range h.clients {
-		if existing.principal.project.id == who.project.id {
+		if existing.projectID == who.project.id {
 			count++
 		}
 	}
@@ -112,55 +133,70 @@ func (h *realtimeHub) websocket(w http.ResponseWriter, r *http.Request) {
 
 func (c *realtimeClient) read() {
 	for {
-		_, message, err := c.conn.ReadMessage()
+		kind, message, err := c.conn.ReadMessage()
 		if err != nil {
 			return
 		}
-		var frame []json.RawMessage
-		if json.Unmarshal(message, &frame) != nil || len(frame) != 5 {
+		frame, err := decodeRealtimeFrame(kind, message)
+		if err != nil {
 			_ = c.write([]any{nil, nil, "phoenix", "phx_error", map[string]string{"reason": "invalid realtime frame"}})
 			continue
 		}
-		var joinRef, ref, topic, event string
-		_ = json.Unmarshal(frame[0], &joinRef)
-		_ = json.Unmarshal(frame[1], &ref)
-		_ = json.Unmarshal(frame[2], &topic)
-		_ = json.Unmarshal(frame[3], &event)
-		if event == "heartbeat" {
-			_ = c.reply(joinRef, ref, topic, "ok", map[string]any{})
+		if frame.event == "heartbeat" {
+			_ = c.reply(frame.joinRef, frame.ref, frame.topic, "ok", map[string]any{})
 			continue
 		}
-		if event != "phx_join" {
-			_ = c.reply(joinRef, ref, topic, "error", map[string]string{"reason": "only postgres_changes joins are supported"})
+		if frame.event == "phx_leave" {
+			c.hub.leaveChannel(c, frame.topic)
+			_ = c.reply(frame.joinRef, frame.ref, frame.topic, "ok", map[string]any{})
+			continue
+		}
+		if frame.event == "broadcast" {
+			if err := c.handleBroadcast(frame); err != nil {
+				_ = c.reply(frame.joinRef, frame.ref, frame.topic, "error", map[string]string{"reason": err.Error()})
+			}
+			continue
+		}
+		if frame.event == "presence" {
+			if err := c.handlePresence(frame); err != nil {
+				_ = c.reply(frame.joinRef, frame.ref, frame.topic, "error", map[string]string{"reason": err.Error()})
+			}
+			continue
+		}
+		if frame.event != "phx_join" {
+			_ = c.reply(frame.joinRef, frame.ref, frame.topic, "error", map[string]string{"reason": "unsupported realtime event"})
 			continue
 		}
 		var join realtimeJoin
-		if err := json.Unmarshal(frame[4], &join); err != nil {
-			_ = c.reply(joinRef, ref, topic, "error", map[string]string{"reason": "invalid join payload"})
+		if err := json.Unmarshal(frame.payload, &join); err != nil {
+			_ = c.reply(frame.joinRef, frame.ref, frame.topic, "error", map[string]string{"reason": "invalid join payload"})
 			continue
 		}
 		if join.AccessToken != "" {
 			// Access tokens are supplied in the channel join by supabase-js.
 			req := realtimeTokenRequest(c.apiKey, join.AccessToken)
 			who, err := c.hub.server.authenticate(context.Background(), req)
-			if err != nil || who.project.id != c.principal.project.id {
-				_ = c.reply(joinRef, ref, topic, "error", map[string]string{"reason": "invalid access token"})
+			if err != nil || who.project.id != c.projectID {
+				_ = c.reply(frame.joinRef, frame.ref, frame.topic, "error", map[string]string{"reason": "invalid access token"})
 				continue
 			}
 			c.mu.Lock()
 			c.principal = who
 			c.mu.Unlock()
 		}
-		subs, err := c.join(topic, join)
+		subs, state, err := c.join(frame.topic, join)
 		if err != nil {
-			_ = c.reply(joinRef, ref, topic, "error", map[string]string{"reason": err.Error()})
+			_ = c.reply(frame.joinRef, frame.ref, frame.topic, "error", map[string]string{"reason": err.Error()})
 			continue
 		}
 		ids := make([]map[string]string, 0, len(subs))
 		for _, sub := range subs {
 			ids = append(ids, map[string]string{"id": sub.id})
 		}
-		_ = c.reply(joinRef, ref, topic, "ok", map[string]any{"postgres_changes": ids})
+		_ = c.reply(frame.joinRef, frame.ref, frame.topic, "ok", map[string]any{"postgres_changes": ids})
+		if state != nil {
+			_ = c.write([]any{frame.joinRef, nil, frame.topic, "presence_state", state})
+		}
 	}
 }
 
@@ -171,14 +207,23 @@ func realtimeTokenRequest(apiKey, token string) *http.Request {
 	return r
 }
 
-func (c *realtimeClient) join(topic string, join realtimeJoin) ([]realtimeSubscription, error) {
-	if len(join.Config.PostgresChanges) == 0 || len(join.Config.PostgresChanges) > 20 {
-		return nil, fmt.Errorf("postgres_changes requires 1 to 20 subscriptions")
+func (c *realtimeClient) join(topic string, join realtimeJoin) ([]realtimeSubscription, map[string]any, error) {
+	if err := validateRealtimeTopic(topic); err != nil {
+		return nil, nil, err
+	}
+	if join.Config.Private {
+		return nil, nil, fmt.Errorf("private realtime channels are not supported")
+	}
+	if len(join.Config.PostgresChanges) > 20 {
+		return nil, nil, fmt.Errorf("postgres_changes allows at most 20 subscriptions")
+	}
+	if len(join.Config.Presence.Key) > 128 {
+		return nil, nil, fmt.Errorf("presence key exceeds 128 bytes")
 	}
 	subs := make([]realtimeSubscription, 0, len(join.Config.PostgresChanges))
 	for i, change := range join.Config.PostgresChanges {
 		if change.Schema != "public" || change.Table == "" || change.Filter != "" {
-			return nil, fmt.Errorf("only unfiltered public-table changes are supported")
+			return nil, nil, fmt.Errorf("only unfiltered public-table changes are supported")
 		}
 		event := change.Event
 		// DELETE cannot be safely delivered from a NOTIFY-only feed: once the
@@ -186,10 +231,10 @@ func (c *realtimeClient) join(topic string, join realtimeJoin) ([]realtimeSubscr
 		// that limitation explicit instead of accepting a subscription that can
 		// never receive an event.
 		if event == "DELETE" || event == "*" || event == "" {
-			return nil, fmt.Errorf("only INSERT and UPDATE postgres_changes are supported; DELETE and wildcard subscriptions are unavailable")
+			return nil, nil, fmt.Errorf("only INSERT and UPDATE postgres_changes are supported; DELETE and wildcard subscriptions are unavailable")
 		}
 		if event != "INSERT" && event != "UPDATE" {
-			return nil, fmt.Errorf("invalid postgres_changes event")
+			return nil, nil, fmt.Errorf("invalid postgres_changes event")
 		}
 		id := change.ID
 		if id == "" {
@@ -197,6 +242,13 @@ func (c *realtimeClient) join(topic string, join realtimeJoin) ([]realtimeSubscr
 		}
 		subs = append(subs, realtimeSubscription{id: id, topic: topic, schema: change.Schema, table: change.Table, event: event})
 	}
+	c.mu.Lock()
+	if _, exists := c.channels[topic]; !exists && len(c.channels) >= 20 {
+		c.mu.Unlock()
+		return nil, nil, fmt.Errorf("realtime topic limit reached")
+	}
+	c.mu.Unlock()
+	previousPresence, wasTracked := c.takePresence(topic)
 	c.mu.Lock()
 	// A Phoenix topic can be rejoined after a reconnect. Replace, rather than
 	// append, its subscriptions so a client cannot receive duplicate events.
@@ -207,10 +259,23 @@ func (c *realtimeClient) join(topic string, join realtimeJoin) ([]realtimeSubscr
 		}
 	}
 	c.subscriptions = append(kept, subs...)
+	presenceKey := join.Config.Presence.Key
+	if presenceKey == "" {
+		presenceKey = c.id
+	}
+	c.channels[topic] = &realtimeTopic{topic: topic, broadcastSelf: join.Config.Broadcast.Self, broadcastAck: join.Config.Broadcast.Ack, presenceEnabled: join.Config.Presence.Enabled, presenceKey: presenceKey}
 	project := c.principal.project
 	c.mu.Unlock()
-	c.hub.ensureListener(project)
-	return subs, nil
+	if wasTracked {
+		c.hub.presenceDiff(c.projectID, topic, nil, &previousPresence)
+	}
+	if len(subs) > 0 {
+		c.hub.ensureListener(project)
+	}
+	if join.Config.Presence.Enabled {
+		return subs, c.hub.presenceState(c.projectID, topic), nil
+	}
+	return subs, nil, nil
 }
 
 func (c *realtimeClient) reply(joinRef, ref, topic, status string, response any) error {
@@ -240,10 +305,14 @@ func (c *realtimeClient) writeControl(kind int, data []byte, deadline time.Time)
 }
 
 func (h *realtimeHub) remove(client *realtimeClient) {
+	leaves := client.trackedPresences()
 	h.mu.Lock()
 	delete(h.clients, client)
 	h.mu.Unlock()
 	_ = client.conn.Close()
+	for _, leave := range leaves {
+		h.presenceDiff(client.projectID, leave.topic, nil, &leave)
+	}
 }
 
 func (h *realtimeHub) ensureListener(p *project) {
@@ -314,7 +383,7 @@ func (h *realtimeHub) deliver(p *project, table, operation, id string) {
 	h.mu.Lock()
 	var clients []*realtimeClient
 	for client := range h.clients {
-		if client.principal.project.id == p.id {
+		if client.projectID == p.id {
 			clients = append(clients, client)
 		}
 	}
@@ -332,6 +401,14 @@ func (h *realtimeHub) deliver(p *project, table, operation, id string) {
 			_ = client.write([]any{nil, nil, sub.topic, "postgres_changes", map[string]any{"ids": []string{sub.id}, "data": map[string]any{"schema": "public", "table": table, "type": operation, "record": record}}})
 		}
 	}
+}
+
+func realtimeID() string {
+	value := make([]byte, 12)
+	if _, err := rand.Read(value); err != nil {
+		return fmt.Sprintf("socket-%d", time.Now().UnixNano())
+	}
+	return hex.EncodeToString(value)
 }
 
 // visibleRecord fetches the row inside the subscriber's database transaction.

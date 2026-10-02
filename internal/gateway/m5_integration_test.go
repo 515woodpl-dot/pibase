@@ -3,10 +3,12 @@ package gateway
 import (
 	"bytes"
 	"context"
+	"fmt"
 	"net/http"
 	"net/http/httptest"
 	"net/url"
 	"os"
+	"strconv"
 	"strings"
 	"testing"
 	"time"
@@ -87,6 +89,33 @@ CREATE POLICY realtime_service ON public.realtime_rows FOR ALL TO ` + pgx.Identi
 	if err := b.ReadJSON(&hidden); err == nil {
 		t.Fatalf("subscriber received another user's row: %#v", hidden)
 	}
+	rowID := strconv.Itoa(int(record["id"].(float64)))
+	aTransfer := joinRealtimeEvent(t, httpServer.URL, p.AnonKey, userA, "a-transfer", "UPDATE")
+	bTransfer := joinRealtimeEvent(t, httpServer.URL, p.AnonKey, userB, "b-transfer", "UPDATE")
+	requestJSON(t, httpServer.Client(), http.MethodPatch, httpServer.URL+"/rest/v1/realtime_rows?id=eq."+rowID, p.ServiceKey, `{"owner_id":"user-b"}`, "return=representation", http.StatusOK)
+	transferred := readRealtimeEvent(t, bTransfer, 3*time.Second)
+	if !strings.Contains(fmt.Sprint(transferred), "user-b") {
+		t.Fatalf("new owner did not receive transferred row: %#v", transferred)
+	}
+	_ = aTransfer.SetReadDeadline(time.Now().Add(500 * time.Millisecond))
+	if err := aTransfer.ReadJSON(&hidden); err == nil {
+		t.Fatalf("old owner received row after ownership transfer: %#v", hidden)
+	}
+	aTransfer.Close()
+	bTransfer.Close()
+	aReturn := joinRealtimeEvent(t, httpServer.URL, p.AnonKey, userA, "a-return", "UPDATE")
+	bReturn := joinRealtimeEvent(t, httpServer.URL, p.AnonKey, userB, "b-return", "UPDATE")
+	requestJSON(t, httpServer.Client(), http.MethodPatch, httpServer.URL+"/rest/v1/realtime_rows?id=eq."+rowID, p.ServiceKey, `{"owner_id":"user-a"}`, "return=representation", http.StatusOK)
+	returned := readRealtimeEvent(t, aReturn, 3*time.Second)
+	if !strings.Contains(fmt.Sprint(returned), "user-a") {
+		t.Fatalf("returning owner did not receive row: %#v", returned)
+	}
+	_ = bReturn.SetReadDeadline(time.Now().Add(500 * time.Millisecond))
+	if err := bReturn.ReadJSON(&hidden); err == nil {
+		t.Fatalf("previous owner received row after transfer away: %#v", hidden)
+	}
+	aReturn.Close()
+	bReturn.Close()
 
 	request, err := http.NewRequest(http.MethodGet, httpServer.URL+"/healthz", nil)
 	if err != nil {
@@ -149,13 +178,17 @@ SELECT 'https://hooks.example/filled' FROM generate_series(1, GREATEST(0, 256 - 
 }
 
 func joinRealtime(t *testing.T, baseURL, apiKey, token, id string) *websocket.Conn {
+	return joinRealtimeEvent(t, baseURL, apiKey, token, id, "INSERT")
+}
+
+func joinRealtimeEvent(t *testing.T, baseURL, apiKey, token, id, event string) *websocket.Conn {
 	t.Helper()
 	endpoint := "ws" + strings.TrimPrefix(baseURL, "http") + "/realtime/v1/websocket?apikey=" + url.QueryEscape(apiKey)
 	conn, _, err := websocket.DefaultDialer.Dial(endpoint, nil)
 	if err != nil {
 		t.Fatal(err)
 	}
-	payload := map[string]any{"config": map[string]any{"postgres_changes": []map[string]string{{"id": id, "event": "INSERT", "schema": "public", "table": "realtime_rows"}}}, "access_token": token}
+	payload := map[string]any{"config": map[string]any{"postgres_changes": []map[string]string{{"id": id, "event": event, "schema": "public", "table": "realtime_rows"}}}, "access_token": token}
 	if err := conn.WriteJSON([]any{"1", "1", "realtime:" + id, "phx_join", payload}); err != nil {
 		conn.Close()
 		t.Fatal(err)
