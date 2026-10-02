@@ -7,8 +7,9 @@ acceptable database volume.
 Run `scripts/setup-pi.sh` once as the non-root operator. After logging in again:
 
 ```sh
-./scripts/init-env.sh
-# Add PIBASE_OPERATOR_TOKEN and PIBASE_BACKUP_KEY (independent 32-byte secrets).
+PIBASE_DATA_ROOT=/mnt/pibase-ssd/pibase ./scripts/init-env.sh
+# init-env.sh generates independent operator and backup secrets and persists
+# PIBASE_DATA_ROOT in .env. Use the same SSD path passed to setup-pi.sh.
 docker compose -f compose.yaml -f compose.pi.yaml up --build -d
 curl --fail http://127.0.0.1:18080/healthz
 curl --fail http://127.0.0.1:18080/metrics

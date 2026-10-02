@@ -104,6 +104,10 @@ Each milestone ends with a written **GATE REPORT** (`reports/Mx.md`): what was b
 - **M2, auth:** email/password, refresh, confirm, reset, `auth.uid()`, admin user management.
 - **M3, storage:** buckets, RLS on objects, signed URLs, quotas.
 - **M4, operations:** dashboard, backups/restore, usage, monitoring, Pi setup and branching.
+  - **M4-01 follow-up:** `project-branch` must recreate public-schema grants
+    and RLS policies from PostgreSQL catalogs, mapping source project roles to
+    fresh branch roles structurally. It must not rewrite dump text, and must
+    continue excluding `auth`, `storage`, and object files.
 - **M5a, realtime changes and delivery foundation:**
   - Supabase-compatible `postgres_changes` WebSockets only. PostgreSQL
     `LISTEN`/`NOTIFY` messages contain table, operation, and row id only; the
