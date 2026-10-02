@@ -297,7 +297,7 @@ func readBranchPolicies(ctx context.Context, conn *pgx.Conn) ([]branchPolicy, er
 }
 
 func readBranchDefaults(ctx context.Context, conn *pgx.Conn) ([]branchGrant, error) {
-	rows, err := conn.Query(ctx, `SELECT COALESCE(n.nspname,''),d.defaclobjtype::text,CASE WHEN x.grantee=0 THEN 'PUBLIC' ELSE r.rolname END,x.privilege_type,x.is_grantable,o.rolname FROM pg_default_acl d LEFT JOIN pg_namespace n ON n.oid=d.defaclnamespace CROSS JOIN LATERAL aclexplode(d.defaclacl) x LEFT JOIN pg_roles r ON r.oid=x.grantee JOIN pg_roles o ON o.oid=d.defaclrole`)
+	rows, err := conn.Query(ctx, `SELECT COALESCE(n.nspname,''),d.defaclobjtype::text,CASE WHEN x.grantee=0 THEN 'PUBLIC' ELSE r.rolname END,x.privilege_type,x.is_grantable,o.rolname FROM pg_default_acl d LEFT JOIN pg_namespace n ON n.oid=d.defaclnamespace CROSS JOIN LATERAL aclexplode(d.defaclacl) x LEFT JOIN pg_roles r ON r.oid=x.grantee JOIN pg_roles o ON o.oid=d.defaclrole WHERE n.nspname='public'`)
 	if err != nil {
 		return nil, err
 	}

@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"context"
 	"os"
+	"os/exec"
 	"testing"
 
 	"github.com/jackc/pgx/v5"
@@ -13,6 +14,12 @@ func TestBranchProjectRemapsCatalogSecurity(t *testing.T) {
 	adminURL := os.Getenv("PIBASE_TEST_ADMIN_DATABASE_URL")
 	if adminURL == "" {
 		t.Skip("PIBASE_TEST_ADMIN_DATABASE_URL is not set")
+	}
+	if _, err := exec.LookPath("pg_dump"); err != nil {
+		t.Skip("pg_dump/psql are required for the branch integration test")
+	}
+	if _, err := exec.LookPath("psql"); err != nil {
+		t.Skip("pg_dump/psql are required for the branch integration test")
 	}
 	ctx := context.Background()
 	if err := Bootstrap(ctx, adminURL, "integration-auth-password"); err != nil {
