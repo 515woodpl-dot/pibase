@@ -221,7 +221,7 @@ func readBranchSecurity(ctx context.Context, sourceURL string, source branchProj
 		kind, sql string
 	}{
 		{"schema", `SELECT n.nspname,CASE WHEN x.grantee=0 THEN 'PUBLIC' ELSE r.rolname END,x.privilege_type,x.is_grantable FROM pg_namespace n CROSS JOIN LATERAL aclexplode(COALESCE(n.nspacl,acldefault('n'::"char",n.nspowner))) x LEFT JOIN pg_roles r ON r.oid=x.grantee WHERE n.nspname='public'`},
-		{"relation", `SELECT n.nspname,c.relname,c.relkind,'',CASE WHEN x.grantee=0 THEN 'PUBLIC' ELSE r.rolname END,x.privilege_type,x.is_grantable FROM pg_class c JOIN pg_namespace n ON n.oid=c.relnamespace CROSS JOIN LATERAL aclexplode(COALESCE(c.relacl,acldefault(CASE WHEN c.relkind='S' THEN 'S'::"char" ELSE 'r'::"char" END,c.relowner))) x LEFT JOIN pg_roles r ON r.oid=x.grantee WHERE n.nspname='public' AND c.relkind IN ('r','p','v','m','f','S')`},
+		{"relation", `SELECT n.nspname,c.relname,c.relkind::text,'',CASE WHEN x.grantee=0 THEN 'PUBLIC' ELSE r.rolname END,x.privilege_type,x.is_grantable FROM pg_class c JOIN pg_namespace n ON n.oid=c.relnamespace CROSS JOIN LATERAL aclexplode(COALESCE(c.relacl,acldefault(CASE WHEN c.relkind='S' THEN 'S'::"char" ELSE 'r'::"char" END,c.relowner))) x LEFT JOIN pg_roles r ON r.oid=x.grantee WHERE n.nspname='public' AND c.relkind IN ('r','p','v','m','f','S')`},
 		{"column", `SELECT n.nspname,c.relname,a.attname,CASE WHEN x.grantee=0 THEN 'PUBLIC' ELSE r.rolname END,x.privilege_type,x.is_grantable FROM pg_attribute a JOIN pg_class c ON c.oid=a.attrelid JOIN pg_namespace n ON n.oid=c.relnamespace CROSS JOIN LATERAL aclexplode(a.attacl) x LEFT JOIN pg_roles r ON r.oid=x.grantee WHERE n.nspname='public' AND a.attnum>0 AND NOT a.attisdropped AND a.attacl IS NOT NULL`},
 		{"function", `SELECT n.nspname,p.proname,pg_get_function_identity_arguments(p.oid),CASE WHEN x.grantee=0 THEN 'PUBLIC' ELSE r.rolname END,x.privilege_type,x.is_grantable FROM pg_proc p JOIN pg_namespace n ON n.oid=p.pronamespace CROSS JOIN LATERAL aclexplode(COALESCE(p.proacl,acldefault('f'::"char",p.proowner))) x LEFT JOIN pg_roles r ON r.oid=x.grantee WHERE n.nspname='public'`},
 	}
@@ -297,7 +297,7 @@ func readBranchPolicies(ctx context.Context, conn *pgx.Conn) ([]branchPolicy, er
 }
 
 func readBranchDefaults(ctx context.Context, conn *pgx.Conn) ([]branchGrant, error) {
-	rows, err := conn.Query(ctx, `SELECT COALESCE(n.nspname,''),d.defaclobjtype,CASE WHEN x.grantee=0 THEN 'PUBLIC' ELSE r.rolname END,x.privilege_type,x.is_grantable,o.rolname FROM pg_default_acl d LEFT JOIN pg_namespace n ON n.oid=d.defaclnamespace CROSS JOIN LATERAL aclexplode(d.defaclacl) x LEFT JOIN pg_roles r ON r.oid=x.grantee JOIN pg_roles o ON o.oid=d.defaclrole`)
+	rows, err := conn.Query(ctx, `SELECT COALESCE(n.nspname,''),d.defaclobjtype::text,CASE WHEN x.grantee=0 THEN 'PUBLIC' ELSE r.rolname END,x.privilege_type,x.is_grantable,o.rolname FROM pg_default_acl d LEFT JOIN pg_namespace n ON n.oid=d.defaclnamespace CROSS JOIN LATERAL aclexplode(d.defaclacl) x LEFT JOIN pg_roles r ON r.oid=x.grantee JOIN pg_roles o ON o.oid=d.defaclrole`)
 	if err != nil {
 		return nil, err
 	}
@@ -314,7 +314,7 @@ func readBranchDefaults(ctx context.Context, conn *pgx.Conn) ([]branchGrant, err
 }
 
 func mapBranchRole(role string, source, target branchProjectInfo) (string, error) {
-	if role == "PUBLIC" {
+	if role == "PUBLIC" || role == "pg_database_owner" {
 		return role, nil
 	}
 	roles := map[string]string{source.anon: target.anon, source.authenticated: target.authenticated, source.service: target.service, source.admin: target.admin}
