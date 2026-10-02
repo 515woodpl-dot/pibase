@@ -45,7 +45,7 @@ func TestBranchProjectRemapsCatalogSecurity(t *testing.T) {
 	setup := `SET ROLE ` + pgx.Identifier{sourceInfo.admin}.Sanitize() + `;
 CREATE TABLE public.branch_rows (id integer PRIMARY KEY, owner text NOT NULL, secret text NOT NULL);
 ALTER TABLE public.branch_rows ENABLE ROW LEVEL SECURITY;
-GRANT SELECT ON public.branch_rows TO ` + pgx.Identifier{sourceInfo.authenticated}.Sanitize() + `;
+GRANT SELECT ON public.branch_rows TO ` + pgx.Identifier{sourceInfo.authenticated}.Sanitize() + ` WITH GRANT OPTION;
 CREATE POLICY row_read ON public.branch_rows FOR SELECT TO ` + pgx.Identifier{sourceInfo.authenticated}.Sanitize() + ` USING (true);
 INSERT INTO public.branch_rows VALUES (1, 'source', 'not-auth-storage');`
 	if _, err := conn.Exec(ctx, setup); err != nil {

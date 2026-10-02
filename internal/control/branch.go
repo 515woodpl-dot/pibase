@@ -334,9 +334,6 @@ func applyBranchGrant(ctx context.Context, tx pgx.Tx, grant branchGrant, role st
 		role = pgx.Identifier{role}.Sanitize()
 	}
 	privilege := grant.privilege
-	if grant.grantable {
-		privilege += ` WITH GRANT OPTION`
-	}
 	var object string
 	switch grant.kind {
 	case "schema":
@@ -357,7 +354,11 @@ func applyBranchGrant(ctx context.Context, tx pgx.Tx, grant branchGrant, role st
 	default:
 		return fmt.Errorf("unsupported grant kind %q", grant.kind)
 	}
-	_, err := tx.Exec(ctx, `GRANT `+privilege+` ON `+object+` TO `+role)
+	statement := `GRANT ` + privilege + ` ON ` + object + ` TO ` + role
+	if grant.grantable {
+		statement += ` WITH GRANT OPTION`
+	}
+	_, err := tx.Exec(ctx, statement)
 	return err
 }
 
