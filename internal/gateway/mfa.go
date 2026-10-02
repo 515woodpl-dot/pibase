@@ -242,8 +242,12 @@ FOR UPDATE OF c,f`, req.ChallengeID, factorID, claims.Subject).Scan(&encrypted, 
 		if err != nil {
 			return err
 		}
-		newRefresh := session["refresh_token"].(string)
-		_, err = tx.Exec(r.Context(), `UPDATE auth.refresh_tokens SET revoked_at=COALESCE(revoked_at,now()) WHERE user_id=$1 AND token_hash<>$2`, claims.Subject, tokenHash(newRefresh))
+		// Revoke only the aal1 session that was just elevated, not all sessions.
+		sessionID := cSessionID(claims)
+		if sessionID == "" {
+			return httpError(http.StatusBadRequest, "invalid JWT session")
+		}
+		_, err = tx.Exec(r.Context(), `UPDATE auth.refresh_tokens SET revoked_at=COALESCE(revoked_at,now()) WHERE id=$1 AND user_id=$2`, sessionID, claims.Subject)
 		return err
 	})
 	if err != nil {

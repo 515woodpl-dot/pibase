@@ -57,9 +57,10 @@ CREATE TABLE IF NOT EXISTS auth.mfa_factors (
   last_used_counter bigint,
   last_challenged_at timestamptz,
   created_at timestamptz NOT NULL DEFAULT now(),
-  updated_at timestamptz NOT NULL DEFAULT now(),
-  UNIQUE(user_id,friendly_name)
+  updated_at timestamptz NOT NULL DEFAULT now()
 );
+ALTER TABLE auth.mfa_factors DROP CONSTRAINT IF EXISTS mfa_factors_user_id_friendly_name_key;
+CREATE UNIQUE INDEX IF NOT EXISTS mfa_factors_user_friendly_idx ON auth.mfa_factors(user_id,COALESCE(friendly_name,''));
 CREATE INDEX IF NOT EXISTS mfa_factors_user_idx ON auth.mfa_factors(user_id);
 CREATE TABLE IF NOT EXISTS auth.mfa_challenges (
   id uuid PRIMARY KEY,
