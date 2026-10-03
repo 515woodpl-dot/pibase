@@ -1,6 +1,7 @@
 package control
 
 import (
+	"bufio"
 	"context"
 	"fmt"
 	"io"
@@ -32,8 +33,32 @@ func BranchProject(ctx context.Context, adminURL, sourceID, name string, masterK
 	if err != nil {
 		return Project{}, err
 	}
+	extensions, err := optionalProjectExtensions(ctx, withDatabaseMust(adminURL, source.database))
+	if err != nil {
+		return Project{}, fmt.Errorf("read branch extensions: %w", err)
+	}
+	for _, extension := range extensions {
+		switch extension {
+		case "postgis":
+			err = EnablePostGIS(ctx, adminURL, target.ID)
+		case "vector":
+			err = EnablePGVector(ctx, adminURL, target.ID)
+		}
+		if err != nil {
+			return Project{}, fmt.Errorf("enable branch extension %s: %w", extension, err)
+		}
+	}
 
-	dump := exec.CommandContext(ctx, "pg_dump", "--schema=public", "--clean", "--if-exists", "--no-owner", "--no-acl", withDatabaseMust(adminURL, source.database))
+	dumpArgs := []string{"--schema=public", "--no-owner", "--no-acl"}
+	for _, extension := range extensions {
+		if extension == "postgis" {
+			// PostGIS marks spatial_ref_sys as extension-managed configuration
+			// data. The fresh target extension already supplies it.
+			dumpArgs = append(dumpArgs, "--exclude-table=public.spatial_ref_sys")
+		}
+	}
+	dumpArgs = append(dumpArgs, withDatabaseMust(adminURL, source.database))
+	dump := exec.CommandContext(ctx, "pg_dump", dumpArgs...)
 	stdout, err := dump.StdoutPipe()
 	if err != nil {
 		return Project{}, err
@@ -54,7 +79,7 @@ func BranchProject(ctx context.Context, adminURL, sourceID, name string, masterK
 		return Project{}, err
 	}
 	_, _ = fmt.Fprintf(stdin, "SET ROLE %s;\n", pgx.Identifier{targetInfo.admin}.Sanitize())
-	_, err = io.Copy(stdin, stdout)
+	err = copyPublicDump(stdin, stdout)
 	_ = stdin.Close()
 	dumpWait := dump.Wait()
 	psqlWait := psql.Wait()
@@ -73,7 +98,50 @@ func BranchProject(ctx context.Context, adminURL, sourceID, name string, masterK
 	return target, nil
 }
 
+func copyPublicDump(dst io.Writer, src io.Reader) error {
+	reader := bufio.NewReader(src)
+	for {
+		line, err := reader.ReadString('\n')
+		// Fresh projects already contain public and optional extensions may
+		// depend on it. Skip only pg_dump's fixed schema-creation statement;
+		// all customer DDL and COPY data pass through byte-for-byte.
+		if strings.TrimSpace(line) != "CREATE SCHEMA public;" {
+			if _, writeErr := io.WriteString(dst, line); writeErr != nil {
+				return writeErr
+			}
+		}
+		if err == io.EOF {
+			return nil
+		}
+		if err != nil {
+			return err
+		}
+	}
+}
+
 type branchProjectInfo struct{ database, anon, authenticated, service, admin string }
+
+func optionalProjectExtensions(ctx context.Context, projectURL string) ([]string, error) {
+	conn, err := pgx.Connect(ctx, projectURL)
+	if err != nil {
+		return nil, err
+	}
+	defer conn.Close(ctx)
+	rows, err := conn.Query(ctx, `SELECT extname FROM pg_extension WHERE extname IN ('postgis','vector') ORDER BY extname`)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	var extensions []string
+	for rows.Next() {
+		var extension string
+		if err := rows.Scan(&extension); err != nil {
+			return nil, err
+		}
+		extensions = append(extensions, extension)
+	}
+	return extensions, rows.Err()
+}
 
 func branchInfo(ctx context.Context, adminURL, id string) (branchProjectInfo, error) {
 	controlURL, e := withDatabase(adminURL, "_control")
@@ -221,9 +289,9 @@ func readBranchSecurity(ctx context.Context, sourceURL string, source branchProj
 		kind, sql string
 	}{
 		{"schema", `SELECT n.nspname,CASE WHEN x.grantee=0 THEN 'PUBLIC' ELSE r.rolname END,x.privilege_type,x.is_grantable FROM pg_namespace n CROSS JOIN LATERAL aclexplode(COALESCE(n.nspacl,acldefault('n'::"char",n.nspowner))) x LEFT JOIN pg_roles r ON r.oid=x.grantee WHERE n.nspname='public'`},
-		{"relation", `SELECT n.nspname,c.relname,c.relkind::text,'',CASE WHEN x.grantee=0 THEN 'PUBLIC' ELSE r.rolname END,x.privilege_type,x.is_grantable FROM pg_class c JOIN pg_namespace n ON n.oid=c.relnamespace CROSS JOIN LATERAL aclexplode(COALESCE(c.relacl,acldefault(CASE WHEN c.relkind='S' THEN 'S'::"char" ELSE 'r'::"char" END,c.relowner))) x LEFT JOIN pg_roles r ON r.oid=x.grantee WHERE n.nspname='public' AND c.relkind IN ('r','p','v','m','f','S')`},
-		{"column", `SELECT n.nspname,c.relname,a.attname,CASE WHEN x.grantee=0 THEN 'PUBLIC' ELSE r.rolname END,x.privilege_type,x.is_grantable FROM pg_attribute a JOIN pg_class c ON c.oid=a.attrelid JOIN pg_namespace n ON n.oid=c.relnamespace CROSS JOIN LATERAL aclexplode(a.attacl) x LEFT JOIN pg_roles r ON r.oid=x.grantee WHERE n.nspname='public' AND a.attnum>0 AND NOT a.attisdropped AND a.attacl IS NOT NULL`},
-		{"function", `SELECT n.nspname,p.proname,pg_get_function_identity_arguments(p.oid),CASE WHEN x.grantee=0 THEN 'PUBLIC' ELSE r.rolname END,x.privilege_type,x.is_grantable FROM pg_proc p JOIN pg_namespace n ON n.oid=p.pronamespace CROSS JOIN LATERAL aclexplode(COALESCE(p.proacl,acldefault('f'::"char",p.proowner))) x LEFT JOIN pg_roles r ON r.oid=x.grantee WHERE n.nspname='public'`},
+		{"relation", `SELECT n.nspname,c.relname,c.relkind::text,'',CASE WHEN x.grantee=0 THEN 'PUBLIC' ELSE r.rolname END,x.privilege_type,x.is_grantable FROM pg_class c JOIN pg_namespace n ON n.oid=c.relnamespace CROSS JOIN LATERAL aclexplode(COALESCE(c.relacl,acldefault(CASE WHEN c.relkind='S' THEN 'S'::"char" ELSE 'r'::"char" END,c.relowner))) x LEFT JOIN pg_roles r ON r.oid=x.grantee WHERE n.nspname='public' AND c.relkind IN ('r','p','v','m','f','S') AND NOT EXISTS (SELECT 1 FROM pg_depend d WHERE d.classid='pg_class'::regclass AND d.objid=c.oid AND d.deptype='e')`},
+		{"column", `SELECT n.nspname,c.relname,a.attname,CASE WHEN x.grantee=0 THEN 'PUBLIC' ELSE r.rolname END,x.privilege_type,x.is_grantable FROM pg_attribute a JOIN pg_class c ON c.oid=a.attrelid JOIN pg_namespace n ON n.oid=c.relnamespace CROSS JOIN LATERAL aclexplode(a.attacl) x LEFT JOIN pg_roles r ON r.oid=x.grantee WHERE n.nspname='public' AND a.attnum>0 AND NOT a.attisdropped AND a.attacl IS NOT NULL AND NOT EXISTS (SELECT 1 FROM pg_depend d WHERE d.classid='pg_class'::regclass AND d.objid=c.oid AND d.deptype='e')`},
+		{"function", `SELECT n.nspname,p.proname,pg_get_function_identity_arguments(p.oid),CASE WHEN x.grantee=0 THEN 'PUBLIC' ELSE r.rolname END,x.privilege_type,x.is_grantable FROM pg_proc p JOIN pg_namespace n ON n.oid=p.pronamespace CROSS JOIN LATERAL aclexplode(COALESCE(p.proacl,acldefault('f'::"char",p.proowner))) x LEFT JOIN pg_roles r ON r.oid=x.grantee WHERE n.nspname='public' AND NOT EXISTS (SELECT 1 FROM pg_depend d WHERE d.classid='pg_proc'::regclass AND d.objid=p.oid AND d.deptype='e')`},
 	}
 	for _, query := range queries {
 		rows, err := conn.Query(ctx, query.sql)

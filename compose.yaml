@@ -2,7 +2,10 @@ name: pibase-m0
 
 services:
   postgres:
-    image: postgres:16-bookworm
+    build:
+      context: .
+      dockerfile: Dockerfile.postgres
+    image: pibase-postgres:16
     environment:
       POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:?set POSTGRES_PASSWORD in .env}
     command:

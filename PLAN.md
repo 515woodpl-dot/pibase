@@ -152,6 +152,13 @@ Each milestone ends with a written **GATE REPORT** (`reports/Mx.md`): what was b
     encrypted factor secrets, replay-resistant TOTP, `aal`/`amr` JWT claims,
     AAL-preserving refresh, and idempotent upgrades for existing auth-enabled
     projects. Phone factors, WebAuthn, and recovery codes are deferred.
+  - **M6b, operator-managed extensions:** bundle core PostGIS and pgvector in
+    the PostgreSQL image; expose only explicit operator commands; reject
+    customer extension DDL; preserve enabled extensions and spatial/vector data
+    when branching. Existing managed projects must receive versioned,
+    idempotent storage/realtime/cron/MFA upgrades, while schema-less M0
+    measurement databases remain excluded from background workers. All live
+    integration and supabase-js gates use disposable PostgreSQL state.
 
 ## 6. Security rules (auditor checks every gate)
 

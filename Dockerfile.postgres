@@ -1,0 +1,10 @@
+FROM postgres:16-bookworm
+
+# The upstream image already configures PostgreSQL's signed PGDG repository.
+# Install extension binaries only; projects opt in per database through the
+# operator CLI, never through customer SQL or the public gateway.
+RUN apt-get update \
+    && apt-get install -y --no-install-recommends \
+        postgresql-16-pgvector \
+        postgresql-16-postgis-3 \
+    && rm -rf /var/lib/apt/lists/*

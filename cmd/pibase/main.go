@@ -30,7 +30,7 @@ func main() {
 
 func run() error {
 	if len(os.Args) < 2 {
-		return errors.New("usage: pibase <bootstrap|project-create|project-branch|project-delete|project-list|project-usage|pgvector-enable|backup|restore|migration-apply|sql|serve>")
+		return errors.New("usage: pibase <bootstrap|project-create|project-branch|project-delete|project-list|project-usage|pgvector-enable|postgis-enable|backup|restore|migration-apply|sql|serve>")
 	}
 	ctx := context.Background()
 	switch os.Args[1] {
@@ -150,6 +150,15 @@ func run() error {
 			return err
 		}
 		return control.EnablePGVector(ctx, url, os.Args[2])
+	case "postgis-enable":
+		if len(os.Args) != 3 {
+			return errors.New("usage: pibase postgis-enable <project-id>")
+		}
+		url, err := config.Required("PIBASE_ADMIN_DATABASE_URL")
+		if err != nil {
+			return err
+		}
+		return control.EnablePostGIS(ctx, url, os.Args[2])
 	case "backup", "restore":
 		if len(os.Args) != 4 {
 			return fmt.Errorf("usage: pibase %s <project-id> <destination-or-backup>", os.Args[1])

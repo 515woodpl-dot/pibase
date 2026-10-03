@@ -1,13 +1,16 @@
 # Codex worklog
 
-Last updated: 2026-10-01
+Last updated: 2026-10-03
 
 ## Current milestone
 
-M4 — operations — independently approved with follow-up fixes on `pibase/m4`.
-M5 may proceed. A fresh-Pi setup drill remains required before a release claim;
-the authoritative scope and security rules remain in `PLAN.md`, with current
-evidence and known limits in `reports/M4.md`.
+M6b — optional extensions and upgrade stabilization — implementation and local
+gate complete on `pibase/m6b`; independent audit remains pending. PostGIS and
+pgvector are operator-enabled only, branches preserve enabled extensions, old
+managed projects receive idempotent schema upgrades, and live gates use a
+disposable PostgreSQL cluster instead of mutating the running stack. A fresh-Pi
+setup drill remains required before a release claim; current evidence is in
+`reports/M6b.md`.
 
 ## M4 implementation
 

@@ -80,7 +80,7 @@ func TestCreateProjectIsolation(t *testing.T) {
 	}
 }
 
-func TestBootstrapUpgradesExistingProjectMFA(t *testing.T) {
+func TestBootstrapUpgradesExistingProjectSchema(t *testing.T) {
 	adminURL := os.Getenv("PIBASE_TEST_ADMIN_DATABASE_URL")
 	if adminURL == "" {
 		t.Skip("PIBASE_TEST_ADMIN_DATABASE_URL is not set")
@@ -100,7 +100,12 @@ func TestBootstrapUpgradesExistingProjectMFA(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if _, err = conn.Exec(ctx, `DROP TABLE auth.mfa_challenges,auth.mfa_factors; ALTER TABLE auth.refresh_tokens DROP COLUMN aal`); err != nil {
+	if _, err = conn.Exec(ctx, `
+DROP SCHEMA storage CASCADE;
+DROP SCHEMA realtime CASCADE;
+DROP SCHEMA cron CASCADE;
+DROP TABLE auth.mfa_challenges,auth.mfa_factors;
+ALTER TABLE auth.refresh_tokens DROP COLUMN aal`); err != nil {
 		conn.Close(ctx)
 		t.Fatal(err)
 	}
@@ -114,17 +119,119 @@ func TestBootstrapUpgradesExistingProjectMFA(t *testing.T) {
 		t.Fatal(err)
 	}
 	defer conn.Close(ctx)
-	var factorOwner, challengeOwner string
-	var hasAAL bool
+	var factorOwner, storageOwner, cronOwner string
+	var hasAAL, hasStorage, hasRealtime, hasCron, storageRLS bool
+	var schemaVersion int
 	if err := conn.QueryRow(ctx, `SELECT
   (SELECT pg_get_userbyid(relowner) FROM pg_class WHERE oid='auth.mfa_factors'::regclass),
-  (SELECT pg_get_userbyid(relowner) FROM pg_class WHERE oid='auth.mfa_challenges'::regclass),
-  EXISTS(SELECT 1 FROM information_schema.columns WHERE table_schema='auth' AND table_name='refresh_tokens' AND column_name='aal')`).Scan(&factorOwner, &challengeOwner, &hasAAL); err != nil {
+	(SELECT pg_get_userbyid(relowner) FROM pg_class WHERE oid='storage.objects'::regclass),
+	(SELECT pg_get_userbyid(relowner) FROM pg_class WHERE oid='cron.jobs'::regclass),
+  EXISTS(SELECT 1 FROM information_schema.columns WHERE table_schema='auth' AND table_name='refresh_tokens' AND column_name='aal'),
+	to_regclass('storage.objects') IS NOT NULL,
+	to_regprocedure('realtime.enable_table(regclass)') IS NOT NULL,
+	to_regclass('cron.webhook_outbox') IS NOT NULL,
+	(SELECT relrowsecurity FROM pg_class WHERE oid='storage.objects'::regclass)`).Scan(&factorOwner, &storageOwner, &cronOwner, &hasAAL, &hasStorage, &hasRealtime, &hasCron, &storageRLS); err != nil {
 		t.Fatal(err)
 	}
 	wantOwner := parsedURLUser(t, adminURL)
-	if factorOwner != wantOwner || challengeOwner != wantOwner || !hasAAL {
-		t.Fatalf("upgrade ownership factors=%q challenges=%q aal=%v", factorOwner, challengeOwner, hasAAL)
+	if factorOwner != wantOwner || storageOwner != wantOwner || cronOwner != wantOwner || !hasAAL || !hasStorage || !hasRealtime || !hasCron || !storageRLS {
+		t.Fatalf("upgrade owners factors=%q storage=%q cron=%q aal=%v storage=%v realtime=%v cron=%v rls=%v", factorOwner, storageOwner, cronOwner, hasAAL, hasStorage, hasRealtime, hasCron, storageRLS)
+	}
+	controlURL, _ := withDatabase(adminURL, "_control")
+	controlConn, err := pgx.Connect(ctx, controlURL)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer controlConn.Close(ctx)
+	if err := controlConn.QueryRow(ctx, `SELECT schema_version FROM control.projects WHERE id=$1`, p.ID).Scan(&schemaVersion); err != nil {
+		t.Fatal(err)
+	}
+	if schemaVersion != currentProjectSchemaVersion {
+		t.Fatalf("schema version = %d, want %d", schemaVersion, currentProjectSchemaVersion)
+	}
+}
+
+func TestBootstrapSkipsSchemaLessMeasurementProject(t *testing.T) {
+	adminURL := os.Getenv("PIBASE_TEST_ADMIN_DATABASE_URL")
+	if adminURL == "" {
+		t.Skip("PIBASE_TEST_ADMIN_DATABASE_URL is not set")
+	}
+	ctx := context.Background()
+	const password = "integration-auth-password"
+	if err := Bootstrap(ctx, adminURL, password); err != nil {
+		t.Fatal(err)
+	}
+	p, err := CreateProject(ctx, adminURL, "measurement-upgrade-skip", bytes.Repeat([]byte{6}, 32))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer cleanupProject(t, adminURL, p)
+	projectURL, _ := withDatabase(adminURL, p.Database)
+	conn, err := pgx.Connect(ctx, projectURL)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err = conn.Exec(ctx, `DROP SCHEMA auth,storage,realtime,cron CASCADE`); err != nil {
+		conn.Close(ctx)
+		t.Fatal(err)
+	}
+	conn.Close(ctx)
+	if err := Bootstrap(ctx, adminURL, password); err != nil {
+		t.Fatal(err)
+	}
+	controlURL, _ := withDatabase(adminURL, "_control")
+	controlConn, err := pgx.Connect(ctx, controlURL)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer controlConn.Close(ctx)
+	var version int
+	if err := controlConn.QueryRow(ctx, `SELECT schema_version FROM control.projects WHERE id=$1`, p.ID).Scan(&version); err != nil {
+		t.Fatal(err)
+	}
+	if version != 0 {
+		t.Fatalf("measurement schema version = %d, want 0", version)
+	}
+}
+
+func TestOperatorOptionalExtensions(t *testing.T) {
+	adminURL := os.Getenv("PIBASE_TEST_ADMIN_DATABASE_URL")
+	if adminURL == "" {
+		t.Skip("PIBASE_TEST_ADMIN_DATABASE_URL is not set")
+	}
+	ctx := context.Background()
+	if err := Bootstrap(ctx, adminURL, "integration-auth-password"); err != nil {
+		t.Fatal(err)
+	}
+	p, err := CreateProject(ctx, adminURL, "optional-extensions", bytes.Repeat([]byte{4}, 32))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer cleanupProject(t, adminURL, p)
+	for i := 0; i < 2; i++ {
+		if err := EnablePostGIS(ctx, adminURL, p.ID); err != nil {
+			t.Fatal(err)
+		}
+		if err := EnablePGVector(ctx, adminURL, p.ID); err != nil {
+			t.Fatal(err)
+		}
+	}
+	projectURL, _ := withDatabase(adminURL, p.Database)
+	conn, err := pgx.Connect(ctx, projectURL)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer conn.Close(ctx)
+	var longitude float64
+	var dimensions int
+	if err := conn.QueryRow(ctx, `SELECT ST_X(ST_SetSRID(ST_MakePoint(-73.5,40.7),4326)), vector_dims('[1,2,3]'::vector)`).Scan(&longitude, &dimensions); err != nil {
+		t.Fatal(err)
+	}
+	if longitude != -73.5 || dimensions != 3 {
+		t.Fatalf("extension results longitude=%v dimensions=%d", longitude, dimensions)
+	}
+	if err := EnablePostGIS(ctx, adminURL, "missing-project"); err == nil {
+		t.Fatal("enabled PostGIS for an unknown project")
 	}
 }
 

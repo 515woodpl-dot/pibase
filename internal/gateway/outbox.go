@@ -31,7 +31,7 @@ func (s *Server) runDeliveryWorker(ctx context.Context) {
 		case <-t.C:
 		}
 		cycle, cancel := context.WithTimeout(ctx, 10*time.Second)
-		rows, err := s.control.Query(cycle, `SELECT id,database_name,anon_role,authenticated_role,service_role,admin_role,jwt_secret_encrypted,max_database_bytes FROM control.project_catalog`)
+		rows, err := s.control.Query(cycle, `SELECT id,database_name,anon_role,authenticated_role,service_role,admin_role,jwt_secret_encrypted,max_database_bytes FROM control.project_catalog WHERE schema_version >= 5`)
 		if err == nil {
 			for rows.Next() {
 				var p project

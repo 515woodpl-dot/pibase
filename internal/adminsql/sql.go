@@ -87,6 +87,9 @@ func ApplyMigration(ctx context.Context, adminURL, projectID, name, sql string) 
 	if name == "" || sql == "" {
 		return fmt.Errorf("migration name and SQL are required")
 	}
+	if err := validateNoExtensionDDL(sql); err != nil {
+		return err
+	}
 	p, err := lookupProject(ctx, adminURL, projectID)
 	if err != nil {
 		return err
@@ -131,6 +134,9 @@ name text PRIMARY KEY, checksum text NOT NULL, applied_at timestamptz NOT NULL D
 }
 
 func validateOwnerSQL(statement string) error {
+	if err := validateNoExtensionDDL(statement); err != nil {
+		return err
+	}
 	lower := strings.ToLower(statement)
 	for _, forbidden := range []string{"reset role", "set role", "set session authorization", "reset session authorization", "create role", "alter role", "drop role", "grant ", "revoke ", "copy ", "program"} {
 		if strings.Contains(lower, forbidden) {
@@ -138,6 +144,84 @@ func validateOwnerSQL(statement string) error {
 		}
 	}
 	return nil
+}
+
+func validateNoExtensionDDL(statement string) error {
+	tokens := sqlTokens(statement)
+	for i := 1; i < len(tokens); i++ {
+		if tokens[i] == "extension" && (tokens[i-1] == "create" || tokens[i-1] == "alter" || tokens[i-1] == "drop") {
+			return fmt.Errorf("extensions can only be managed by the operator")
+		}
+	}
+	return nil
+}
+
+// sqlTokens returns unquoted identifier tokens. It skips PostgreSQL line and
+// nested block comments plus quoted and dollar-quoted strings, preventing a
+// comment such as CREATE/**/EXTENSION from bypassing the operator boundary.
+func sqlTokens(statement string) []string {
+	var tokens []string
+	for i := 0; i < len(statement); {
+		switch {
+		case i+1 < len(statement) && statement[i:i+2] == "--":
+			i += 2
+			for i < len(statement) && statement[i] != '\n' {
+				i++
+			}
+		case i+1 < len(statement) && statement[i:i+2] == "/*":
+			i += 2
+			depth := 1
+			for i < len(statement) && depth > 0 {
+				if i+1 < len(statement) && statement[i:i+2] == "/*" {
+					depth++
+					i += 2
+				} else if i+1 < len(statement) && statement[i:i+2] == "*/" {
+					depth--
+					i += 2
+				} else {
+					i++
+				}
+			}
+		case statement[i] == '\'' || statement[i] == '"':
+			quote := statement[i]
+			i++
+			for i < len(statement) {
+				if statement[i] != quote {
+					i++
+					continue
+				}
+				if i+1 < len(statement) && statement[i+1] == quote {
+					i += 2
+					continue
+				}
+				i++
+				break
+			}
+		case statement[i] == '$':
+			end := i + 1
+			for end < len(statement) && (statement[end] == '_' || statement[end] >= 'a' && statement[end] <= 'z' || statement[end] >= 'A' && statement[end] <= 'Z' || statement[end] >= '0' && statement[end] <= '9') {
+				end++
+			}
+			if end < len(statement) && statement[end] == '$' {
+				delimiter := statement[i : end+1]
+				i = end + 1
+				if close := strings.Index(statement[i:], delimiter); close >= 0 {
+					i += close + len(delimiter)
+				}
+			} else {
+				i++
+			}
+		case statement[i] == '_' || statement[i] >= 'a' && statement[i] <= 'z' || statement[i] >= 'A' && statement[i] <= 'Z':
+			start := i
+			for i < len(statement) && (statement[i] == '_' || statement[i] >= 'a' && statement[i] <= 'z' || statement[i] >= 'A' && statement[i] <= 'Z' || statement[i] >= '0' && statement[i] <= '9' || statement[i] == '$') {
+				i++
+			}
+			tokens = append(tokens, strings.ToLower(statement[start:i]))
+		default:
+			i++
+		}
+	}
+	return tokens
 }
 
 func MarshalResult(result Result) ([]byte, error) {

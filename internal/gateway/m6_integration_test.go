@@ -65,6 +65,8 @@ func TestM6TOTPFlowAndAAL(t *testing.T) {
 	}
 
 	enrolled := requestAuthJSONBearer(t, httpServer.Client(), http.MethodPost, httpServer.URL+"/auth/v1/factors", p.AnonKey, aal1.Access, `{"factor_type":"totp","friendly_name":"phone"}`, http.StatusOK)
+	requestAuthJSONBearer(t, httpServer.Client(), http.MethodPost, httpServer.URL+"/auth/v1/factors", p.AnonKey, aal1.Access, `{"factor_type":"totp"}`, http.StatusOK)
+	requestAuthJSONBearer(t, httpServer.Client(), http.MethodPost, httpServer.URL+"/auth/v1/factors", p.AnonKey, aal1.Access, `{"factor_type":"totp"}`, http.StatusUnprocessableEntity)
 	var factor struct {
 		ID   string `json:"id"`
 		TOTP struct {

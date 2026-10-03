@@ -196,9 +196,9 @@ CREATE TABLE auth.mfa_factors (
   last_used_counter bigint,
   last_challenged_at timestamptz,
   created_at timestamptz NOT NULL DEFAULT now(),
-  updated_at timestamptz NOT NULL DEFAULT now(),
-  UNIQUE(user_id,friendly_name)
+  updated_at timestamptz NOT NULL DEFAULT now()
 );
+CREATE UNIQUE INDEX mfa_factors_user_friendly_idx ON auth.mfa_factors(user_id,COALESCE(friendly_name,''));
 CREATE INDEX mfa_factors_user_idx ON auth.mfa_factors(user_id);
 CREATE TABLE auth.mfa_challenges (
   id uuid PRIMARY KEY,
@@ -371,6 +371,12 @@ GRANT ALL PRIVILEGES ON ALL TABLES IN SCHEMA cron TO ` + pgx.Identifier{admin}.S
 GRANT USAGE,SELECT ON ALL SEQUENCES IN SCHEMA cron TO ` + pgx.Identifier{admin}.Sanitize() + `;
 GRANT EXECUTE ON FUNCTION cron.enqueue_webhook() TO ` + pgx.Identifier{admin}.Sanitize() + `;`
 	_, err = projectDB.Exec(ctx, setup)
+	if err == nil {
+		// Keep fresh projects on the same canonical schema path used to upgrade
+		// existing projects, preventing milestone fixes from applying to only
+		// one of those paths.
+		_, err = projectDB.Exec(ctx, managedProjectUpgradeSQL(anon, authenticated, service, admin))
+	}
 	projectDB.Close(ctx)
 	if err != nil {
 		return Project{}, err
@@ -403,8 +409,8 @@ GRANT EXECUTE ON FUNCTION cron.enqueue_webhook() TO ` + pgx.Identifier{admin}.Sa
 	}
 	defer controlDB.Close(ctx)
 	_, err = controlDB.Exec(ctx, `INSERT INTO control.projects
- (id,name,database_name,anon_role,authenticated_role,service_role,admin_role,jwt_secret_encrypted,anon_key_hash,service_key_hash)
- VALUES($1,$2,$3,$4,$5,$6,$7,$8,$9,$10)`, id, name, database, anon, authenticated, service, admin, encrypted, keys.Hash(anonKey), keys.Hash(serviceKey))
+ (id,name,database_name,anon_role,authenticated_role,service_role,admin_role,jwt_secret_encrypted,anon_key_hash,service_key_hash,schema_version)
+ VALUES($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11)`, id, name, database, anon, authenticated, service, admin, encrypted, keys.Hash(anonKey), keys.Hash(serviceKey), currentProjectSchemaVersion)
 	if err != nil {
 		return Project{}, err
 	}
@@ -416,7 +422,22 @@ func JSON(project Project) ([]byte, error) { return json.MarshalIndent(project, 
 // EnablePGVector is deliberately an operator-plane action. Customer requests
 // never receive a database-superuser connection or an extension allowlist.
 func EnablePGVector(ctx context.Context, adminURL, id string) error {
-	conn, err := pgx.Connect(ctx, adminURL)
+	return enableOperatorExtension(ctx, adminURL, id, "vector", "pgvector")
+}
+
+// EnablePostGIS is deliberately limited to the core PostGIS extension. Raster,
+// topology, geocoding, and arbitrary customer-selected extensions are outside
+// this operator action.
+func EnablePostGIS(ctx context.Context, adminURL, id string) error {
+	return enableOperatorExtension(ctx, adminURL, id, "postgis", "PostGIS")
+}
+
+func enableOperatorExtension(ctx context.Context, adminURL, id, extension, label string) error {
+	controlURL, err := withDatabase(adminURL, "_control")
+	if err != nil {
+		return err
+	}
+	conn, err := pgx.Connect(ctx, controlURL)
 	if err != nil {
 		return err
 	}
@@ -434,8 +455,15 @@ func EnablePGVector(ctx context.Context, adminURL, id string) error {
 		return err
 	}
 	defer project.Close(ctx)
-	if _, err = project.Exec(ctx, `CREATE EXTENSION IF NOT EXISTS vector`); err != nil {
-		return fmt.Errorf("enable pgvector (install the PostgreSQL vector extension on the host first): %w", err)
+	var available bool
+	if err = project.QueryRow(ctx, `SELECT EXISTS(SELECT 1 FROM pg_available_extensions WHERE name=$1)`, extension).Scan(&available); err != nil {
+		return fmt.Errorf("check %s availability: %w", label, err)
+	}
+	if !available {
+		return fmt.Errorf("enable %s: extension binaries are not installed in the PostgreSQL image", label)
+	}
+	if _, err = project.Exec(ctx, `CREATE EXTENSION IF NOT EXISTS `+pgx.Identifier{extension}.Sanitize()); err != nil {
+		return fmt.Errorf("enable %s: %w", label, err)
 	}
 	return nil
 }

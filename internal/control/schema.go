@@ -23,20 +23,26 @@ CREATE TABLE IF NOT EXISTS control.projects (
   jwt_secret_encrypted bytea NOT NULL,
   anon_key_hash bytea NOT NULL,
   service_key_hash bytea NOT NULL,
+  schema_version integer NOT NULL DEFAULT 0 CHECK (schema_version >= 0),
   max_database_bytes bigint NOT NULL DEFAULT 1073741824 CHECK (max_database_bytes > 0),
   created_at timestamptz NOT NULL DEFAULT now()
 );
 ALTER TABLE control.projects ADD COLUMN IF NOT EXISTS max_database_bytes bigint NOT NULL DEFAULT 1073741824;
+ALTER TABLE control.projects ADD COLUMN IF NOT EXISTS schema_version integer NOT NULL DEFAULT 0;
 CREATE TABLE IF NOT EXISTS control.project_usage (
   project_id text NOT NULL REFERENCES control.projects(id) ON DELETE CASCADE,
   day date NOT NULL DEFAULT current_date,
   requests bigint NOT NULL DEFAULT 0,
   PRIMARY KEY (project_id,day)
 );
-CREATE OR REPLACE VIEW control.project_catalog AS
+-- This view is gateway-owned. Recreate it so upgrades can change its column
+-- order as the projects table evolves; CREATE OR REPLACE VIEW cannot reorder
+-- or insert columns before existing view columns.
+DROP VIEW IF EXISTS control.project_catalog;
+CREATE VIEW control.project_catalog AS
   SELECT id, database_name, anon_role, authenticated_role, service_role,
          admin_role, jwt_secret_encrypted, anon_key_hash, service_key_hash,
-         max_database_bytes, name, created_at
+         max_database_bytes, name, created_at, schema_version
   FROM control.projects;
 GRANT USAGE ON SCHEMA control TO authenticator;
 GRANT SELECT ON control.project_catalog TO authenticator;
@@ -126,20 +132,19 @@ func Bootstrap(ctx context.Context, adminURL, password string) error {
 	return upgradeProjectSchemas(ctx, controlConn, adminURL)
 }
 
-// upgradeProjectSchemas applies gateway-owned auth schema changes to every
-// existing project while bootstrap is already running with the operator
-// connection. The core auth tables are deliberately owned by the same
-// operator role that created them, so upgrades retain that ownership boundary.
+// upgradeProjectSchemas applies all gateway-owned schema changes to every
+// managed project. Schema-less M0 measurement databases are recorded as
+// version zero so background workers can skip them without probing each DB.
 func upgradeProjectSchemas(ctx context.Context, controlConn *pgx.Conn, adminURL string) error {
-	rows, err := controlConn.Query(ctx, `SELECT database_name FROM control.projects ORDER BY id`)
+	rows, err := controlConn.Query(ctx, `SELECT id,database_name,anon_role,authenticated_role,service_role,admin_role FROM control.projects ORDER BY id`)
 	if err != nil {
 		return fmt.Errorf("list projects for schema upgrade: %w", err)
 	}
-	type target struct{ database string }
+	type target struct{ id, database, anon, authenticated, service, admin string }
 	var targets []target
 	for rows.Next() {
 		var item target
-		if err := rows.Scan(&item.database); err != nil {
+		if err := rows.Scan(&item.id, &item.database, &item.anon, &item.authenticated, &item.service, &item.admin); err != nil {
 			rows.Close()
 			return err
 		}
@@ -168,12 +173,28 @@ func upgradeProjectSchemas(ctx context.Context, controlConn *pgx.Conn, adminURL 
 		// remain useful for resource measurements but have nothing to migrate.
 		if !authReady {
 			project.Close(ctx)
+			if _, err = controlConn.Exec(ctx, `UPDATE control.projects SET schema_version=0 WHERE id=$1`, item.id); err != nil {
+				return fmt.Errorf("record measurement project %s schema: %w", item.database, err)
+			}
 			continue
 		}
-		_, err = project.Exec(ctx, mfaUpgradeSQL)
+		tx, beginErr := project.Begin(ctx)
+		if beginErr != nil {
+			project.Close(ctx)
+			return fmt.Errorf("begin project %s schema upgrade: %w", item.database, beginErr)
+		}
+		_, err = tx.Exec(ctx, managedProjectUpgradeSQL(item.anon, item.authenticated, item.service, item.admin))
+		if err == nil {
+			err = tx.Commit(ctx)
+		} else {
+			_ = tx.Rollback(ctx)
+		}
 		project.Close(ctx)
 		if err != nil {
 			return fmt.Errorf("upgrade project %s schema: %w", item.database, err)
+		}
+		if _, err = controlConn.Exec(ctx, `UPDATE control.projects SET schema_version=$2 WHERE id=$1`, item.id, currentProjectSchemaVersion); err != nil {
+			return fmt.Errorf("record project %s schema: %w", item.database, err)
 		}
 	}
 	return nil

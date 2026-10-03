@@ -3,7 +3,7 @@
 **Branch:** `pibase/m6a`
 **Environment:** Raspberry Pi 4 Model B, Linux arm64, Go 1.23 in Docker,
 PostgreSQL 16 in Docker
-**Status:** implementation complete; audit pending
+**Status:** audit complete; approved findings fixed in `7a24837`
 
 ## Built
 

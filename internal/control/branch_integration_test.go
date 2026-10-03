@@ -30,6 +30,12 @@ func TestBranchProjectRemapsCatalogSecurity(t *testing.T) {
 		t.Fatal(err)
 	}
 	defer cleanupProject(t, adminURL, source)
+	if err := EnablePostGIS(ctx, adminURL, source.ID); err != nil {
+		t.Fatal(err)
+	}
+	if err := EnablePGVector(ctx, adminURL, source.ID); err != nil {
+		t.Fatal(err)
+	}
 	sourceInfo, err := branchInfo(ctx, adminURL, source.ID)
 	if err != nil {
 		t.Fatal(err)
@@ -44,10 +50,12 @@ func TestBranchProjectRemapsCatalogSecurity(t *testing.T) {
 	}
 	setup := `SET ROLE ` + pgx.Identifier{sourceInfo.admin}.Sanitize() + `;
 CREATE TABLE public.branch_rows (id integer PRIMARY KEY, owner text NOT NULL, secret text NOT NULL);
+CREATE TABLE public.branch_spatial (id integer PRIMARY KEY, location geometry(Point,4326), embedding vector(3));
 ALTER TABLE public.branch_rows ENABLE ROW LEVEL SECURITY;
 GRANT SELECT ON public.branch_rows TO ` + pgx.Identifier{sourceInfo.authenticated}.Sanitize() + ` WITH GRANT OPTION;
 CREATE POLICY row_read ON public.branch_rows FOR SELECT TO ` + pgx.Identifier{sourceInfo.authenticated}.Sanitize() + ` USING (true);
-INSERT INTO public.branch_rows VALUES (1, 'source', 'not-auth-storage');`
+INSERT INTO public.branch_rows VALUES (1, 'source', 'not-auth-storage');
+INSERT INTO public.branch_spatial VALUES (1,ST_SetSRID(ST_MakePoint(-73.5,40.7),4326),'[1,2,3]');`
 	if _, err := conn.Exec(ctx, setup); err != nil {
 		conn.Close(ctx)
 		t.Fatal(err)
@@ -85,5 +93,17 @@ INSERT INTO public.branch_rows VALUES (1, 'source', 'not-auth-storage');`
 	}
 	if rows != 1 || authRows != 0 || storageRows != 0 {
 		t.Fatalf("branch contents unexpected: public=%d auth=%d storage=%d", rows, authRows, storageRows)
+	}
+	var postgis, vector bool
+	var longitude float64
+	var dimensions int
+	if err := targetConn.QueryRow(ctx, `SELECT
+  EXISTS(SELECT 1 FROM pg_extension WHERE extname='postgis'),
+  EXISTS(SELECT 1 FROM pg_extension WHERE extname='vector'),
+  ST_X(location),vector_dims(embedding) FROM public.branch_spatial WHERE id=1`).Scan(&postgis, &vector, &longitude, &dimensions); err != nil {
+		t.Fatal(err)
+	}
+	if !postgis || !vector || longitude != -73.5 || dimensions != 3 {
+		t.Fatalf("branch extensions postgis=%v vector=%v longitude=%v dimensions=%d", postgis, vector, longitude, dimensions)
 	}
 }
