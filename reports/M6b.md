@@ -1,6 +1,6 @@
 # M6b gate report — optional extensions
 
-**Status:** implementation and local verification complete; independent audit pending
+**Status:** audit fixes applied and locally verified; independent re-review pending
 
 ## Delivered
 
@@ -43,6 +43,20 @@
   project pool: passed.
 - Duplicate unnamed TOTP enrollment on a newly created project: rejected.
 - Disposable-stack Node 22 `supabase-js` M6a acceptance: passed.
+
+## Measured M6b image and memory (Raspberry Pi 4, Linux arm64)
+
+- `pibase-postgres:test` image size: **647,530,620 bytes (617.5 MiB)**,
+  measured with `docker image inspect`.
+- Sum of `VmRSS` for PostgreSQL processes in a fresh container: **65,644 KiB**
+  before PostGIS and **70,296 KiB** after `CREATE EXTENSION postgis` plus a
+  buffered geography query, a measured increase of **4,652 KiB**. This is a
+  process-RSS sum and can double-count shared pages; it is not container PSS.
+- The PostgreSQL extension image was built natively as **linux/arm64** from
+  `Dockerfile.postgres`.
+- The shipped pgvector 0.8.6 control file has no `trusted = true` setting;
+  regardless, the database event trigger rejects extension DDL from customer
+  sessions.
 
 ## Known scope
 

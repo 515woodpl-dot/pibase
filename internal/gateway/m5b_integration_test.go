@@ -141,15 +141,16 @@ func TestM5bBroadcastPresenceIsolation(t *testing.T) {
 	if err := otherTopic.ReadJSON(&isolated); err == nil {
 		t.Fatalf("different topic received room event: %#v", isolated)
 	}
-	runSupabaseRealtimeAcceptance(t, httpServer.URL, projectA.AnonKey)
+	t.Run("supabase-js realtime acceptance", func(t *testing.T) {
+		runSupabaseRealtimeAcceptance(t, httpServer.URL, projectA.AnonKey)
+	})
 }
 
 func runSupabaseRealtimeAcceptance(t *testing.T, baseURL, anonKey string) {
 	t.Helper()
 	node, err := exec.LookPath("node")
 	if err != nil {
-		t.Log("node is unavailable; skipping supabase-js realtime acceptance")
-		return
+		t.Skip("node is unavailable; supabase-js realtime acceptance requires scripts/test-supabase-js.sh")
 	}
 	script, err := filepath.Abs("../../tests/realtime-js.mjs")
 	if err != nil {

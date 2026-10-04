@@ -372,6 +372,9 @@ GRANT USAGE,SELECT ON ALL SEQUENCES IN SCHEMA cron TO ` + pgx.Identifier{admin}.
 GRANT EXECUTE ON FUNCTION cron.enqueue_webhook() TO ` + pgx.Identifier{admin}.Sanitize() + `;`
 	_, err = projectDB.Exec(ctx, setup)
 	if err == nil {
+		_, err = projectDB.Exec(ctx, extensionGuardSQL)
+	}
+	if err == nil {
 		// Keep fresh projects on the same canonical schema path used to upgrade
 		// existing projects, preventing milestone fixes from applying to only
 		// one of those paths.

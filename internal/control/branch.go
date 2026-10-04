@@ -5,6 +5,7 @@ import (
 	"context"
 	"fmt"
 	"io"
+	"os"
 	"os/exec"
 	"strings"
 
@@ -49,7 +50,23 @@ func BranchProject(ctx context.Context, adminURL, sourceID, name string, masterK
 		}
 	}
 
-	dumpArgs := []string{"--schema=public", "--no-owner", "--no-acl"}
+	archive, err := os.CreateTemp("", "pibase-branch-*.dump")
+	if err != nil {
+		return Project{}, err
+	}
+	archivePath := archive.Name()
+	if err = archive.Close(); err != nil {
+		return Project{}, err
+	}
+	defer os.Remove(archivePath)
+	list, err := os.CreateTemp("", "pibase-branch-*.toc")
+	if err != nil {
+		return Project{}, err
+	}
+	listPath := list.Name()
+	defer os.Remove(listPath)
+
+	dumpArgs := []string{"--format=custom", "--schema=public", "--no-owner", "--no-acl", "--file=" + archivePath}
 	for _, extension := range extensions {
 		if extension == "postgis" {
 			// PostGIS marks spatial_ref_sys as extension-managed configuration
@@ -58,39 +75,34 @@ func BranchProject(ctx context.Context, adminURL, sourceID, name string, masterK
 		}
 	}
 	dumpArgs = append(dumpArgs, withDatabaseMust(adminURL, source.database))
-	dump := exec.CommandContext(ctx, "pg_dump", dumpArgs...)
-	stdout, err := dump.StdoutPipe()
+	if output, dumpErr := exec.CommandContext(ctx, "pg_dump", dumpArgs...).CombinedOutput(); dumpErr != nil {
+		return Project{}, fmt.Errorf("pg_dump branch source: %w: %s", dumpErr, output)
+	}
+	listCommand := exec.CommandContext(ctx, "pg_restore", "--list", archivePath)
+	toc, err := listCommand.StdoutPipe()
 	if err != nil {
 		return Project{}, err
 	}
-	var dumpErr strings.Builder
-	dump.Stderr = &dumpErr
-	psql := exec.CommandContext(ctx, "psql", "--set", "ON_ERROR_STOP=1", "--dbname", withDatabaseMust(adminURL, targetInfo.database))
-	stdin, err := psql.StdinPipe()
-	if err != nil {
+	var listErr strings.Builder
+	listCommand.Stderr = &listErr
+	if err = listCommand.Start(); err != nil {
 		return Project{}, err
 	}
-	var psqlErr strings.Builder
-	psql.Stderr = &psqlErr
-	if err = psql.Start(); err != nil {
-		return Project{}, err
+	filterErr := filterPublicSchemaTOC(list, toc)
+	closeErr := list.Close()
+	waitErr := listCommand.Wait()
+	if filterErr != nil {
+		return Project{}, filterErr
 	}
-	if err = dump.Start(); err != nil {
-		return Project{}, err
+	if closeErr != nil {
+		return Project{}, closeErr
 	}
-	_, _ = fmt.Fprintf(stdin, "SET ROLE %s;\n", pgx.Identifier{targetInfo.admin}.Sanitize())
-	err = copyPublicDump(stdin, stdout)
-	_ = stdin.Close()
-	dumpWait := dump.Wait()
-	psqlWait := psql.Wait()
-	if err != nil {
-		return Project{}, err
+	if waitErr != nil {
+		return Project{}, fmt.Errorf("list branch archive: %w: %s", waitErr, listErr.String())
 	}
-	if dumpWait != nil {
-		return Project{}, fmt.Errorf("pg_dump branch source: %w: %s", dumpWait, dumpErr.String())
-	}
-	if psqlWait != nil {
-		return Project{}, fmt.Errorf("psql branch target: %w: %s", psqlWait, psqlErr.String())
+	restoreArgs := []string{"--exit-on-error", "--no-owner", "--no-acl", "--role=" + targetInfo.admin, "--use-list=" + listPath, "--dbname=" + withDatabaseMust(adminURL, targetInfo.database), archivePath}
+	if output, restoreErr := exec.CommandContext(ctx, "pg_restore", restoreArgs...).CombinedOutput(); restoreErr != nil {
+		return Project{}, fmt.Errorf("pg_restore branch target: %w: %s", restoreErr, output)
 	}
 	if err = remapBranchSecurity(ctx, withDatabaseMust(adminURL, source.database), withDatabaseMust(adminURL, targetInfo.database), source, targetInfo); err != nil {
 		return Project{}, fmt.Errorf("remap branch security: %w", err)
@@ -98,25 +110,28 @@ func BranchProject(ctx context.Context, adminURL, sourceID, name string, masterK
 	return target, nil
 }
 
-func copyPublicDump(dst io.Writer, src io.Reader) error {
-	reader := bufio.NewReader(src)
-	for {
-		line, err := reader.ReadString('\n')
-		// Fresh projects already contain public and optional extensions may
-		// depend on it. Skip only pg_dump's fixed schema-creation statement;
-		// all customer DDL and COPY data pass through byte-for-byte.
-		if strings.TrimSpace(line) != "CREATE SCHEMA public;" {
-			if _, writeErr := io.WriteString(dst, line); writeErr != nil {
-				return writeErr
-			}
+func filterPublicSchemaTOC(dst io.Writer, src io.Reader) error {
+	scanner := bufio.NewScanner(src)
+	scanner.Buffer(make([]byte, 64*1024), 1024*1024)
+	omitted := 0
+	for scanner.Scan() {
+		line := scanner.Text()
+		fields := strings.Fields(line)
+		if len(fields) >= 7 && strings.HasSuffix(fields[0], ";") && fields[3] == "SCHEMA" && fields[5] == "public" {
+			omitted++
+			continue
 		}
-		if err == io.EOF {
-			return nil
-		}
-		if err != nil {
+		if _, err := fmt.Fprintln(dst, line); err != nil {
 			return err
 		}
 	}
+	if err := scanner.Err(); err != nil {
+		return err
+	}
+	if omitted != 1 {
+		return fmt.Errorf("branch archive contains %d public schema entries, want exactly 1", omitted)
+	}
+	return nil
 }
 
 type branchProjectInfo struct{ database, anon, authenticated, service, admin string }
@@ -127,7 +142,7 @@ func optionalProjectExtensions(ctx context.Context, projectURL string) ([]string
 		return nil, err
 	}
 	defer conn.Close(ctx)
-	rows, err := conn.Query(ctx, `SELECT extname FROM pg_extension WHERE extname IN ('postgis','vector') ORDER BY extname`)
+	rows, err := conn.Query(ctx, `SELECT extname FROM pg_extension ORDER BY extname`)
 	if err != nil {
 		return nil, err
 	}
@@ -138,7 +153,14 @@ func optionalProjectExtensions(ctx context.Context, projectURL string) ([]string
 		if err := rows.Scan(&extension); err != nil {
 			return nil, err
 		}
-		extensions = append(extensions, extension)
+		switch extension {
+		case "plpgsql":
+			continue
+		case "postgis", "vector":
+			extensions = append(extensions, extension)
+		default:
+			return nil, fmt.Errorf("branching projects with extension %q is not supported; only postgis and vector are preserved", extension)
+		}
 	}
 	return extensions, rows.Err()
 }

@@ -5,7 +5,24 @@ import "github.com/jackc/pgx/v5"
 // Project schema versions are recorded in _control so workers can distinguish
 // managed customer databases from the intentionally schema-less M0 measurement
 // databases. Version 5 introduced realtime/cron; version 6 added TOTP MFA.
-const currentProjectSchemaVersion = 6
+const currentProjectSchemaVersion = 7
+
+const extensionGuardSQL = `
+CREATE OR REPLACE FUNCTION pg_catalog.pibase_guard_extension_ddl() RETURNS event_trigger
+LANGUAGE plpgsql SECURITY DEFINER SET search_path=pg_catalog
+AS $$
+BEGIN
+  IF NOT EXISTS (SELECT 1 FROM pg_roles WHERE rolname=session_user AND rolsuper) THEN
+    RAISE EXCEPTION 'extensions can only be managed by the operator';
+  END IF;
+END $$;
+REVOKE ALL ON FUNCTION pg_catalog.pibase_guard_extension_ddl() FROM PUBLIC;
+DROP EVENT TRIGGER IF EXISTS pibase_guard_extension_ddl;
+CREATE EVENT TRIGGER pibase_guard_extension_ddl
+ON ddl_command_start
+WHEN TAG IN ('CREATE EXTENSION','ALTER EXTENSION','DROP EXTENSION')
+EXECUTE FUNCTION pg_catalog.pibase_guard_extension_ddl();
+`
 
 func managedProjectUpgradeSQL(anon, authenticated, service, admin string) string {
 	q := func(role string) string { return pgx.Identifier{role}.Sanitize() }

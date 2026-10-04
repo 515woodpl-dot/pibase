@@ -117,6 +117,9 @@ the M1 authenticator boundary, with a 30-second timeout and 1,000-row cap.
 The binary also provides encrypted per-project `backup` and guarded `restore`
 commands plus `project-branch`. Branches receive fresh roles and keys and copy
 only the source `public` schema/data—not users, sessions, or private files.
+Branches preserve operator-enabled PostGIS and pgvector. A legacy project with
+any other installed extension is rejected with a clear error instead of
+silently producing an incomplete branch.
 See [docs/PI-OPERATIONS.md](docs/PI-OPERATIONS.md) for Pi setup, backup-key
 handling, restore drills, monitoring, and branching semantics.
 
@@ -162,6 +165,9 @@ docker compose run --rm ops pgvector-enable PROJECT_ID
 ```
 
 The host PostgreSQL image must have the `vector` extension installed first.
+Extension create/alter/drop commands are also blocked by a PostgreSQL event
+trigger for all non-superuser sessions; SQL text validation supplies only the
+friendlier early error.
 
 M5b also supports ephemeral `broadcast` and `presence` events on public
 Realtime channels. Routing is isolated by project and topic; `self`/`ack`,

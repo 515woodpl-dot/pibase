@@ -5,6 +5,7 @@ import (
 	"context"
 	"os"
 	"os/exec"
+	"strings"
 	"testing"
 
 	"github.com/jackc/pgx/v5"
@@ -51,10 +52,16 @@ func TestBranchProjectRemapsCatalogSecurity(t *testing.T) {
 	setup := `SET ROLE ` + pgx.Identifier{sourceInfo.admin}.Sanitize() + `;
 CREATE TABLE public.branch_rows (id integer PRIMARY KEY, owner text NOT NULL, secret text NOT NULL);
 CREATE TABLE public.branch_spatial (id integer PRIMARY KEY, location geometry(Point,4326), embedding vector(3));
+CREATE TABLE public.notes(body text);
+CREATE FUNCTION public.snippet() RETURNS text LANGUAGE sql AS 'SELECT 1::text ||
+$x$
+CREATE SCHEMA public;
+$x$';
 ALTER TABLE public.branch_rows ENABLE ROW LEVEL SECURITY;
 GRANT SELECT ON public.branch_rows TO ` + pgx.Identifier{sourceInfo.authenticated}.Sanitize() + ` WITH GRANT OPTION;
 CREATE POLICY row_read ON public.branch_rows FOR SELECT TO ` + pgx.Identifier{sourceInfo.authenticated}.Sanitize() + ` USING (true);
 INSERT INTO public.branch_rows VALUES (1, 'source', 'not-auth-storage');
+INSERT INTO public.notes VALUES ('first'),('CREATE SCHEMA public;'),('last');
 INSERT INTO public.branch_spatial VALUES (1,ST_SetSRID(ST_MakePoint(-73.5,40.7),4326),'[1,2,3]');`
 	if _, err := conn.Exec(ctx, setup); err != nil {
 		conn.Close(ctx)
@@ -94,6 +101,14 @@ INSERT INTO public.branch_spatial VALUES (1,ST_SetSRID(ST_MakePoint(-73.5,40.7),
 	if rows != 1 || authRows != 0 || storageRows != 0 {
 		t.Fatalf("branch contents unexpected: public=%d auth=%d storage=%d", rows, authRows, storageRows)
 	}
+	var noteRows int
+	var schemaText, snippet string
+	if err := targetConn.QueryRow(ctx, `SELECT count(*),max(body) FILTER (WHERE body='CREATE SCHEMA public;'),public.snippet() FROM public.notes`).Scan(&noteRows, &schemaText, &snippet); err != nil {
+		t.Fatal(err)
+	}
+	if noteRows != 3 || schemaText != "CREATE SCHEMA public;" || snippet != "1\nCREATE SCHEMA public;\n" {
+		t.Fatalf("branch changed schema-like customer content: rows=%d text=%q snippet=%q", noteRows, schemaText, snippet)
+	}
 	var postgis, vector bool
 	var longitude float64
 	var dimensions int
@@ -105,5 +120,40 @@ INSERT INTO public.branch_spatial VALUES (1,ST_SetSRID(ST_MakePoint(-73.5,40.7),
 	}
 	if !postgis || !vector || longitude != -73.5 || dimensions != 3 {
 		t.Fatalf("branch extensions postgis=%v vector=%v longitude=%v dimensions=%d", postgis, vector, longitude, dimensions)
+	}
+}
+
+func TestBranchRejectsUnsupportedExtension(t *testing.T) {
+	adminURL := os.Getenv("PIBASE_TEST_ADMIN_DATABASE_URL")
+	if adminURL == "" {
+		t.Skip("PIBASE_TEST_ADMIN_DATABASE_URL is not set")
+	}
+	ctx := context.Background()
+	if err := Bootstrap(ctx, adminURL, "integration-auth-password"); err != nil {
+		t.Fatal(err)
+	}
+	source, err := CreateProject(ctx, adminURL, "branch-unsupported-extension", bytes.Repeat([]byte{2}, 32))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer cleanupProject(t, adminURL, source)
+	projectURL, _ := withDatabase(adminURL, source.Database)
+	conn, err := pgx.Connect(ctx, projectURL)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer conn.Close(ctx)
+	var available bool
+	if err := conn.QueryRow(ctx, `SELECT EXISTS(SELECT 1 FROM pg_available_extensions WHERE name='hstore')`).Scan(&available); err != nil {
+		t.Fatal(err)
+	}
+	if !available {
+		t.Skip("hstore is unavailable")
+	}
+	if _, err := conn.Exec(ctx, `CREATE EXTENSION hstore`); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := BranchProject(ctx, adminURL, source.ID, "unsupported-extension-copy", bytes.Repeat([]byte{2}, 32)); err == nil || !strings.Contains(err.Error(), `extension "hstore" is not supported`) {
+		t.Fatalf("unsupported extension branch error = %v", err)
 	}
 }

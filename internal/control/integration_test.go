@@ -5,8 +5,10 @@ import (
 	"context"
 	"net/url"
 	"os"
+	"strings"
 	"testing"
 
+	"github.com/515woodpl-dot/pibase/internal/adminsql"
 	"github.com/jackc/pgx/v5"
 )
 
@@ -194,6 +196,133 @@ func TestBootstrapSkipsSchemaLessMeasurementProject(t *testing.T) {
 	}
 }
 
+func TestBootstrapContinuesPastBrokenProjectSchema(t *testing.T) {
+	adminURL := os.Getenv("PIBASE_TEST_ADMIN_DATABASE_URL")
+	if adminURL == "" {
+		t.Skip("PIBASE_TEST_ADMIN_DATABASE_URL is not set")
+	}
+	ctx := context.Background()
+	const password = "integration-auth-password"
+	if err := Bootstrap(ctx, adminURL, password); err != nil {
+		t.Fatal(err)
+	}
+	first, err := CreateProject(ctx, adminURL, "bootstrap-resilience-a", bytes.Repeat([]byte{3}, 32))
+	if err != nil {
+		t.Fatal(err)
+	}
+	second, err := CreateProject(ctx, adminURL, "bootstrap-resilience-b", bytes.Repeat([]byte{3}, 32))
+	if err != nil {
+		cleanupProject(t, adminURL, first)
+		t.Fatal(err)
+	}
+	defer cleanupProject(t, adminURL, first)
+	defer cleanupProject(t, adminURL, second)
+	broken, healthy := first, second
+	if broken.ID > healthy.ID {
+		broken, healthy = healthy, broken
+	}
+	brokenInfo, err := branchInfo(ctx, adminURL, broken.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	brokenURL, _ := withDatabase(adminURL, broken.Database)
+	brokenConn, err := pgx.Connect(ctx, brokenURL)
+	if err != nil {
+		t.Fatal(err)
+	}
+	_, err = brokenConn.Exec(ctx, `SET ROLE `+pgx.Identifier{brokenInfo.admin}.Sanitize()+`;
+DROP TABLE storage.objects;
+DROP TABLE storage.buckets;
+CREATE TABLE storage.buckets(id text primary key);`)
+	brokenConn.Close(ctx)
+	if err != nil {
+		t.Fatal(err)
+	}
+	healthyURL, _ := withDatabase(adminURL, healthy.Database)
+	healthyConn, err := pgx.Connect(ctx, healthyURL)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err = healthyConn.Exec(ctx, `DROP TABLE auth.mfa_challenges,auth.mfa_factors`); err != nil {
+		healthyConn.Close(ctx)
+		t.Fatal(err)
+	}
+	healthyConn.Close(ctx)
+
+	if err := Bootstrap(ctx, adminURL, password); err != nil {
+		t.Fatalf("bootstrap aborted on one broken project: %v", err)
+	}
+	healthyConn, err = pgx.Connect(ctx, healthyURL)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer healthyConn.Close(ctx)
+	var upgraded bool
+	if err := healthyConn.QueryRow(ctx, `SELECT to_regclass('auth.mfa_factors') IS NOT NULL`).Scan(&upgraded); err != nil || !upgraded {
+		t.Fatalf("healthy later project was not upgraded: upgraded=%v err=%v", upgraded, err)
+	}
+	controlURL, _ := withDatabase(adminURL, "_control")
+	controlConn, err := pgx.Connect(ctx, controlURL)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer controlConn.Close(ctx)
+	var schemaError string
+	if err := controlConn.QueryRow(ctx, `SELECT COALESCE(schema_error,'') FROM control.projects WHERE id=$1`, broken.ID).Scan(&schemaError); err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(schemaError, "column \"public\" does not exist") {
+		t.Fatalf("broken project schema error = %q", schemaError)
+	}
+	brokenConn, err = pgx.Connect(ctx, brokenURL)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer brokenConn.Close(ctx)
+	var guarded bool
+	if err := brokenConn.QueryRow(ctx, `SELECT EXISTS(SELECT 1 FROM pg_event_trigger WHERE evtname='pibase_guard_extension_ddl')`).Scan(&guarded); err != nil || !guarded {
+		t.Fatalf("broken project extension guard installed=%v err=%v", guarded, err)
+	}
+}
+
+func TestExtensionGuardRejectsDynamicCustomerDDL(t *testing.T) {
+	adminURL := os.Getenv("PIBASE_TEST_ADMIN_DATABASE_URL")
+	if adminURL == "" {
+		t.Skip("PIBASE_TEST_ADMIN_DATABASE_URL is not set")
+	}
+	ctx := context.Background()
+	const password = "integration-auth-password"
+	if err := Bootstrap(ctx, adminURL, password); err != nil {
+		t.Fatal(err)
+	}
+	p, err := CreateProject(ctx, adminURL, "extension-guard", bytes.Repeat([]byte{8}, 32))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer cleanupProject(t, adminURL, p)
+	authURL := authenticatorTestURL(t, adminURL, password)
+	if _, err := adminsql.Run(ctx, authURL, p.ID, `DO $$ BEGIN EXECUTE 'CREATE EXTENSION hstore'; END $$`); err == nil || !strings.Contains(err.Error(), "extensions can only be managed by the operator") {
+		t.Fatalf("dynamic owner extension DDL error = %v", err)
+	}
+	escapeSQL := `SELECT E'\''; CREATE EXTENSION citext; --'`
+	if err := adminsql.ApplyMigration(ctx, authURL, p.ID, "extension-escape", escapeSQL); err == nil || !strings.Contains(err.Error(), "extensions can only be managed by the operator") {
+		t.Fatalf("escape-string migration extension DDL error = %v", err)
+	}
+	projectURL, _ := withDatabase(adminURL, p.Database)
+	conn, err := pgx.Connect(ctx, projectURL)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer conn.Close(ctx)
+	var installed bool
+	if err := conn.QueryRow(ctx, `SELECT EXISTS(SELECT 1 FROM pg_extension WHERE extname IN ('hstore','citext'))`).Scan(&installed); err != nil {
+		t.Fatal(err)
+	}
+	if installed {
+		t.Fatal("customer installed an extension despite the database guard")
+	}
+}
+
 func TestOperatorOptionalExtensions(t *testing.T) {
 	adminURL := os.Getenv("PIBASE_TEST_ADMIN_DATABASE_URL")
 	if adminURL == "" {
@@ -242,6 +371,17 @@ func parsedURLUser(t *testing.T, raw string) string {
 		t.Fatal(err)
 	}
 	return parsed.User.Username()
+}
+
+func authenticatorTestURL(t *testing.T, raw, password string) string {
+	t.Helper()
+	parsed, err := url.Parse(raw)
+	if err != nil {
+		t.Fatal(err)
+	}
+	parsed.Path = "/_control"
+	parsed.User = url.UserPassword("authenticator", password)
+	return parsed.String()
 }
 
 func cleanupProject(t *testing.T, adminURL string, p Project) {

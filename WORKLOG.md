@@ -4,8 +4,8 @@ Last updated: 2026-10-03
 
 ## Current milestone
 
-M6b — optional extensions and upgrade stabilization — implementation and local
-gate complete on `pibase/m6b`; independent audit remains pending. PostGIS and
+M6b — optional extensions and upgrade stabilization — audit fixes and local
+gate complete on `pibase/m6b`; independent re-review remains pending. PostGIS and
 pgvector are operator-enabled only, branches preserve enabled extensions, old
 managed projects receive idempotent schema upgrades, and live gates use a
 disposable PostgreSQL cluster instead of mutating the running stack. A fresh-Pi

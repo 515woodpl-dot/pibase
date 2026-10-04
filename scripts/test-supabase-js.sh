@@ -89,3 +89,7 @@ docker run --rm --network host -v "$PWD:/src" -w /src \
   -e PIBASE_AUTH_EXPOSE_TOKENS=true \
   -e PIBASE_ENV=test \
   node:22-bookworm npm run test:supabase
+docker run --rm --network host -v "$PWD:/src" -w /src \
+  -e PIBASE_TEST_URL="http://127.0.0.1:$gateway_port" \
+  -e PIBASE_TEST_ANON_KEY="$anon_key" \
+  node:22-bookworm node tests/realtime-js.mjs

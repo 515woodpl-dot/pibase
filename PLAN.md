@@ -159,6 +159,12 @@ Each milestone ends with a written **GATE REPORT** (`reports/Mx.md`): what was b
     idempotent storage/realtime/cron/MFA upgrades, while schema-less M0
     measurement databases remain excluded from background workers. All live
     integration and supabase-js gates use disposable PostgreSQL state.
+    - **Managed-schema ownership follow-up:** `auth`, `storage`, `realtime`,
+      and `cron` are still owned by the project admin role, which predates M6b.
+      Move them to an operator-owned role in a separately gated compatibility
+      migration. Until then, bootstrap records a per-project `schema_error`,
+      skips that project, continues upgrading the rest, and excludes it from
+      background delivery work.
 
 ## 6. Security rules (auditor checks every gate)
 
