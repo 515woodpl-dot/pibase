@@ -1,4 +1,65 @@
 === Memory measurement ===
-Date: 2026-10-04T15:26:43-04:00
-Status: incomplete — the command runner terminated the measurement before the
-one-project case completed. No memory number is reported from this run.
+Date: 2026-10-04T17:43:55-04:00
+Machine: Linux gejg 6.18.34+rpt-rpi-v8 #1 SMP PREEMPT Debian 1:6.18.34-1+rpt1 (2026-06-09) aarch64 GNU/Linux
+Gateway image: pibase:m6d-drill
+Postgres image: pibase-postgres:m6d-drill
+
+--- After 1 project (idle) ---
+
+Postgres whole-container PSS (all /proc processes, measured):
+  /proc/1: 12029 kB
+  /proc/101: 3667 kB
+  /proc/102: 6546 kB
+  /proc/108: 352 kB
+  /proc/83: 842 kB
+  /proc/84: 1032 kB
+  /proc/86: 2889 kB
+  /proc/87: 1492 kB
+  /proc/88: 1309 kB
+  total: 30158 kB
+
+Gateway whole-container PSS (all /proc processes, measured):
+  /proc/1: 11536 kB
+  /proc/15: 360 kB
+  total: 11896 kB
+
+--- After 20 projects (idle) ---
+
+Postgres whole-container PSS (all /proc processes, measured):
+  /proc/1: 11650 kB
+  /proc/183: 3481 kB
+  /proc/184: 6139 kB
+  /proc/231: 345 kB
+  /proc/83: 1161 kB
+  /proc/84: 61584 kB
+  /proc/86: 2829 kB
+  /proc/87: 1602 kB
+  /proc/88: 1259 kB
+  total: 90050 kB
+
+Gateway whole-container PSS (all /proc processes, measured):
+  /proc/1: 14252 kB
+  /proc/16: 351 kB
+  total: 14603 kB
+
+--- After 20 projects (each served one request, measured) ---
+
+Postgres whole-container PSS (all /proc processes, measured):
+  /proc/1: 11599 kB
+  /proc/183: 4971 kB
+  /proc/184: 4990 kB
+  /proc/268: 343 kB
+  /proc/275: 5840 kB
+  /proc/83: 1122 kB
+  /proc/84: 64173 kB
+  /proc/86: 2828 kB
+  /proc/87: 1606 kB
+  /proc/88: 1259 kB
+  total: 98731 kB
+
+Gateway whole-container PSS (all /proc processes, measured):
+  /proc/1: 15176 kB
+  /proc/24: 342 kB
+  total: 15518 kB
+
+=== Measurement complete ===

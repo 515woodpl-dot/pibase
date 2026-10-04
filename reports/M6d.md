@@ -106,10 +106,15 @@ each project has served one request. Raw output is committed in
 
 Machine: Raspberry Pi 4, Debian 13, Linux 6.18.34+rpt-rpi-v8, aarch64.
 
-The raw run committed with this change is incomplete, so no memory number is
-reported or estimated. PSS is read from inside each container, so host root is
-not required. Docker cgroup memory statistics remain optional; see
-`docs/PI-OPERATIONS.md`.
+| Container PSS | 1 project idle | 20 projects idle | 20 projects served | Label |
+|---|---:|---:|---:|---|
+| PostgreSQL | 30,158 kB | 90,050 kB | 98,731 kB | measured |
+| Gateway | 11,896 kB | 14,603 kB | 15,518 kB | measured |
+
+The raw process-by-process measurements are committed in
+`reports/raw/m6d-memory-pss.txt`; no estimate is reported. PSS is read from
+inside each container, so host root is not required. Docker cgroup memory
+statistics remain optional; see `docs/PI-OPERATIONS.md`.
 
 ### 6. Pi drill kit
 
@@ -132,13 +137,15 @@ environment.
 
 - `sh -n scripts/test-upgrade-retained.sh scripts/measure-memory.sh
   scripts/pi-drill.sh`: passed.
-- `gofmt`, `go vet ./internal/backup`, and `go test ./internal/backup`:
-  passed (without `PIBASE_TEST_ADMIN_DATABASE_URL`, so only non-integration
-  backup tests ran).
+- `gofmt`, `go vet ./internal/backup`, and `go test -count=1
+  ./internal/backup` with a fresh PostgreSQL 16 container: passed.
 - `PIBASE_IMAGE=pibase:m6d-drill PIBASE_TEST_POSTGRES_IMAGE=pibase-postgres:m6d-drill
   ./scripts/test-upgrade-retained.sh`: passed. The M5b-to-current disposable
   drill verified the pre-upgrade archive, retained sign-in, REST rows, object
   download, and the post-restore equivalents.
+- `PIBASE_IMAGE=pibase:m6d-drill PIBASE_OPS_IMAGE=pibase:m6d-drill-ops
+  PIBASE_TEST_POSTGRES_IMAGE=pibase-postgres:m6d-drill ./scripts/measure-memory.sh`:
+  passed. The table above is measured on the Pi 4 engineering host.
 - `git diff --check`: passed.
 
 ## Audit fixes
@@ -151,9 +158,8 @@ environment.
 - **M6d-02:** The retained-data drill now signs up and signs in a user, writes
   rows via REST, uploads/downloads through Storage, and restores the actual
   pre-upgrade archive before repeating those checks.
-- **M6d-03:** PSS is summed across all container processes, and the script
-  includes the served-request case. The attempted raw run is committed as an
-  incomplete measurement; no measured or estimated memory number is claimed.
+- **M6d-03:** PSS is summed across all container processes, including the
+  served-request case. The raw file and table contain measured values only.
 - **M6d-04:** The Pi drill now performs a real migration/REST round trip,
   parses values without `eval` or whitespace-sensitive JSON matching, separates
   post-reboot execution and output, and stops when Docker group membership is
@@ -164,8 +170,6 @@ environment.
 ## What was NOT tested
 
 - `scripts/pi-drill.sh` on disposable Raspberry Pi hardware.
-- The real-PostgreSQL backup integration tests and completed 20-project PSS
-  run were not completed in this command session.
 - `scripts/test-supabase-js.sh` was not re-run (no JS changes in this gate).
 - Upgrade from a retained real customer data directory or real old `.pib` file.
 - Gateway under load (measurements are idle only).
