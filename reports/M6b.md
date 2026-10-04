@@ -56,7 +56,7 @@ this branch; the managed-schema ownership migration remains a separate gate.
   approved follow-ups, including the live `project-list` schema-error
   regression, gateway integration, production image, and Linux ARM64 build.
 
-## Measured M6b image and memory (Raspberry Pi 4, Linux arm64)
+## Measured M6b image and memory (Linux arm64 engineering host)
 
 - `pibase-postgres:test` image size: **647,530,620 bytes (617.5 MiB)**,
   measured with `docker image inspect`.
