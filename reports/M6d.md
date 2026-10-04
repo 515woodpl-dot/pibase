@@ -135,6 +135,10 @@ environment.
 - `gofmt`, `go vet ./internal/backup`, and `go test ./internal/backup`:
   passed (without `PIBASE_TEST_ADMIN_DATABASE_URL`, so only non-integration
   backup tests ran).
+- `PIBASE_IMAGE=pibase:m6d-drill PIBASE_TEST_POSTGRES_IMAGE=pibase-postgres:m6d-drill
+  ./scripts/test-upgrade-retained.sh`: passed. The M5b-to-current disposable
+  drill verified the pre-upgrade archive, retained sign-in, REST rows, object
+  download, and the post-restore equivalents.
 - `git diff --check`: passed.
 
 ## Audit fixes
@@ -160,8 +164,8 @@ environment.
 ## What was NOT tested
 
 - `scripts/pi-drill.sh` on disposable Raspberry Pi hardware.
-- The real-PostgreSQL backup integration tests, retained-data Docker drill, and
-  completed 20-project PSS run were not completed in this command session.
+- The real-PostgreSQL backup integration tests and completed 20-project PSS
+  run were not completed in this command session.
 - `scripts/test-supabase-js.sh` was not re-run (no JS changes in this gate).
 - Upgrade from a retained real customer data directory or real old `.pib` file.
 - Gateway under load (measurements are idle only).

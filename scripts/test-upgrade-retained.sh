@@ -42,6 +42,18 @@ json_field() {
   sed -n 's/.*"'"$1"'"[[:space:]]*:[[:space:]]*"\([^"]*\)".*/\1/p' | head -1
 }
 
+wait_gateway() {
+  i=0
+  until curl --fail --silent http://127.0.0.1:28081/healthz >/dev/null 2>&1; do
+    i=$((i+1))
+    if [ "$i" -ge 30 ]; then
+      docker logs "$gateway_container"
+      return 1
+    fi
+    sleep 1
+  done
+}
+
 echo "=== Step 1: Build old M5b binary ==="
 worktree="$(mktemp -d)"
 git worktree add --detach "$worktree" "$old_commit"
@@ -106,21 +118,28 @@ auth_db_url="postgres://authenticator:${auth_password}@127.0.0.1:${pg_port}/_con
 echo "=== Step 5: Create schema and retained data through the old HTTP API ==="
 p1_admin="p_${project1_id}_admin"
 p2_admin="p_${project2_id}_admin"
-printf 'CREATE TABLE public.items(id serial PRIMARY KEY, name text NOT NULL);' | docker run --rm -i --network host \
+printf 'CREATE TABLE public.items(name text PRIMARY KEY); GRANT SELECT, INSERT ON public.items TO p_%s_service_role;' "$project1_id" | docker run --rm -i --network host \
   --env PIBASE_DATABASE_URL="$auth_db_url" "$old_ops_image" migration-apply "$project1_id" 0001_items
-printf 'CREATE TABLE public.tasks(id serial PRIMARY KEY, title text NOT NULL);' | docker run --rm -i --network host \
+printf 'CREATE TABLE public.tasks(title text PRIMARY KEY); GRANT SELECT, INSERT ON public.tasks TO p_%s_service_role;' "$project2_id" | docker run --rm -i --network host \
   --env PIBASE_DATABASE_URL="$auth_db_url" "$old_ops_image" migration-apply "$project2_id" 0001_tasks
 docker run --rm --detach --name "$gateway_container" --network host \
   --env PIBASE_DATABASE_URL="$auth_db_url" --env PIBASE_MASTER_KEY="$master_key" \
+  --env PIBASE_AUTH_EXPOSE_TOKENS=true --env PIBASE_ENV=test \
   --env PIBASE_LISTEN_ADDR=:28081 --env PIBASE_STORAGE_ROOT="$storage_root" \
   -v "$storage_root:$storage_root" "$old_ops_image" serve
-sleep 2
-signup="$(curl --fail --silent -X POST http://127.0.0.1:28081/auth/v1/signup -H "apikey: $project1_anon" -H 'Content-Type: application/json' -d '{"email":"drill@example.test","password":"correct horse battery staple"}')"
+wait_gateway
+signup_file="$(mktemp)"
+if ! curl --fail --silent --show-error -X POST http://127.0.0.1:28081/auth/v1/signup -H "apikey: $project1_anon" -H 'Content-Type: application/json' -d '{"email":"drill@example.test","password":"correct horse battery staple"}' --output "$signup_file"; then
+  echo "signup failed: $(cat "$signup_file")" >&2
+  exit 1
+fi
+signup="$(cat "$signup_file")"
 confirmation="$(echo "$signup" | json_field confirmation_token)"
 curl --fail --silent "http://127.0.0.1:28081/auth/v1/verify?token=$confirmation&type=signup" -H "apikey: $project1_anon" >/dev/null
 old_login="$(curl --fail --silent -X POST 'http://127.0.0.1:28081/auth/v1/token?grant_type=password' -H "apikey: $project1_anon" -H 'Content-Type: application/json' -d '{"email":"drill@example.test","password":"correct horse battery staple"}')"
 user_token="$(echo "$old_login" | json_field access_token)"
-curl --fail --silent -X POST http://127.0.0.1:28081/rest/v1/items -H "apikey: $project1_service" -H 'Content-Type: application/json' -H 'Prefer: return=representation' -d '[{"name":"alpha"},{"name":"beta"}]' >/dev/null
+curl --fail --silent -X POST http://127.0.0.1:28081/rest/v1/items -H "apikey: $project1_service" -H 'Content-Type: application/json' -H 'Prefer: return=representation' -d '{"name":"alpha"}' >/dev/null
+curl --fail --silent -X POST http://127.0.0.1:28081/rest/v1/items -H "apikey: $project1_service" -H 'Content-Type: application/json' -H 'Prefer: return=representation' -d '{"name":"beta"}' >/dev/null
 curl --fail --silent -X POST http://127.0.0.1:28081/rest/v1/tasks -H "apikey: $project2_service" -H 'Content-Type: application/json' -H 'Prefer: return=representation' -d '[{"title":"task-one"}]' >/dev/null
 curl --fail --silent -X POST http://127.0.0.1:28081/storage/v1/bucket -H "apikey: $project1_service" -H 'Content-Type: application/json' -d '{"id":"drill-files","public":true}' >/dev/null
 curl --fail --silent -X POST http://127.0.0.1:28081/storage/v1/object/drill-files/drill-object.txt -H "apikey: $project1_anon" -H "Authorization: Bearer $user_token" -H 'Content-Type: text/plain' --data 'drill-file-content' >/dev/null
@@ -128,7 +147,6 @@ dbexec -d "$project1_db" -c "INSERT INTO cron.jobs(schedule,sql) VALUES ('0 * * 
 
 echo "=== Step 6: Backup project 1 with old binary (pre-upgrade) ==="
 docker run --rm --network host \
-  --user "$(id -u):$(id -g)" \
   --env PIBASE_ADMIN_DATABASE_URL="$admin_url" \
   --env PIBASE_BACKUP_KEY="$backup_key" \
   --env PIBASE_STORAGE_ROOT="$storage_root" \
@@ -150,7 +168,7 @@ docker run --rm --detach --name "$gateway_container" --network host \
   --env PIBASE_DATABASE_URL="$auth_db_url" --env PIBASE_MASTER_KEY="$master_key" \
   --env PIBASE_LISTEN_ADDR=:28081 --env PIBASE_STORAGE_ROOT="$storage_root" \
   -v "$storage_root:$storage_root" "$new_ops_image" serve
-sleep 2
+wait_gateway
 
 echo "=== Step 8: Verify upgrade ==="
 passed=true
@@ -199,7 +217,6 @@ check "$p1_forbidden" "0" "project 1 no TRIGGER/REFERENCES/TRUNCATE on storage/c
 
 echo "=== Step 9: Restore old backup into project 1 ==="
 docker run --rm --network host \
-  --user "$(id -u):$(id -g)" \
   --env PIBASE_ADMIN_DATABASE_URL="$admin_url" \
   --env PIBASE_BACKUP_KEY="$backup_key" \
   --env PIBASE_STORAGE_ROOT="$storage_root" \
