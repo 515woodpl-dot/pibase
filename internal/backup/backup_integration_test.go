@@ -131,7 +131,7 @@ ALTER SCHEMA cron OWNER TO `+pgx.Identifier{adminRole}.Sanitize()+`;`); err != n
 	if err != nil {
 		t.Fatal(err)
 	}
-	if rows != 1 || longitude != -73.5 || dimensions != 3 || !owners || !guard || version != 8 || string(storageBytes) != "before-m6c" {
+	if rows != 1 || longitude != -73.5 || dimensions != 3 || !owners || !guard || version != 9 || string(storageBytes) != "before-m6c" {
 		t.Fatalf("restore rows=%d longitude=%v dimensions=%d owners=%v guard=%v version=%d storage=%q", rows, longitude, dimensions, owners, guard, version, storageBytes)
 	}
 }

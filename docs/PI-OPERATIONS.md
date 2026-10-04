@@ -46,6 +46,11 @@ extension guard lives in `pg_catalog`, is intentionally absent from `pg_dump`,
 and remains in place while the archive is restored; the archive neither creates
 nor replaces that guard. Restore reapplies the canonical project-schema upgrade
 so archives taken before M6c return with operator-owned managed schemas.
+If the post-restore upgrade fails (for example, because the archive contains
+customer-created objects in managed schemas), restore still completes the
+database and file swap, prints a warning on stderr naming the project, and
+exits zero. Run `project-list` afterward: a non-empty `schema_error` means the
+project needs operator attention before the gateway serves it.
 Provision projects with `project-create` rather than restoring into a manually
 created database.
 

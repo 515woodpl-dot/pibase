@@ -199,6 +199,7 @@ func Restore(ctx context.Context, adminURL, projectID, storageRoot, source strin
 	}
 	if upgradeErr != nil {
 		slog.Warn("restored project requires schema attention", "project", projectID, "error", upgradeErr)
+		fmt.Fprintf(os.Stderr, "restore: project %s requires schema attention; run project-list to check schema_error\n", projectID)
 	}
 	return nil
 }

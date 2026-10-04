@@ -75,6 +75,7 @@ FROM unnest($2::text[]) AS schema_name`, "p_"+project.ID+"_admin", managedSchema
 		t.Fatalf("managed boundary intact=%v admin_create=%v", intact, adminCanCreate)
 	}
 	assertOnlyOperatorCanCreateManagedSchemas(t, conn, parsedURLUser(t, adminURL))
+	assertNarrowAdminTableGrants(t, conn, "p_"+project.ID+"_admin")
 	var databaseOwner string
 	if err := conn.QueryRow(ctx, `SELECT pg_get_userbyid(datdba) FROM pg_database WHERE datname=current_database()`).Scan(&databaseOwner); err != nil {
 		t.Fatal(err)
@@ -170,6 +171,10 @@ GRANT CREATE ON SCHEMA cron TO `+pgx.Identifier{healthyInfo.service}.Sanitize()+
 		healthyConn.Close(ctx)
 		t.Fatal(err)
 	}
+	if _, err = healthyConn.Exec(ctx, `GRANT CREATE ON SCHEMA auth TO authenticator`); err != nil {
+		healthyConn.Close(ctx)
+		t.Fatal(err)
+	}
 	healthyConn.Close(ctx)
 	grantsBefore := managedObjectGrantSnapshot(t, adminURL, healthy.Database)
 	brokenURL, _ := withDatabase(adminURL, broken.Database)
@@ -204,7 +209,7 @@ CREATE FUNCTION auth.customer_role_keep() RETURNS integer LANGUAGE sql AS 'SELEC
 	if err := controlConn.QueryRow(ctx, `SELECT schema_version FROM control.projects WHERE id=$1`, healthy.ID).Scan(&healthyVersion); err != nil {
 		t.Fatal(err)
 	}
-	if brokenVersion != 7 || healthyVersion != 8 || !strings.Contains(schemaError, "storage.customer_keep") || !strings.Contains(schemaError, "auth.customer_role_keep()") {
+	if brokenVersion != 7 || healthyVersion != currentProjectSchemaVersion || !strings.Contains(schemaError, "storage.customer_keep") || !strings.Contains(schemaError, "auth.customer_role_keep()") {
 		t.Fatalf("versions broken=%d healthy=%d error=%q", brokenVersion, healthyVersion, schemaError)
 	}
 	brokenConn, err = pgx.Connect(ctx, brokenURL)
@@ -223,6 +228,7 @@ CREATE FUNCTION auth.customer_role_keep() RETURNS integer LANGUAGE sql AS 'SELEC
 		t.Fatal(err)
 	}
 	assertOnlyOperatorCanCreateManagedSchemas(t, healthyConn, parsedURLUser(t, adminURL))
+	assertNarrowAdminTableGrants(t, healthyConn, healthyInfo.admin)
 	healthyConn.Close(ctx)
 	grantsAfter := managedObjectGrantSnapshot(t, adminURL, healthy.Database)
 	if grantsAfter != grantsBefore {
@@ -314,6 +320,27 @@ WHERE namespace.nspname=ANY($1::text[])
 	}
 	if unexpected != 0 {
 		t.Fatalf("non-operator managed-schema CREATE grants=%d", unexpected)
+	}
+}
+
+func assertNarrowAdminTableGrants(t *testing.T, conn *pgx.Conn, adminRole string) {
+	t.Helper()
+	var forbidden int
+	err := conn.QueryRow(context.Background(), `
+SELECT count(*)
+FROM pg_class c
+JOIN pg_namespace n ON n.oid = c.relnamespace
+CROSS JOIN LATERAL aclexplode(COALESCE(c.relacl, acldefault('r', c.relowner))) privilege
+JOIN pg_roles grantee ON grantee.oid = privilege.grantee
+WHERE n.nspname IN ('storage','cron')
+  AND c.relkind = 'r'
+  AND grantee.rolname = $1
+  AND privilege.privilege_type IN ('TRIGGER','REFERENCES','TRUNCATE')`, adminRole).Scan(&forbidden)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if forbidden != 0 {
+		t.Fatalf("admin has %d forbidden (TRIGGER/REFERENCES/TRUNCATE) grants on storage/cron tables", forbidden)
 	}
 }
 

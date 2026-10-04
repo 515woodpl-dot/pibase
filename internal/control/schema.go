@@ -228,6 +228,9 @@ func applyProjectSchemaUpgrade(ctx context.Context, adminURL string, item projec
 	if _, err = tx.Exec(ctx, managedProjectUpgradeSQL(item.anon, item.authenticated, item.service, item.admin)); err != nil {
 		return 0, fmt.Errorf("upgrade schema: %w", err)
 	}
+	if err = revokeStrayCreateGrants(ctx, tx); err != nil {
+		return 0, err
+	}
 	if err = tx.Commit(ctx); err != nil {
 		return 0, fmt.Errorf("commit schema upgrade: %w", err)
 	}

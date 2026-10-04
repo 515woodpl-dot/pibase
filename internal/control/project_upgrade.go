@@ -11,8 +11,9 @@ import (
 // Project schema versions are recorded in _control so workers can distinguish
 // managed customer databases from the intentionally schema-less M0 measurement
 // databases. Version 5 introduced realtime/cron; version 6 added TOTP MFA;
-// version 8 moved managed schemas from the customer admin to the operator.
-const currentProjectSchemaVersion = 8
+// version 8 moved managed schemas from the customer admin to the operator;
+// version 9 narrowed admin table grants and data-driven CREATE revoke.
+const currentProjectSchemaVersion = 9
 
 var managedSchemas = []string{"auth", "storage", "realtime", "cron"}
 
@@ -67,7 +68,8 @@ GRANT USAGE ON SCHEMA storage TO ` + q(anon) + `, ` + q(authenticated) + `, ` + 
 GRANT SELECT ON storage.buckets,storage.objects TO ` + q(anon) + `, ` + q(authenticated) + `;
 GRANT INSERT,UPDATE,DELETE ON storage.objects TO ` + q(authenticated) + `;
 GRANT SELECT,INSERT,UPDATE,DELETE ON storage.buckets,storage.objects TO ` + q(service) + `;
-GRANT ALL PRIVILEGES ON ALL TABLES IN SCHEMA storage TO ` + q(admin) + `;
+GRANT SELECT,INSERT,UPDATE,DELETE ON storage.buckets,storage.objects TO ` + q(admin) + `;
+REVOKE TRIGGER,REFERENCES,TRUNCATE ON storage.buckets,storage.objects FROM ` + q(admin) + `;
 ALTER TABLE storage.buckets ENABLE ROW LEVEL SECURITY;
 ALTER TABLE storage.objects ENABLE ROW LEVEL SECURITY;
 CREATE OR REPLACE FUNCTION auth.uid() RETURNS uuid
@@ -188,7 +190,8 @@ END $$;
 REVOKE ALL ON ALL TABLES IN SCHEMA cron FROM PUBLIC;
 REVOKE ALL ON FUNCTION cron.enforce_outbox_limit(), cron.enqueue_webhook() FROM PUBLIC;
 GRANT USAGE ON SCHEMA cron TO ` + q(admin) + `;
-GRANT ALL PRIVILEGES ON ALL TABLES IN SCHEMA cron TO ` + q(admin) + `;
+GRANT SELECT,INSERT,UPDATE,DELETE ON cron.jobs,cron.webhook_outbox TO ` + q(admin) + `;
+REVOKE TRIGGER,REFERENCES,TRUNCATE ON cron.jobs,cron.webhook_outbox FROM ` + q(admin) + `;
 GRANT USAGE,SELECT ON ALL SEQUENCES IN SCHEMA cron TO ` + q(admin) + `;
 GRANT EXECUTE ON FUNCTION cron.enqueue_webhook() TO ` + q(admin) + `;
 ` + mfaUpgradeSQL + `
@@ -197,10 +200,53 @@ ALTER SCHEMA auth OWNER TO CURRENT_USER;
 ALTER SCHEMA storage OWNER TO CURRENT_USER;
 ALTER SCHEMA realtime OWNER TO CURRENT_USER;
 ALTER SCHEMA cron OWNER TO CURRENT_USER;
-REVOKE CREATE ON SCHEMA auth,storage,realtime,cron FROM PUBLIC, ` + q(anon) + `, ` + q(authenticated) + `, ` + q(service) + `, ` + q(admin) + `;
 GRANT USAGE ON SCHEMA auth,storage TO ` + q(anon) + `, ` + q(authenticated) + `, ` + q(service) + `, ` + q(admin) + `;
 GRANT USAGE ON SCHEMA realtime,cron TO ` + q(admin) + `;
 `
+}
+
+// revokeStrayCreateGrants revokes CREATE on managed schemas from every
+// non-operator grantee found in the schema ACL, not only from named roles.
+func revokeStrayCreateGrants(ctx context.Context, tx pgx.Tx) error {
+	rows, err := tx.Query(ctx, `
+SELECT DISTINCT namespace.nspname, grantee_role.rolname
+FROM pg_namespace namespace
+CROSS JOIN LATERAL aclexplode(COALESCE(namespace.nspacl, acldefault('n', namespace.nspowner))) privilege
+LEFT JOIN pg_roles grantee_role ON grantee_role.oid = privilege.grantee
+WHERE namespace.nspname = ANY($1::text[])
+  AND privilege.privilege_type = 'CREATE'
+  AND privilege.grantee <> (SELECT oid FROM pg_roles WHERE rolname = current_user)`, managedSchemas)
+	if err != nil {
+		return fmt.Errorf("inspect managed schema CREATE grants: %w", err)
+	}
+	defer rows.Close()
+	type grant struct{ schema, role string }
+	var stray []grant
+	for rows.Next() {
+		var schema string
+		var role *string
+		if err := rows.Scan(&schema, &role); err != nil {
+			return err
+		}
+		if role == nil {
+			stray = append(stray, grant{schema, "PUBLIC"})
+		} else {
+			stray = append(stray, grant{schema, *role})
+		}
+	}
+	if err := rows.Err(); err != nil {
+		return err
+	}
+	for _, g := range stray {
+		target := "PUBLIC"
+		if g.role != "PUBLIC" {
+			target = pgx.Identifier{g.role}.Sanitize()
+		}
+		if _, err := tx.Exec(ctx, "REVOKE CREATE ON SCHEMA "+pgx.Identifier{g.schema}.Sanitize()+" FROM "+target); err != nil {
+			return fmt.Errorf("revoke CREATE on %s from %s: %w", g.schema, g.role, err)
+		}
+	}
+	return nil
 }
 
 // customerManagedObjects returns objects not owned by the operator inside a
