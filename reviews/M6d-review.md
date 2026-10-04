@@ -117,12 +117,20 @@ the summary line, not only under "not tested".
    `docs/PI-OPERATIONS.md` explaining what `cgroup_enable=memory` gives (container memory limits
    and `docker stats`) and the one line to add, for owners who want it.
 
-## Question for the owner
+## Owner's answer on the push rule (2026-10-04)
 
-The report says the engineering host is a Raspberry Pi 4 running Debian 13, and the branch was
-pushed from it. The standing rule is "never push from a Raspberry Pi", written for the
-deployment box. If this Pi is a development machine with its own credentials, say so and I
-will reword the rule to "never push from the deployment Pi".
+The engineering host is the owner's Raspberry Pi 4, and pushing from it is intended. The rule
+is now: **push only `pibase/*` build branches from the engineering Pi; never push to `main`,
+never force-push.** The old wording "never push from a Raspberry Pi" is withdrawn.
+
+Two consequences:
+
+- Numbers measured on this host are real Pi 4 numbers. Label them "measured on Pi 4
+  (engineering host, Debian 13)", and keep them separate from the fresh-OS drill.
+- The fresh-install drill (`M4-03`) still needs a clean Raspberry Pi OS image or a spare SD
+  card or SSD. Do not run `scripts/pi-drill.sh` against this host's live data root; the script
+  must refuse if the data root already contains a Postgres data directory, unless
+  `PIBASE_DRILL_POSTREBOOT=1` is set.
 
 ## Fix list
 
