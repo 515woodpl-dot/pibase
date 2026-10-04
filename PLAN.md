@@ -189,3 +189,14 @@ Each milestone ends with a written **GATE REPORT** (`reports/Mx.md`): what was b
 
 - **Anon key returns.** Supabase compatibility needs an anon key, and RLS is what makes it safe to expose.
 - **Static dashboard, no Node in production.** A future Next.js dashboard would change M4 and cost about 200 MB RAM.
+
+## 9. Questions for the planner
+
+- **Managed-schema ownership migration gate:** authorize a separate gated
+  milestone to transfer `auth`, `storage`, `realtime`, and `cron` ownership
+  from each project admin to an operator-owned role without changing customer
+  API privileges. The gate should require upgrade and rollback procedures,
+  retained-data compatibility coverage, proof that project admins cannot alter
+  gateway-owned objects, and regression coverage for REST, Auth, Storage,
+  Realtime, cron/webhooks, backup/restore, and branching. No ownership change
+  begins until this gate is approved.

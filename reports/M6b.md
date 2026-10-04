@@ -1,6 +1,11 @@
 # M6b gate report — optional extensions
 
-**Status:** audit fixes applied and locally verified; independent re-review pending
+**Status:** approved with follow-ups
+
+Independent re-review approved commit `7368868` on 2026-10-03. The reviewer
+verified all former High findings as fixed and found no new Critical or High
+findings. Follow-ups 2 and 3 from `reviews/M6b-rereview.md` were completed on
+this branch; the managed-schema ownership migration remains a separate gate.
 
 ## Delivered
 
@@ -24,6 +29,10 @@
 - Go integration and supabase-js acceptance gates now use disposable
   PostgreSQL containers and random host ports. They no longer change the live
   stack's authenticator password, catalog, gateway image, or gateway process.
+- `project-list` exposes the nullable per-project `schema_error` so skipped
+  upgrades are visible to the operator without inspecting logs.
+- Restore operations document that the operator-owned extension guard is
+  retained in the existing target database and is not part of the dump.
 
 ## Verification
 
@@ -43,6 +52,9 @@
   project pool: passed.
 - Duplicate unnamed TOTP enrollment on a newly created project: rejected.
 - Disposable-stack Node 22 `supabase-js` M6a acceptance: passed.
+- `PIBASE_IMAGE=pibase:m6b-followups ./scripts/test.sh`: passed after the
+  approved follow-ups, including the live `project-list` schema-error
+  regression, gateway integration, production image, and Linux ARM64 build.
 
 ## Measured M6b image and memory (Raspberry Pi 4, Linux arm64)
 
@@ -65,5 +77,4 @@ geocoding, arbitrary extensions, and customer-managed extension installation
 remain unsupported.
 
 The fresh Raspberry Pi/USB SSD setup and reboot drill in `reports/M4-03.md`
-remains a release prerequisite. This report is engineering evidence, not the
-independent M6b audit required by `PLAN.md`.
+remains a release prerequisite.

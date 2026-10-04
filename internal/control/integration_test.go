@@ -274,6 +274,20 @@ CREATE TABLE storage.buckets(id text primary key);`)
 	if !strings.Contains(schemaError, "column \"public\" does not exist") {
 		t.Fatalf("broken project schema error = %q", schemaError)
 	}
+	projects, err := ListProjects(ctx, adminURL)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var listedError *string
+	for _, project := range projects {
+		if project.ID == broken.ID {
+			listedError = project.SchemaError
+			break
+		}
+	}
+	if listedError == nil || *listedError != schemaError {
+		t.Fatalf("project-list schema_error = %v, want %q", listedError, schemaError)
+	}
 	brokenConn, err = pgx.Connect(ctx, brokenURL)
 	if err != nil {
 		t.Fatal(err)

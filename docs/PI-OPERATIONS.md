@@ -41,6 +41,11 @@ Keep the backup key outside the backup destination and test a restore quarterly.
 A restore replaces the selected project database and file tree; the command
 requires an explicit project-id confirmation and rejects backups for a different
 project. Stop the gateway during restore so no writes race with the swap.
+Restore targets an existing pibase project database. Its operator-owned
+extension guard lives in `pg_catalog`, is intentionally absent from `pg_dump`,
+and remains in place while the archive is restored; the archive neither creates
+nor replaces that guard. Provision projects with `project-create` rather than
+restoring into a manually created database.
 
 For unattended backups, use a root-owned environment file and systemd timer per
 project. Copy encrypted `.pib` files to a second device or S3-compatible remote;

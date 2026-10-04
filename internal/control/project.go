@@ -32,6 +32,7 @@ type ProjectSummary struct {
 	Database    string    `json:"database"`
 	CreatedAt   time.Time `json:"created_at"`
 	MaxDatabase int64     `json:"max_database_bytes"`
+	SchemaError *string   `json:"schema_error"`
 }
 
 type ProjectUsage struct {
@@ -58,7 +59,7 @@ func ProjectStats(ctx context.Context, adminURL, storageRoot string) ([]ProjectS
 		return nil, err
 	}
 	defer conn.Close(ctx)
-	rows, err := conn.Query(ctx, `SELECT p.id,p.name,p.database_name,p.created_at,p.max_database_bytes,
+	rows, err := conn.Query(ctx, `SELECT p.id,p.name,p.database_name,p.created_at,p.max_database_bytes,p.schema_error,
 pg_database_size(p.database_name),COALESCE((SELECT sum(requests) FROM control.project_usage u WHERE u.project_id=p.id AND u.day>=current_date-29),0)
 	FROM control.project_catalog p ORDER BY p.created_at,p.id`)
 	if err != nil {
@@ -68,7 +69,7 @@ pg_database_size(p.database_name),COALESCE((SELECT sum(requests) FROM control.pr
 	var result []ProjectStat
 	for rows.Next() {
 		var item ProjectStat
-		if err := rows.Scan(&item.ID, &item.Name, &item.Database, &item.CreatedAt, &item.MaxDatabase, &item.DatabaseBytes, &item.Requests30d); err != nil {
+		if err := rows.Scan(&item.ID, &item.Name, &item.Database, &item.CreatedAt, &item.MaxDatabase, &item.SchemaError, &item.DatabaseBytes, &item.Requests30d); err != nil {
 			return nil, err
 		}
 		root := filepath.Join(storageRoot, item.ID)
@@ -483,7 +484,7 @@ func ListProjects(ctx context.Context, adminURL string) ([]ProjectSummary, error
 		return nil, fmt.Errorf("connect control database: %w", err)
 	}
 	defer conn.Close(ctx)
-	rows, err := conn.Query(ctx, `SELECT id,name,database_name,created_at,max_database_bytes FROM control.projects ORDER BY created_at,id`)
+	rows, err := conn.Query(ctx, `SELECT id,name,database_name,created_at,max_database_bytes,schema_error FROM control.projects ORDER BY created_at,id`)
 	if err != nil {
 		return nil, err
 	}
@@ -491,7 +492,7 @@ func ListProjects(ctx context.Context, adminURL string) ([]ProjectSummary, error
 	var projects []ProjectSummary
 	for rows.Next() {
 		var project ProjectSummary
-		if err := rows.Scan(&project.ID, &project.Name, &project.Database, &project.CreatedAt, &project.MaxDatabase); err != nil {
+		if err := rows.Scan(&project.ID, &project.Name, &project.Database, &project.CreatedAt, &project.MaxDatabase, &project.SchemaError); err != nil {
 			return nil, err
 		}
 		projects = append(projects, project)
