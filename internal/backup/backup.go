@@ -6,6 +6,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"io"
+	"log/slog"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -174,10 +175,9 @@ func Restore(ctx context.Context, adminURL, projectID, storageRoot, source strin
 		return fmt.Errorf("pg_restore: %w: %s", e, strings.TrimSpace(string(output)))
 	}
 	// A pre-M6c archive restores customer ownership of the managed schemas.
-	// Reapply the canonical upgrade before returning the project to service.
-	if err = control.UpgradeProjectSchema(ctx, adminURL, projectID); err != nil {
-		return fmt.Errorf("upgrade restored project schema: %w", err)
-	}
+	// Record any upgrade problem, but finish the matching storage restore so the
+	// project is never left with a new database and old files.
+	upgradeErr := control.UpgradeProjectSchema(ctx, adminURL, projectID)
 	newStorage := filepath.Join(work, "storage")
 	target := filepath.Join(storageRoot, projectID)
 	old := target + ".before-restore-" + time.Now().UTC().Format("20060102T150405Z")
@@ -190,9 +190,17 @@ func Restore(ctx context.Context, adminURL, projectID, storageRoot, source strin
 		return makeErr
 	}
 	if _, statErr := os.Stat(newStorage); os.IsNotExist(statErr) {
-		return os.MkdirAll(target, 0o750)
+		err = os.MkdirAll(target, 0o750)
+	} else {
+		err = copyTree(newStorage, target)
 	}
-	return copyTree(newStorage, target)
+	if err != nil {
+		return err
+	}
+	if upgradeErr != nil {
+		slog.Warn("restored project requires schema attention", "project", projectID, "error", upgradeErr)
+	}
+	return nil
 }
 
 func projectDatabase(ctx context.Context, adminURL, id string) (string, error) {

@@ -74,6 +74,7 @@ FROM unnest($2::text[]) AS schema_name`, "p_"+project.ID+"_admin", managedSchema
 	if !intact || adminCanCreate {
 		t.Fatalf("managed boundary intact=%v admin_create=%v", intact, adminCanCreate)
 	}
+	assertOnlyOperatorCanCreateManagedSchemas(t, conn, parsedURLUser(t, adminURL))
 	var databaseOwner string
 	if err := conn.QueryRow(ctx, `SELECT pg_get_userbyid(datdba) FROM pg_database WHERE datname=current_database()`).Scan(&databaseOwner); err != nil {
 		t.Fatal(err)
@@ -134,13 +135,13 @@ func TestManagedSchemaUpgradeSkipsCustomerObjectsAndRollback(t *testing.T) {
 	if err := Bootstrap(ctx, adminURL, password); err != nil {
 		t.Fatal(err)
 	}
-	broken, err := CreateProject(ctx, adminURL, "managed-customer-object", bytes.Repeat([]byte{11}, 32))
+	healthy, err := CreateProject(ctx, adminURL, "managed-upgrade-healthy", bytes.Repeat([]byte{11}, 32))
 	if err != nil {
 		t.Fatal(err)
 	}
-	healthy, err := CreateProject(ctx, adminURL, "managed-upgrade-healthy", bytes.Repeat([]byte{11}, 32))
+	broken, err := CreateProject(ctx, adminURL, "managed-customer-object", bytes.Repeat([]byte{11}, 32))
 	if err != nil {
-		cleanupProject(t, adminURL, broken)
+		cleanupProject(t, adminURL, healthy)
 		t.Fatal(err)
 	}
 	defer cleanupProject(t, adminURL, broken)
@@ -156,6 +157,20 @@ func TestManagedSchemaUpgradeSkipsCustomerObjectsAndRollback(t *testing.T) {
 	}
 	rollbackProjectToV7(t, adminURL, brokenInfo, broken.ID)
 	rollbackProjectToV7(t, adminURL, healthyInfo, healthy.ID)
+	healthyURL, _ := withDatabase(adminURL, healthy.Database)
+	healthyConn, err := pgx.Connect(ctx, healthyURL)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err = healthyConn.Exec(ctx, `SET ROLE `+pgx.Identifier{healthyInfo.admin}.Sanitize()+`;
+GRANT CREATE ON SCHEMA auth TO PUBLIC;
+GRANT CREATE ON SCHEMA storage TO `+pgx.Identifier{healthyInfo.anon}.Sanitize()+`;
+GRANT CREATE ON SCHEMA realtime TO `+pgx.Identifier{healthyInfo.authenticated}.Sanitize()+`;
+GRANT CREATE ON SCHEMA cron TO `+pgx.Identifier{healthyInfo.service}.Sanitize()+`;`); err != nil {
+		healthyConn.Close(ctx)
+		t.Fatal(err)
+	}
+	healthyConn.Close(ctx)
 	grantsBefore := managedObjectGrantSnapshot(t, adminURL, healthy.Database)
 	brokenURL, _ := withDatabase(adminURL, broken.Database)
 	brokenConn, err := pgx.Connect(ctx, brokenURL)
@@ -203,6 +218,12 @@ CREATE FUNCTION auth.customer_role_keep() RETURNS integer LANGUAGE sql AS 'SELEC
 	}
 
 	assertManagedSchemaOwners(t, adminURL, healthy.Database, parsedURLUser(t, adminURL))
+	healthyConn, err = pgx.Connect(ctx, healthyURL)
+	if err != nil {
+		t.Fatal(err)
+	}
+	assertOnlyOperatorCanCreateManagedSchemas(t, healthyConn, parsedURLUser(t, adminURL))
+	healthyConn.Close(ctx)
 	grantsAfter := managedObjectGrantSnapshot(t, adminURL, healthy.Database)
 	if grantsAfter != grantsBefore {
 		t.Fatalf("managed grants changed during v7 upgrade\nbefore:\n%s\nafter:\n%s", grantsBefore, grantsAfter)
@@ -275,6 +296,24 @@ func assertManagedSchemaOwners(t *testing.T, adminURL, database, want string) {
 	}
 	if count != len(managedSchemas) {
 		t.Fatalf("managed schema count=%d want %d", count, len(managedSchemas))
+	}
+}
+
+func assertOnlyOperatorCanCreateManagedSchemas(t *testing.T, conn *pgx.Conn, operator string) {
+	t.Helper()
+	var unexpected int
+	err := conn.QueryRow(context.Background(), `
+SELECT count(*)
+FROM pg_namespace namespace
+CROSS JOIN LATERAL aclexplode(COALESCE(namespace.nspacl,acldefault('n',namespace.nspowner))) privilege
+WHERE namespace.nspname=ANY($1::text[])
+  AND privilege.privilege_type='CREATE'
+  AND privilege.grantee<>(SELECT oid FROM pg_roles WHERE rolname=$2)`, managedSchemas, operator).Scan(&unexpected)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if unexpected != 0 {
+		t.Fatalf("non-operator managed-schema CREATE grants=%d", unexpected)
 	}
 }
 

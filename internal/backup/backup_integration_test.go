@@ -135,3 +135,104 @@ ALTER SCHEMA cron OWNER TO `+pgx.Identifier{adminRole}.Sanitize()+`;`); err != n
 		t.Fatalf("restore rows=%d longitude=%v dimensions=%d owners=%v guard=%v version=%d storage=%q", rows, longitude, dimensions, owners, guard, version, storageBytes)
 	}
 }
+
+func TestRestorePreM6cBackupWithCustomerObjectFinishesFileSwap(t *testing.T) {
+	adminURL := os.Getenv("PIBASE_TEST_ADMIN_DATABASE_URL")
+	if adminURL == "" {
+		t.Skip("PIBASE_TEST_ADMIN_DATABASE_URL is not set")
+	}
+	ctx := context.Background()
+	if err := control.Bootstrap(ctx, adminURL, "integration-auth-password"); err != nil {
+		t.Fatal(err)
+	}
+	project, err := control.CreateProject(ctx, adminURL, "pre-m6c-customer-restore", bytes.Repeat([]byte{14}, 32))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer func() {
+		if err := control.DeleteProject(context.Background(), adminURL, project.ID); err != nil {
+			t.Errorf("cleanup project: %v", err)
+		}
+	}()
+	projectURL := withDatabase(adminURL, project.Database)
+	conn, err := pgx.Connect(ctx, projectURL)
+	if err != nil {
+		t.Fatal(err)
+	}
+	adminRole := pgx.Identifier{"p_" + project.ID + "_admin"}.Sanitize()
+	if _, err = conn.Exec(ctx, `ALTER SCHEMA auth OWNER TO `+adminRole+`;
+ALTER SCHEMA storage OWNER TO `+adminRole+`;
+ALTER SCHEMA realtime OWNER TO `+adminRole+`;
+ALTER SCHEMA cron OWNER TO `+adminRole+`;
+SET ROLE `+adminRole+`;
+CREATE TABLE storage.customer_keep(id integer);`); err != nil {
+		conn.Close(ctx)
+		t.Fatal(err)
+	}
+	conn.Close(ctx)
+
+	root := t.TempDir()
+	storageRoot := filepath.Join(root, "storage")
+	projectStorage := filepath.Join(storageRoot, project.ID)
+	if err := os.MkdirAll(projectStorage, 0o750); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(projectStorage, "object.bin"), []byte("archive-files"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	backupDir := filepath.Join(root, "backups")
+	var key [32]byte
+	copy(key[:], bytes.Repeat([]byte{15}, 32))
+	if err := Backup(ctx, adminURL, project.ID, storageRoot, backupDir, key); err != nil {
+		t.Fatal(err)
+	}
+	archives, err := filepath.Glob(filepath.Join(backupDir, "*.pib"))
+	if err != nil || len(archives) != 1 {
+		t.Fatalf("backup archives=%v err=%v", archives, err)
+	}
+
+	conn, err = pgx.Connect(ctx, projectURL)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err = conn.Exec(ctx, `DROP TABLE storage.customer_keep`); err != nil {
+		conn.Close(ctx)
+		t.Fatal(err)
+	}
+	conn.Close(ctx)
+	if err := control.UpgradeProjectSchema(ctx, adminURL, project.ID); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(projectStorage, "object.bin"), []byte("newer-files"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if err := Restore(ctx, adminURL, project.ID, storageRoot, archives[0], key); err != nil {
+		t.Fatalf("restore should complete with recorded schema warning: %v", err)
+	}
+
+	storageBytes, err := os.ReadFile(filepath.Join(projectStorage, "object.bin"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	conn, err = pgx.Connect(ctx, projectURL)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer conn.Close(ctx)
+	var customerObject bool
+	if err := conn.QueryRow(ctx, `SELECT to_regclass('storage.customer_keep') IS NOT NULL`).Scan(&customerObject); err != nil {
+		t.Fatal(err)
+	}
+	controlConn, err := pgx.Connect(ctx, withDatabase(adminURL, "_control"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer controlConn.Close(ctx)
+	var schemaError string
+	if err := controlConn.QueryRow(ctx, `SELECT COALESCE(schema_error,'') FROM control.projects WHERE id=$1`, project.ID).Scan(&schemaError); err != nil {
+		t.Fatal(err)
+	}
+	if string(storageBytes) != "archive-files" || !customerObject || !bytes.Contains([]byte(schemaError), []byte("storage.customer_keep")) {
+		t.Fatalf("restored storage=%q customer_object=%v schema_error=%q", storageBytes, customerObject, schemaError)
+	}
+}

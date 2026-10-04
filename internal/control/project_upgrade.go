@@ -197,8 +197,9 @@ ALTER SCHEMA auth OWNER TO CURRENT_USER;
 ALTER SCHEMA storage OWNER TO CURRENT_USER;
 ALTER SCHEMA realtime OWNER TO CURRENT_USER;
 ALTER SCHEMA cron OWNER TO CURRENT_USER;
-REVOKE CREATE ON SCHEMA auth,storage,realtime,cron FROM ` + q(admin) + `;
-GRANT USAGE ON SCHEMA auth,storage,realtime,cron TO ` + q(admin) + `;
+REVOKE CREATE ON SCHEMA auth,storage,realtime,cron FROM PUBLIC, ` + q(anon) + `, ` + q(authenticated) + `, ` + q(service) + `, ` + q(admin) + `;
+GRANT USAGE ON SCHEMA auth,storage TO ` + q(anon) + `, ` + q(authenticated) + `, ` + q(service) + `, ` + q(admin) + `;
+GRANT USAGE ON SCHEMA realtime,cron TO ` + q(admin) + `;
 `
 }
 
@@ -206,14 +207,15 @@ GRANT USAGE ON SCHEMA auth,storage,realtime,cron TO ` + q(admin) + `;
 // managed schema. Before M6c the admin could grant CREATE to another project
 // role as well as create objects directly. Moving any such object would
 // silently claim customer state, so the migration fails closed and names it.
-func customerManagedObjects(ctx context.Context, conn *pgx.Conn) ([]string, error) {
-	rows, err := conn.Query(ctx, `
+func customerManagedObjects(ctx context.Context, tx pgx.Tx) ([]string, error) {
+	rows, err := tx.Query(ctx, `
 SELECT identified.type,identified.identity
 FROM pg_shdepend dependency
 CROSS JOIN LATERAL pg_identify_object(
   dependency.classid,dependency.objid,dependency.objsubid
 ) AS identified
 WHERE dependency.refclassid='pg_authid'::regclass
+  AND dependency.dbid=(SELECT oid FROM pg_database WHERE datname=current_database())
   AND dependency.refobjid<>(SELECT oid FROM pg_roles WHERE rolname=current_user)
   AND dependency.deptype='o'
   AND identified.schema=ANY($1::text[])
@@ -233,8 +235,8 @@ ORDER BY identified.schema,identified.type,identified.identity`, managedSchemas)
 	return objects, rows.Err()
 }
 
-func ensureNoCustomerManagedObjects(ctx context.Context, conn *pgx.Conn) error {
-	objects, err := customerManagedObjects(ctx, conn)
+func ensureNoCustomerManagedObjects(ctx context.Context, tx pgx.Tx) error {
+	objects, err := customerManagedObjects(ctx, tx)
 	if err != nil {
 		return fmt.Errorf("inspect managed schemas for customer objects: %w", err)
 	}

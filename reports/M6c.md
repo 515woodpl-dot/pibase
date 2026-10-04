@@ -154,3 +154,45 @@ measurements remain labeled in `reports/M6b.md`.
 - Fresh Raspberry Pi OS installation/reboot persistence, PSS, or new resource
   measurements.
 - Independent M6c audit.
+
+## Audit fixes
+
+Four issues were found during the M6c audit and fixed in this commit:
+
+**M6c-01 — database-local ownership scan.** `customerManagedObjects` queried
+`pg_shdepend` without filtering on the current database, so objects owned by
+non-operator roles in *other* project databases could incorrectly block the
+upgrade. Fixed by adding `AND dependency.dbid=(SELECT oid FROM pg_database
+WHERE datname=current_database())`. Regression:
+`TestManagedSchemaUpgradeSkipsCustomerObjectsAndRollback` now creates the
+healthy project first, verifying that a second project's objects do not cause a
+false-positive skip.
+
+**M6c-02 — restore completion and warning on schema failure.** `Restore`
+previously returned early if `UpgradeProjectSchema` failed after `pg_restore`,
+leaving the storage file swap incomplete: the project would have a new database
+but old files. Fixed so that `Restore` always finishes the file swap and logs a
+warning if the schema upgrade fails (the error is also recorded as
+`schema_error` in `_control`). Regression:
+`TestRestorePreM6cBackupWithCustomerObjectFinishesFileSwap` restores a
+pre-M6c archive whose `storage.customer_keep` table blocks the upgrade, and
+asserts the file swap completed, the customer table survived, and the error
+was recorded.
+
+**M6c-03 — CREATE grant cleanup.** The upgrade SQL revoked `CREATE` on managed
+schemas only from the admin role. Stray `CREATE` grants on those schemas held
+by `PUBLIC`, `anon`, `authenticated`, or `service` survived. Fixed: the
+`REVOKE CREATE` now names `PUBLIC` and all four non-operator project roles, and
+`GRANT USAGE` is scoped per schema (only `auth` and `storage` to anon,
+authenticated, service, admin; `realtime` and `cron` to admin only).
+Regression: the existing test injects `GRANT CREATE ON SCHEMA auth TO PUBLIC`,
+plus per-role stray grants, before re-upgrading and calls
+`assertOnlyOperatorCanCreateManagedSchemas` to verify no non-operator role
+retains `CREATE`.
+
+**M6c-04 — transactional preflight.** `ensureNoCustomerManagedObjects` ran
+outside the upgrade transaction, creating a TOCTOU window: a customer object
+could appear between the check and the DDL. Fixed by moving the check inside
+the `BEGIN`/`COMMIT` block and accepting `pgx.Tx` instead of `*pgx.Conn`,
+so the catalog snapshot used by the check is consistent with the DDL that
+follows.

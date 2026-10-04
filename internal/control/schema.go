@@ -217,14 +217,14 @@ func applyProjectSchemaUpgrade(ctx context.Context, adminURL string, item projec
 	if _, err = project.Exec(ctx, extensionGuardSQL); err != nil {
 		return 0, fmt.Errorf("install extension guard: %w", err)
 	}
-	if err = ensureNoCustomerManagedObjects(ctx, project); err != nil {
-		return 0, err
-	}
 	tx, err := project.Begin(ctx)
 	if err != nil {
 		return 0, fmt.Errorf("begin schema upgrade: %w", err)
 	}
 	defer tx.Rollback(ctx)
+	if err = ensureNoCustomerManagedObjects(ctx, tx); err != nil {
+		return 0, err
+	}
 	if _, err = tx.Exec(ctx, managedProjectUpgradeSQL(item.anon, item.authenticated, item.service, item.admin)); err != nil {
 		return 0, fmt.Errorf("upgrade schema: %w", err)
 	}
