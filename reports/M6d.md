@@ -108,13 +108,15 @@ Machine: Raspberry Pi 4, Debian 13, Linux 6.18.34+rpt-rpi-v8, aarch64.
 
 | Container PSS | 1 project idle | 20 projects idle | 20 projects served | Label |
 |---|---:|---:|---:|---|
-| PostgreSQL | 30,158 kB | 90,050 kB | 98,731 kB | measured |
-| Gateway | 11,896 kB | 14,603 kB | 15,518 kB | measured |
+| PostgreSQL | 29,930 kB | 115,726 kB | 118,740 kB | measured |
+| Gateway | 11,982 kB | 14,263 kB | 15,578 kB | measured |
 
 The raw process-by-process measurements are committed in
 `reports/raw/m6d-memory-pss.txt`; no estimate is reported. PSS is read from
 inside each container, so host root is not required. Docker cgroup memory
 statistics remain optional; see `docs/PI-OPERATIONS.md`.
+The served run issued a granted REST read to each project; PostgreSQL recorded
+one project-database client backend open after those reads (**measured**).
 
 ### 6. Pi drill kit
 
@@ -166,6 +168,16 @@ environment.
   inactive.
 - **M6d-05:** The summary no longer represents a post-upgrade archive restore
   as satisfying the old-backup requirement.
+- **M6d re-review, item 6:** The Pi drill now creates projects through the ops
+  container, grants `SELECT, INSERT` to that project's service role within its
+  migration, and uses the service key for the pre- and post-reboot REST checks.
+  Its logged blocks propagate failures as a non-zero exit; state and drill
+  output files are ignored. `scripts/test-pi-drill-local.sh` covers steps 5--7
+  with a disposable Compose stack.
+- **M6d re-review, served memory:** Each project now has a real granted
+  `pss_probe` table and receives a service-key REST read. The raw measurement
+  records the resulting project-database backend count; the report table is
+  updated from that rerun only.
 
 ## What was NOT tested
 

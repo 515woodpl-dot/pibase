@@ -1,4 +1,6 @@
 .env
+.pibase-pi-drill-state
+pi-drill-*.txt
 bin/
 reports/raw/*
 !reports/raw/

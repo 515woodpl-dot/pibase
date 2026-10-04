@@ -69,6 +69,7 @@ services:
       target: ops
     environment:
       PIBASE_ADMIN_DATABASE_URL: postgres://postgres:${POSTGRES_PASSWORD}@postgres:5432/postgres
+      PIBASE_DATABASE_URL: postgres://authenticator:${PIBASE_AUTHENTICATOR_PASSWORD}@postgres:5432/_control
       PIBASE_MASTER_KEY: ${PIBASE_MASTER_KEY:?set PIBASE_MASTER_KEY in .env}
       PIBASE_BACKUP_KEY: ${PIBASE_BACKUP_KEY:-}
       PIBASE_STORAGE_ROOT: /data/files

@@ -73,10 +73,14 @@ project_json="$(docker run --rm --network host \
   --env PIBASE_ADMIN_DATABASE_URL="$admin_url" \
   --env PIBASE_MASTER_KEY="$master_key" \
   "$ops_image" project-create "pss-project-01")"
-project_keys="$(mktemp)"
-printf '%s\n' "$project_json" | sed -n 's/.*"anon_key"[[:space:]]*:[[:space:]]*"\([^"]*\)".*/\1/p' >>"$project_keys"
-
 auth_db_url="postgres://authenticator:${auth_password}@127.0.0.1:${pg_port}/_control?sslmode=disable"
+project_keys="$(mktemp)"
+project_id="$(printf '%s\n' "$project_json" | sed -n 's/.*"id"[[:space:]]*:[[:space:]]*"\([^"]*\)".*/\1/p')"
+service_key="$(printf '%s\n' "$project_json" | sed -n 's/.*"service_key"[[:space:]]*:[[:space:]]*"\([^"]*\)".*/\1/p')"
+printf 'CREATE TABLE public.pss_probe(id integer PRIMARY KEY); GRANT SELECT ON public.pss_probe TO p_%s_service_role;' "$project_id" | docker run --rm -i --network host \
+  --env PIBASE_DATABASE_URL="$auth_db_url" "$ops_image" migration-apply "$project_id" 0001_pss_probe
+printf '%s %s\n' "$project_id" "$service_key" >>"$project_keys"
+
 docker run --detach --name "$gateway_container" \
   --network host \
   --env PIBASE_DATABASE_URL="$auth_db_url" \
@@ -106,7 +110,11 @@ for n in $(seq 2 20); do
     --env PIBASE_ADMIN_DATABASE_URL="$admin_url" \
     --env PIBASE_MASTER_KEY="$master_key" \
     "$ops_image" project-create "$proj_name")"
-  printf '%s\n' "$project_json" | sed -n 's/.*"anon_key"[[:space:]]*:[[:space:]]*"\([^"]*\)".*/\1/p' >>"$project_keys"
+  project_id="$(printf '%s\n' "$project_json" | sed -n 's/.*"id"[[:space:]]*:[[:space:]]*"\([^"]*\)".*/\1/p')"
+  service_key="$(printf '%s\n' "$project_json" | sed -n 's/.*"service_key"[[:space:]]*:[[:space:]]*"\([^"]*\)".*/\1/p')"
+  printf 'CREATE TABLE public.pss_probe(id integer PRIMARY KEY); GRANT SELECT ON public.pss_probe TO p_%s_service_role;' "$project_id" | docker run --rm -i --network host \
+    --env PIBASE_DATABASE_URL="$auth_db_url" "$ops_image" migration-apply "$project_id" 0001_pss_probe
+  printf '%s %s\n' "$project_id" "$service_key" >>"$project_keys"
 done
 
 docker run --detach --name "$gateway_container" \
@@ -130,9 +138,12 @@ echo ""
 read_memory "$gateway_container" "Gateway" pibase
 echo ""
 
-while IFS= read -r anon_key; do
-  curl --silent --output /dev/null --header "apikey: $anon_key" http://127.0.0.1:28080/auth/v1/user || true
+while IFS=' ' read -r project_id service_key; do
+  curl --fail --silent --output /dev/null --header "apikey: $service_key" "http://127.0.0.1:28080/rest/v1/pss_probe?select=id"
 done <"$project_keys"
+
+backend_count="$(docker exec "$postgres_container" psql -U postgres -tA -c "SELECT count(*) FROM pg_stat_activity WHERE datname LIKE 'p\\_%' ESCAPE '\\' AND backend_type='client backend'")"
+echo "Project database client backends after served REST reads (measured): $backend_count"
 
 echo "--- After 20 projects (each served one request, measured) ---"
 echo ""

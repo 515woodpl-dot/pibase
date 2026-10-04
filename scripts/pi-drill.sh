@@ -16,7 +16,7 @@ state_file=".pibase-pi-drill-state"
 
 run() {
   printf '\n$ %s\n' "$*"
-  "$@" 2>&1 || printf '(exit %d)\n' "$?"
+  "$@"
 }
 
 json_field() {
@@ -30,9 +30,10 @@ state_value() {
 if [ "${PIBASE_DRILL_POSTREBOOT:-}" = "1" ]; then
   output_file="pi-drill-$(date -I)-postreboot.txt"
   project_id="$(state_value project_id)"
-  anon_key="$(state_value anon_key)"
-  [ -n "$project_id" ] && [ -n "$anon_key" ] || { echo "missing $state_file; run the pre-reboot drill first" >&2; exit 1; }
-  {
+  service_key="$(state_value service_key)"
+  [ -n "$project_id" ] && [ -n "$service_key" ] || { echo "missing $state_file; run the pre-reboot drill first" >&2; exit 1; }
+  if (
+  set -e
   echo "=== pibase Pi drill post-reboot checks ==="
   echo "Date: $(date -Is)"
   run docker version
@@ -41,11 +42,16 @@ if [ "${PIBASE_DRILL_POSTREBOOT:-}" = "1" ]; then
   run curl --fail --silent http://127.0.0.1:18080/metrics
   run findmnt -n -o SOURCE,FSTYPE,TARGET --target "$data_root"
   run stat -c '%U:%G %a %n' "$data_root/postgres" "$data_root/files" "$data_root/backups"
-  row="$(curl --fail --silent "http://127.0.0.1:18080/rest/v1/drill_probe?select=note" -H "apikey: $anon_key")"
-  [ "$row" = '[{"note":"hello from drill"}]' ] || { echo "FAIL: pre-reboot row missing: $row"; exit 1; }
+  row="$(curl --fail --silent "http://127.0.0.1:18080/rest/v1/drill_probe?select=note" -H "apikey: $service_key")"
+  [ "$(printf '%s' "$row" | tr -d '[:space:]')" = '[{"note":"hellofromdrill"}]' ] || { echo "FAIL: pre-reboot row missing: $row"; exit 1; }
   echo "OK: project $project_id and pre-reboot row persist"
   echo "=== Post-reboot checks complete ==="
-  } 2>&1 | tee "$output_file"
+  ) >"$output_file" 2>&1; then
+    cat "$output_file"
+  else
+    cat "$output_file"
+    exit 1
+  fi
   echo "Drill output saved to $output_file"
   exit 0
 fi
@@ -55,7 +61,8 @@ if [ -f "$data_root/postgres/PG_VERSION" ]; then
   exit 1
 fi
 
-{
+if (
+set -e
 echo "=== pibase Pi drill ==="
 echo "Date: $(date -Is)"
 echo "Commit: $(git rev-parse HEAD)"
@@ -99,28 +106,24 @@ run docker compose -f compose.yaml -f compose.pi.yaml ps
 echo ""
 
 echo "--- 6. Create a project and round-trip REST ---"
-# Read secrets without evaluating .env content.
-operator_token="$(sed -n 's/^PIBASE_OPERATOR_TOKEN=//p' .env)"
-project_json="$(curl --fail --silent -X POST http://127.0.0.1:18080/admin/projects \
-  -H "Authorization: Bearer $operator_token" \
-  -H 'Content-Type: application/json' \
-  -d '{"name":"drill-project"}')"
+project_json="$(docker compose -f compose.yaml -f compose.pi.yaml --profile tools run --rm -T \
+  ops project-create drill-project)"
 project_id="$(echo "$project_json" | json_field id)"
-anon_key="$(echo "$project_json" | json_field anon_key)"
+service_key="$(echo "$project_json" | json_field service_key)"
+[ -n "$project_id" ] && [ -n "$service_key" ] || { echo "FAIL: project creation returned incomplete JSON"; exit 1; }
 echo "Created project: id=$project_id"
 
-printf 'CREATE TABLE public.drill_probe(note text NOT NULL);' | docker compose -f compose.yaml -f compose.pi.yaml --profile tools run --rm -T \
+printf 'CREATE TABLE public.drill_probe(note text NOT NULL); GRANT SELECT, INSERT ON public.drill_probe TO p_%s_service_role;' "$project_id" | docker compose -f compose.yaml -f compose.pi.yaml --profile tools run --rm -T \
   ops migration-apply "$project_id" 0001_pi_drill_probe
 inserted="$(curl --fail --silent -X POST "http://127.0.0.1:18080/rest/v1/drill_probe" \
-  -H "apikey: $anon_key" \
-  -H "Authorization: Bearer $anon_key" \
+  -H "apikey: $service_key" \
   -H 'Content-Type: application/json' \
   -H 'Prefer: return=representation' \
   -d '{"note":"hello from drill"}')"
-[ "$inserted" = '[{"note":"hello from drill"}]' ] || { echo "FAIL: REST insert: $inserted"; exit 1; }
-read_back="$(curl --fail --silent "http://127.0.0.1:18080/rest/v1/drill_probe?select=note" -H "apikey: $anon_key")"
-[ "$read_back" = '[{"note":"hello from drill"}]' ] || { echo "FAIL: REST read: $read_back"; exit 1; }
-printf 'project_id=%s\nanon_key=%s\n' "$project_id" "$anon_key" >"$state_file"
+[ "$(printf '%s' "$inserted" | tr -d '[:space:]')" = '[{"note":"hellofromdrill"}]' ] || { echo "FAIL: REST insert: $inserted"; exit 1; }
+read_back="$(curl --fail --silent "http://127.0.0.1:18080/rest/v1/drill_probe?select=note" -H "apikey: $service_key")"
+[ "$(printf '%s' "$read_back" | tr -d '[:space:]')" = '[{"note":"hellofromdrill"}]' ] || { echo "FAIL: REST read: $read_back"; exit 1; }
+printf 'project_id=%s\nservice_key=%s\n' "$project_id" "$service_key" >"$state_file"
 chmod 600 "$state_file"
 
 echo ""
@@ -138,8 +141,12 @@ echo ""
 
 echo ""
 echo "=== Pi drill complete ==="
-} 2>&1 | tee -a "$output_file"
-
-echo ""
-echo "Drill output saved to $output_file"
-echo "Paste the contents back for review."
+) >>"$output_file" 2>&1; then
+  cat "$output_file"
+  echo ""
+  echo "Drill output saved to $output_file"
+  echo "Paste the contents back for review."
+else
+  cat "$output_file"
+  exit 1
+fi
