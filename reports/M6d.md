@@ -1,6 +1,6 @@
 # M6d gate report — release hardening
 
-**Status:** implementation complete; ready for independent audit
+**Status:** audit fixes implemented; re-review required
 
 ## What was built
 
@@ -94,31 +94,22 @@ pre-upgrade backup, then bootstraps with the current binary and verifies:
 Re-run with `PIBASE_IMAGE=pibase:m6d-gate ./scripts/test-upgrade-retained.sh`
 to reproduce.
 
-Finding: restoring a pre-MFA (M5b) backup into a post-MFA database fails
-because `pg_restore --clean` cannot drop `auth.users` due to MFA table FK
-dependencies. The drill works around this by taking a post-upgrade backup for
-the restore step. See "Questions for the planner" below.
+The drill restores the pre-upgrade M5b archive after upgrade, including the
+old user, REST rows, and uploaded object.
 
 ### 5. Memory measurement
 
-`scripts/measure-memory.sh` reports RSS from `/proc/<pid>/status` for Postgres
-and gateway at 1 and 20 projects, idle. PSS from `smaps_rollup` is used when
-accessible (requires root). Raw output in `reports/raw/m6d-memory-pss.txt`.
+`scripts/measure-memory.sh` sums PSS from `smaps_rollup` for every process
+inside each container at one project, 20 projects idle, and 20 projects after
+each project has served one request. Raw output is committed in
+`reports/raw/m6d-memory-pss.txt`.
 
 Machine: Raspberry Pi 4, Debian 13, Linux 6.18.34+rpt-rpi-v8, aarch64.
 
-| Process | 1 project idle | 20 projects idle | Label |
-|---|---|---|---|
-| Postgres VmRSS | 26 MB | 26 MB | measured |
-| Postgres RssAnon | 2.3 MB | 2.3 MB | measured |
-| Postgres RssShmem | 8.7 MB | 8.7 MB | measured |
-| Gateway VmRSS | 11 MB | 14 MB | measured |
-| Gateway RssAnon | 2.3 MB | 4.7 MB | measured |
-
-PSS was not accessible without root on this host. The script supports it and
-will report PSS when run with root or on a host with permissive ptrace settings.
-Docker cgroup memory stats returned 0B, which is expected on Raspberry Pi OS
-kernels without `cgroup_enable=memory` in the boot config.
+The raw run committed with this change is incomplete, so no memory number is
+reported or estimated. PSS is read from inside each container, so host root is
+not required. Docker cgroup memory statistics remain optional; see
+`docs/PI-OPERATIONS.md`.
 
 ### 6. Pi drill kit
 
@@ -129,51 +120,49 @@ project, attempts a REST round trip, takes a backup, and provides reboot
 instructions with a `PIBASE_DRILL_POSTREBOOT=1` post-reboot check. All output
 goes to `pi-drill-<date>.txt`.
 
-The script needs no `sudo` beyond what `setup-pi.sh` already requires. It was
+The script needs no `sudo` beyond what `setup-pi.sh` already requires. It
+refuses a data root that already contains PostgreSQL data, creates a migration
+before its REST insert/read comparison, stores only the project id and anon key
+for post-reboot checks, and post-reboot mode performs checks only. It was
 tested with the existing `scripts/test-setup-pi.sh` regression approach
 (mocked host tools). It cannot be run on real hardware from this build
 environment.
 
 ## Tests run
 
-- `PIBASE_IMAGE=pibase:m6d-gate ./scripts/test.sh`: passed on the Linux arm64
-  engineering host. Includes setup checks, `gofmt`, `go vet`, all unit tests,
-  production image build, fresh PostgreSQL 16 control/gateway integration with
-  all ownership and restore regressions, and the Linux arm64 binary build.
-- `PIBASE_IMAGE=pibase:m6d-gate ./scripts/test-upgrade-retained.sh`: passed.
-  M5b-to-current upgrade with data, ownership, and restore verification.
-- `PIBASE_IMAGE=pibase:m6d-gate ./scripts/measure-memory.sh`: passed. RSS
-  measured at 1 and 20 projects on Pi 4 hardware.
+- `sh -n scripts/test-upgrade-retained.sh scripts/measure-memory.sh
+  scripts/pi-drill.sh`: passed.
+- `gofmt`, `go vet ./internal/backup`, and `go test ./internal/backup`:
+  passed (without `PIBASE_TEST_ADMIN_DATABASE_URL`, so only non-integration
+  backup tests ran).
 - `git diff --check`: passed.
+
+## Audit fixes
+
+- **M6d-01:** Restore now takes a `pre-restore-*` encrypted safety archive in
+  the archive directory before any mutation, drops `auth`, `storage`,
+  `realtime`, and `cron` with `CASCADE`, restores strictly, then upgrades.
+  Integration coverage simulates an M5b archive, includes a public foreign key
+  to `auth.users`, verifies the safety archive exists, and restores it.
+- **M6d-02:** The retained-data drill now signs up and signs in a user, writes
+  rows via REST, uploads/downloads through Storage, and restores the actual
+  pre-upgrade archive before repeating those checks.
+- **M6d-03:** PSS is summed across all container processes, and the script
+  includes the served-request case. The attempted raw run is committed as an
+  incomplete measurement; no measured or estimated memory number is claimed.
+- **M6d-04:** The Pi drill now performs a real migration/REST round trip,
+  parses values without `eval` or whitespace-sensitive JSON matching, separates
+  post-reboot execution and output, and stops when Docker group membership is
+  inactive.
+- **M6d-05:** The summary no longer represents a post-upgrade archive restore
+  as satisfying the old-backup requirement.
 
 ## What was NOT tested
 
-- Restoring a pre-MFA (M5b) backup into a post-MFA database. `pg_restore
-  --clean` fails on FK dependencies between `auth.users` and MFA tables. The
-  drill uses a post-upgrade backup for the restore step. See "Questions for the
-  planner."
-- PSS (Proportional Set Size) measurements: not accessible without root on
-  this host. RSS from `/proc/<pid>/status` was used instead.
 - `scripts/pi-drill.sh` on disposable Raspberry Pi hardware.
+- The real-PostgreSQL backup integration tests, retained-data Docker drill, and
+  completed 20-project PSS run were not completed in this command session.
 - `scripts/test-supabase-js.sh` was not re-run (no JS changes in this gate).
 - Upgrade from a retained real customer data directory or real old `.pib` file.
 - Gateway under load (measurements are idle only).
 - Fresh Raspberry Pi OS image.
-
-## Questions for the planner
-
-1. **Pre-MFA backup restore.** Restoring a backup taken before M6a (TOTP MFA)
-   into a database that now has MFA tables fails because `pg_restore --clean`
-   cannot drop `auth.users` while `auth.mfa_factors` and `auth.mfa_challenges`
-   hold FK references to it. `pg_restore` reports 6 non-fatal errors and exits
-   non-zero; `Restore` treats this as fatal. Options: (a) tolerate pg_restore
-   exit code 1 when stderr contains only `--clean --if-exists` warnings,
-   (b) drop MFA tables before pg_restore and let the upgrade recreate them,
-   (c) document that pre-MFA backups require manual intervention. Which
-   approach should be taken, and in which gate?
-
-2. **cgroup memory on Raspberry Pi.** Docker `stats` returns 0B on stock
-   Raspberry Pi OS because the kernel does not enable the memory cgroup by
-   default. Adding `cgroup_enable=memory cgroup_memory=1` to `/boot/cmdline.txt`
-   would fix this but changes the boot config. Should the Pi setup script
-   enable it, or is the `/proc/<pid>/status` RSS sufficient?

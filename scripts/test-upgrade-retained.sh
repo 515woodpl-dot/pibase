@@ -13,6 +13,7 @@ postgres_password="$(od -An -N16 -tx1 /dev/urandom | tr -d ' \n')"
 auth_password="upgrade-drill-auth"
 volume_name="pibase-upgrade-drill-$$"
 postgres_container="pibase-upgrade-drill-pg-$$"
+gateway_container="pibase-upgrade-drill-gw-$$"
 postgres_image="${PIBASE_TEST_POSTGRES_IMAGE:-pibase-postgres:test}"
 old_image="pibase:upgrade-drill-old-$$"
 old_ops_image="pibase:upgrade-drill-old-ops-$$"
@@ -23,6 +24,7 @@ master_key="$(head -c 32 /dev/urandom | base64 | tr -d '\n')"
 
 cleanup() {
   docker rm --force "$postgres_container" >/dev/null 2>&1 || true
+  docker rm --force "$gateway_container" >/dev/null 2>&1 || true
   docker volume rm --force "$volume_name" >/dev/null 2>&1 || true
   if [ -n "$worktree" ] && [ -d "$worktree" ]; then
     git worktree remove --force "$worktree" 2>/dev/null || rm -rf "$worktree"
@@ -86,6 +88,8 @@ project1_json="$(docker run --rm --network host \
   "$old_image" project-create drill-project-1)"
 project1_id="$(echo "$project1_json" | json_field id)"
 project1_db="$(echo "$project1_json" | json_field database)"
+project1_anon="$(echo "$project1_json" | json_field anon_key)"
+project1_service="$(echo "$project1_json" | json_field service_key)"
 echo "Project 1: id=$project1_id db=$project1_db"
 
 project2_json="$(docker run --rm --network host \
@@ -94,20 +98,33 @@ project2_json="$(docker run --rm --network host \
   "$old_image" project-create drill-project-2)"
 project2_id="$(echo "$project2_json" | json_field id)"
 project2_db="$(echo "$project2_json" | json_field database)"
+project2_service="$(echo "$project2_json" | json_field service_key)"
 echo "Project 2: id=$project2_id db=$project2_db"
 
-echo "=== Step 5: Insert data into projects ==="
+auth_db_url="postgres://authenticator:${auth_password}@127.0.0.1:${pg_port}/_control"
+
+echo "=== Step 5: Create schema and retained data through the old HTTP API ==="
 p1_admin="p_${project1_id}_admin"
 p2_admin="p_${project2_id}_admin"
-
-dbexec -d "$project1_db" -c "SET ROLE \"$p1_admin\"; CREATE TABLE public.items(id serial PRIMARY KEY, name text NOT NULL); INSERT INTO public.items(name) VALUES ('alpha'),('beta');"
-dbexec -d "$project2_db" -c "SET ROLE \"$p2_admin\"; CREATE TABLE public.tasks(id serial PRIMARY KEY, title text NOT NULL); INSERT INTO public.tasks(title) VALUES ('task-one');"
+printf 'CREATE TABLE public.items(id serial PRIMARY KEY, name text NOT NULL);' | docker run --rm -i --network host \
+  --env PIBASE_DATABASE_URL="$auth_db_url" "$old_ops_image" migration-apply "$project1_id" 0001_items
+printf 'CREATE TABLE public.tasks(id serial PRIMARY KEY, title text NOT NULL);' | docker run --rm -i --network host \
+  --env PIBASE_DATABASE_URL="$auth_db_url" "$old_ops_image" migration-apply "$project2_id" 0001_tasks
+docker run --rm --detach --name "$gateway_container" --network host \
+  --env PIBASE_DATABASE_URL="$auth_db_url" --env PIBASE_MASTER_KEY="$master_key" \
+  --env PIBASE_LISTEN_ADDR=:28081 --env PIBASE_STORAGE_ROOT="$storage_root" \
+  -v "$storage_root:$storage_root" "$old_ops_image" serve
+sleep 2
+signup="$(curl --fail --silent -X POST http://127.0.0.1:28081/auth/v1/signup -H "apikey: $project1_anon" -H 'Content-Type: application/json' -d '{"email":"drill@example.test","password":"correct horse battery staple"}')"
+confirmation="$(echo "$signup" | json_field confirmation_token)"
+curl --fail --silent "http://127.0.0.1:28081/auth/v1/verify?token=$confirmation&type=signup" -H "apikey: $project1_anon" >/dev/null
+old_login="$(curl --fail --silent -X POST 'http://127.0.0.1:28081/auth/v1/token?grant_type=password' -H "apikey: $project1_anon" -H 'Content-Type: application/json' -d '{"email":"drill@example.test","password":"correct horse battery staple"}')"
+user_token="$(echo "$old_login" | json_field access_token)"
+curl --fail --silent -X POST http://127.0.0.1:28081/rest/v1/items -H "apikey: $project1_service" -H 'Content-Type: application/json' -H 'Prefer: return=representation' -d '[{"name":"alpha"},{"name":"beta"}]' >/dev/null
+curl --fail --silent -X POST http://127.0.0.1:28081/rest/v1/tasks -H "apikey: $project2_service" -H 'Content-Type: application/json' -H 'Prefer: return=representation' -d '[{"title":"task-one"}]' >/dev/null
+curl --fail --silent -X POST http://127.0.0.1:28081/storage/v1/bucket -H "apikey: $project1_service" -H 'Content-Type: application/json' -d '{"id":"drill-files","public":true}' >/dev/null
+curl --fail --silent -X POST http://127.0.0.1:28081/storage/v1/object/drill-files/drill-object.txt -H "apikey: $project1_anon" -H "Authorization: Bearer $user_token" -H 'Content-Type: text/plain' --data 'drill-file-content' >/dev/null
 dbexec -d "$project1_db" -c "INSERT INTO cron.jobs(schedule,sql) VALUES ('0 * * * *', 'SELECT 1');"
-
-mkdir -p "$storage_root/$project1_id" "$storage_root/$project2_id"
-chmod 777 "$storage_root/$project1_id" "$storage_root/$project2_id"
-echo "drill-file-content" > "$storage_root/$project1_id/drill-object.txt"
-chmod 666 "$storage_root/$project1_id/drill-object.txt"
 
 echo "=== Step 6: Backup project 1 with old binary (pre-upgrade) ==="
 docker run --rm --network host \
@@ -123,23 +140,17 @@ pre_upgrade_backup="$(ls "$backup_dir"/*.pib | head -1)"
 echo "Pre-upgrade backup: $pre_upgrade_backup"
 
 echo "=== Step 7: Bootstrap with current binary (upgrade) ==="
+docker rm --force "$gateway_container" >/dev/null
 docker run --rm --network host \
   --env PIBASE_ADMIN_DATABASE_URL="$admin_url" \
   --env PIBASE_AUTHENTICATOR_PASSWORD="$auth_password" \
   "$new_image" bootstrap
 
-echo "=== Step 7b: Backup project 1 with current binary (post-upgrade) ==="
-docker run --rm --network host \
-  --user "$(id -u):$(id -g)" \
-  --env PIBASE_ADMIN_DATABASE_URL="$admin_url" \
-  --env PIBASE_BACKUP_KEY="$backup_key" \
-  --env PIBASE_STORAGE_ROOT="$storage_root" \
-  -v "$storage_root:$storage_root" \
-  -v "$backup_dir:$backup_dir" \
-  "$new_ops_image" backup "$project1_id" "$backup_dir"
-
-backup_file="$(ls "$backup_dir"/*.pib | tail -1)"
-echo "Post-upgrade backup: $backup_file"
+docker run --rm --detach --name "$gateway_container" --network host \
+  --env PIBASE_DATABASE_URL="$auth_db_url" --env PIBASE_MASTER_KEY="$master_key" \
+  --env PIBASE_LISTEN_ADDR=:28081 --env PIBASE_STORAGE_ROOT="$storage_root" \
+  -v "$storage_root:$storage_root" "$new_ops_image" serve
+sleep 2
 
 echo "=== Step 8: Verify upgrade ==="
 passed=true
@@ -170,8 +181,11 @@ check "$p2_rows" "1" "project 2 data rows"
 p1_cron="$(dbexec -d "$project1_db" -c "SELECT count(*) FROM cron.jobs")"
 check "$p1_cron" "1" "project 1 cron jobs"
 
-p1_auth="$(dbexec -d "$project1_db" -c "SELECT count(*) FROM auth.users")"
-echo "OK: project 1 auth users = $p1_auth (auth table accessible)"
+new_login="$(curl --fail --silent -X POST 'http://127.0.0.1:28081/auth/v1/token?grant_type=password' -H "apikey: $project1_anon" -H 'Content-Type: application/json' -d '{"email":"drill@example.test","password":"correct horse battery staple"}')"
+user_token="$(echo "$new_login" | json_field access_token)"
+check "${user_token:+present}" "present" "project 1 old user sign-in"
+check "$(curl --fail --silent http://127.0.0.1:28081/rest/v1/items?select=name -H "apikey: $project1_service" | tr -d '[:space:]')" '[{"name":"alpha"},{"name":"beta"}]' "project 1 REST read"
+check "$(curl --fail --silent http://127.0.0.1:28081/storage/v1/object/public/drill-files/drill-object.txt)" "drill-file-content" "project 1 object download"
 
 p1_forbidden="$(dbexec -d "$project1_db" -c "
 SELECT count(*) FROM pg_class c
@@ -192,7 +206,7 @@ docker run --rm --network host \
   --env PIBASE_RESTORE_CONFIRM="$project1_id" \
   -v "$storage_root:$storage_root" \
   -v "$backup_dir:$backup_dir" \
-  "$new_ops_image" restore "$project1_id" "$backup_file"
+  "$new_ops_image" restore "$project1_id" "$pre_upgrade_backup"
 
 p1_restored_version="$(dbexec -d _control -c "SELECT schema_version FROM control.projects WHERE id='$project1_id'")"
 check "$p1_restored_version" "9" "project 1 restored schema version"
@@ -203,8 +217,10 @@ check "$p1_restored_rows" "2" "project 1 restored data rows"
 p1_restored_owners="$(dbexec -d "$project1_db" -c "SELECT string_agg(nspname||'='||pg_get_userbyid(nspowner),',' ORDER BY nspname) FROM pg_namespace WHERE nspname IN ('auth','storage','realtime','cron')")"
 check "$p1_restored_owners" "auth=$operator,cron=$operator,realtime=$operator,storage=$operator" "project 1 restored schema owners"
 
-restored_file="$(cat "$storage_root/$project1_id/drill-object.txt" 2>/dev/null || echo 'MISSING')"
-check "$restored_file" "drill-file-content" "project 1 restored storage file"
+restored_login="$(curl --fail --silent -X POST 'http://127.0.0.1:28081/auth/v1/token?grant_type=password' -H "apikey: $project1_anon" -H 'Content-Type: application/json' -d '{"email":"drill@example.test","password":"correct horse battery staple"}')"
+check "$(echo "$restored_login" | json_field access_token | sed 's/.*/present/')" "present" "project 1 restored old user sign-in"
+check "$(curl --fail --silent http://127.0.0.1:28081/rest/v1/items?select=name -H "apikey: $project1_service" | tr -d '[:space:]')" '[{"name":"alpha"},{"name":"beta"}]' "project 1 restored REST read"
+check "$(curl --fail --silent http://127.0.0.1:28081/storage/v1/object/public/drill-files/drill-object.txt)" "drill-file-content" "project 1 restored object download"
 
 echo ""
 if [ "$passed" = true ]; then

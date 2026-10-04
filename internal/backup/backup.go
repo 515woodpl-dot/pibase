@@ -24,29 +24,38 @@ type Manifest struct {
 	CreatedAt time.Time `json:"created_at"`
 }
 
-func Backup(ctx context.Context, adminURL, projectID, storageRoot, destination string, key [32]byte) (err error) {
-	database, err := projectDatabase(ctx, adminURL, projectID)
+func Backup(ctx context.Context, adminURL, projectID, storageRoot, destination string, key [32]byte) error {
+	final, err := backup(ctx, adminURL, projectID, storageRoot, destination, key, "pibase")
 	if err != nil {
 		return err
 	}
+	fmt.Println(final)
+	return nil
+}
+
+func backup(ctx context.Context, adminURL, projectID, storageRoot, destination string, key [32]byte, prefix string) (final string, err error) {
+	database, err := projectDatabase(ctx, adminURL, projectID)
+	if err != nil {
+		return "", err
+	}
 	if err := os.MkdirAll(destination, 0o700); err != nil {
-		return err
+		return "", err
 	}
 	work, err := os.MkdirTemp(destination, ".pibase-backup-")
 	if err != nil {
-		return err
+		return "", err
 	}
 	defer os.RemoveAll(work)
 	dump := filepath.Join(work, "database.dump")
 	cmd := exec.CommandContext(ctx, "pg_dump", "--format=custom", "--file", dump, withDatabase(adminURL, database))
 	if output, runErr := cmd.CombinedOutput(); runErr != nil {
-		return fmt.Errorf("pg_dump: %w: %s", runErr, strings.TrimSpace(string(output)))
+		return "", fmt.Errorf("pg_dump: %w: %s", runErr, strings.TrimSpace(string(output)))
 	}
-	final := filepath.Join(destination, fmt.Sprintf("pibase-%s-%s.pib", projectID, time.Now().UTC().Format("20060102T150405Z")))
+	final = filepath.Join(destination, fmt.Sprintf("%s-%s-%s.pib", prefix, projectID, time.Now().UTC().Format("20060102T150405.000000000Z")))
 	temp := final + ".partial"
 	file, err := os.OpenFile(temp, os.O_CREATE|os.O_EXCL|os.O_WRONLY, 0o600)
 	if err != nil {
-		return err
+		return "", err
 	}
 	defer func() {
 		file.Close()
@@ -56,15 +65,15 @@ func Backup(ctx context.Context, adminURL, projectID, storageRoot, destination s
 	}()
 	encrypted, err := newEncryptWriter(file, key)
 	if err != nil {
-		return err
+		return "", err
 	}
 	archive := tar.NewWriter(encrypted)
 	manifest, _ := json.Marshal(Manifest{1, projectID, database, time.Now().UTC()})
 	if err = writeBytes(archive, "manifest.json", manifest, 0o600); err != nil {
-		return err
+		return "", err
 	}
 	if err = writeFile(archive, "database.dump", dump); err != nil {
-		return err
+		return "", err
 	}
 	root := filepath.Join(storageRoot, projectID)
 	if err = filepath.Walk(root, func(path string, info os.FileInfo, walkErr error) error {
@@ -83,25 +92,24 @@ func Backup(ctx context.Context, adminURL, projectID, storageRoot, destination s
 		}
 		return writeFile(archive, filepath.ToSlash(filepath.Join("storage", rel)), path)
 	}); err != nil {
-		return err
+		return "", err
 	}
 	if err = archive.Close(); err != nil {
-		return err
+		return "", err
 	}
 	if err = encrypted.Close(); err != nil {
-		return err
+		return "", err
 	}
 	if err = file.Sync(); err != nil {
-		return err
+		return "", err
 	}
 	if err = file.Close(); err != nil {
-		return err
+		return "", err
 	}
 	if err = os.Rename(temp, final); err != nil {
-		return err
+		return "", err
 	}
-	fmt.Println(final)
-	return nil
+	return final, nil
 }
 
 func Restore(ctx context.Context, adminURL, projectID, storageRoot, source string, key [32]byte) error {
@@ -168,6 +176,26 @@ func Restore(ctx context.Context, adminURL, projectID, storageRoot, source strin
 	}
 	if manifest.Version != 1 || manifest.ProjectID != projectID || manifest.Database != database {
 		return fmt.Errorf("backup belongs to project %q, not %q", manifest.ProjectID, projectID)
+	}
+	// Archive the current state before changing it. Older archives can predate
+	// managed-schema dependencies, so clean restore must begin from no managed
+	// schemas rather than leave old and new rows mixed together.
+	safety, err := backup(ctx, adminURL, projectID, storageRoot, filepath.Dir(source), key, "pre-restore")
+	if err != nil {
+		return fmt.Errorf("safety backup before restore: %w", err)
+	}
+	fmt.Println(safety)
+	project, err := pgx.Connect(ctx, withDatabase(adminURL, database))
+	if err != nil {
+		return fmt.Errorf("connect to drop managed schemas: %w", err)
+	}
+	_, dropErr := project.Exec(ctx, `DROP SCHEMA IF EXISTS auth, storage, realtime, cron CASCADE`)
+	closeErr := project.Close(ctx)
+	if dropErr != nil {
+		return fmt.Errorf("drop managed schemas: %w", dropErr)
+	}
+	if closeErr != nil {
+		return fmt.Errorf("close managed-schema connection: %w", closeErr)
 	}
 	dump := filepath.Join(work, "database.dump")
 	cmd := exec.CommandContext(ctx, "pg_restore", "--clean", "--if-exists", "--dbname", withDatabase(adminURL, database), dump)

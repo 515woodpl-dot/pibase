@@ -1,0 +1,4 @@
+=== Memory measurement ===
+Date: 2026-10-04T15:26:43-04:00
+Status: incomplete — the command runner terminated the measurement before the
+one-project case completed. No memory number is reported from this run.

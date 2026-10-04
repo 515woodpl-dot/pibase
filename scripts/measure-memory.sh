@@ -3,13 +3,8 @@ set -eu
 
 cd "$(dirname "$0")/.."
 
-# Measure memory for Postgres and gateway processes at 1 and 20 projects, idle.
-# Reports PSS from /proc/<pid>/smaps_rollup when accessible, otherwise falls
-# back to RSS from docker stats. Writes raw output to reports/raw/.
-#
-# PSS requires read access to /proc/<pid>/smaps_rollup on the host, which
-# typically needs root. On a Pi, the operator can re-run with sudo if PSS is
-# needed; the script works without it.
+# Measure whole-container PSS for Postgres and gateway at one project, then at
+# 20 projects both idle and after every project has served one API request.
 
 output_dir="reports/raw"
 mkdir -p "$output_dir"
@@ -32,22 +27,19 @@ trap cleanup EXIT INT TERM
 read_memory() {
   container="$1"
   label="$2"
-  pid="$(docker inspect --format '{{.State.Pid}}' "$container" 2>/dev/null || echo 0)"
-  if [ "$pid" != "0" ] && grep -i 'Pss:' "/proc/$pid/smaps_rollup" >/dev/null 2>&1; then
-    echo "$label PSS (from smaps_rollup, measured):"
-    grep -i 'Pss:' "/proc/$pid/smaps_rollup"
-  elif [ "$pid" != "0" ] && grep -i 'Pss:' "/proc/$pid/smaps" >/dev/null 2>&1; then
-    echo "$label PSS (from smaps, measured):"
-    grep -i 'Pss:' "/proc/$pid/smaps" | awk '{sum += $2} END {printf "  Pss: %d kB\n", sum}'
-  else
-    echo "$label PSS: not accessible (smaps requires root)"
-  fi
-  if [ "$pid" != "0" ] && [ -r "/proc/$pid/status" ]; then
-    echo "$label RSS (from /proc/$pid/status, measured):"
-    grep -E 'VmRSS|RssAnon|RssFile|RssShmem' "/proc/$pid/status" | sed 's/^/  /'
-  else
-    echo "$label RSS: not accessible"
-  fi
+  process_user="$3"
+  echo "$label whole-container PSS (all /proc processes, measured):"
+  docker exec --user "$process_user" "$container" sh -c '
+    found=0; total=0
+    for f in /proc/[0-9]*/smaps_rollup; do
+      [ -r "$f" ] || continue
+      pss=$(awk "/^Pss:/{sum += \$2} END{print sum+0}" "$f" 2>/dev/null) || continue
+      printf "  %s: %s kB\\n" "${f%/smaps_rollup}" "$pss"
+      total=$((total + pss)); found=1
+    done
+    [ "$found" = 1 ] || exit 1
+    printf "  total: %s kB\\n" "$total"
+  ' || echo "  PSS unavailable inside container"
 }
 
 {
@@ -77,10 +69,12 @@ docker run --rm --network host \
   --env PIBASE_AUTHENTICATOR_PASSWORD="$auth_password" \
   "$ops_image" bootstrap
 
-docker run --rm --network host \
+project_json="$(docker run --rm --network host \
   --env PIBASE_ADMIN_DATABASE_URL="$admin_url" \
   --env PIBASE_MASTER_KEY="$master_key" \
-  "$ops_image" project-create "pss-project-01" >/dev/null
+  "$ops_image" project-create "pss-project-01")"
+project_keys="$(mktemp)"
+printf '%s\n' "$project_json" | sed -n 's/.*"anon_key"[[:space:]]*:[[:space:]]*"\([^"]*\)".*/\1/p' >>"$project_keys"
 
 auth_db_url="postgres://authenticator:${auth_password}@127.0.0.1:${pg_port}/_control?sslmode=disable"
 docker run --detach --name "$gateway_container" \
@@ -99,19 +93,20 @@ fi
 
 echo "--- After 1 project (idle) ---"
 echo ""
-read_memory "$postgres_container" "Postgres"
+read_memory "$postgres_container" "Postgres" postgres
 echo ""
-read_memory "$gateway_container" "Gateway"
+read_memory "$gateway_container" "Gateway" pibase
 echo ""
 
 docker rm --force "$gateway_container" >/dev/null 2>&1 || true
 
 for n in $(seq 2 20); do
   proj_name="$(printf 'pss-project-%02d' "$n")"
-  docker run --rm --network host \
+  project_json="$(docker run --rm --network host \
     --env PIBASE_ADMIN_DATABASE_URL="$admin_url" \
     --env PIBASE_MASTER_KEY="$master_key" \
-    "$ops_image" project-create "$proj_name" >/dev/null
+    "$ops_image" project-create "$proj_name")"
+  printf '%s\n' "$project_json" | sed -n 's/.*"anon_key"[[:space:]]*:[[:space:]]*"\([^"]*\)".*/\1/p' >>"$project_keys"
 done
 
 docker run --detach --name "$gateway_container" \
@@ -130,10 +125,22 @@ fi
 
 echo "--- After 20 projects (idle) ---"
 echo ""
-read_memory "$postgres_container" "Postgres"
+read_memory "$postgres_container" "Postgres" postgres
 echo ""
-read_memory "$gateway_container" "Gateway"
+read_memory "$gateway_container" "Gateway" pibase
 echo ""
+
+while IFS= read -r anon_key; do
+  curl --silent --output /dev/null --header "apikey: $anon_key" http://127.0.0.1:28080/auth/v1/user || true
+done <"$project_keys"
+
+echo "--- After 20 projects (each served one request, measured) ---"
+echo ""
+read_memory "$postgres_container" "Postgres" postgres
+echo ""
+read_memory "$gateway_container" "Gateway" pibase
+echo ""
+rm -f "$project_keys"
 
 echo "=== Measurement complete ==="
 } 2>&1 | tee "$output_file"

@@ -40,7 +40,15 @@ PIBASE_RESTORE_CONFIRM=PROJECT_ID docker compose \
 Keep the backup key outside the backup destination and test a restore quarterly.
 A restore replaces the selected project database and file tree; the command
 requires an explicit project-id confirmation and rejects backups for a different
-project. Stop the gateway during restore so no writes race with the swap.
+project. Before changing anything, restore writes an encrypted
+`pre-restore-PROJECT_ID-TIME.pib` safety backup beside the selected archive;
+if that backup fails, restore stops without changing the project. Ensure the
+backup filesystem has free space for this additional full archive. Stop the
+gateway during restore so no writes race with the swap. Restore drops the four
+managed schemas (`auth`, `storage`, `realtime`, and `cron`) with `CASCADE`,
+then restores the archive and reapplies the canonical schema upgrade. This
+allows archives from before later managed-schema additions to be restored
+without mixing old and new rows.
 Restore targets an existing pibase project database. Its operator-owned
 extension guard lives in `pg_catalog`, is intentionally absent from `pg_dump`,
 and remains in place while the archive is restored; the archive neither creates
@@ -80,6 +88,13 @@ ownership and managed-object ownership are unchanged by this snippet.
 For unattended backups, use a root-owned environment file and systemd timer per
 project. Copy encrypted `.pib` files to a second device or S3-compatible remote;
 local SSD backups alone do not protect against device loss.
+
+### Optional Docker memory cgroup
+
+PSS measurements from `/proc` work without changing boot configuration. Owners
+who also want Docker memory limits and `docker stats` memory figures can add
+`cgroup_enable=memory cgroup_memory=1` to the single line in `/boot/cmdline.txt`
+and reboot. This is optional and is not changed by `setup-pi.sh`.
 
 Project branches copy only `public` schema definitions and rows into a new
 project with fresh roles and API/JWT keys:

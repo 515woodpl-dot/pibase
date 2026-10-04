@@ -12,11 +12,48 @@ cd "$(dirname "$0")/.."
 repo_root="$PWD"
 data_root="${PIBASE_DATA_ROOT:-/mnt/pibase-ssd/pibase}"
 output_file="pi-drill-$(date -I).txt"
+state_file=".pibase-pi-drill-state"
 
 run() {
   printf '\n$ %s\n' "$*"
   "$@" 2>&1 || printf '(exit %d)\n' "$?"
 }
+
+json_field() {
+  sed -n 's/.*"'"$1"'"[[:space:]]*:[[:space:]]*"\([^"]*\)".*/\1/p' | head -1
+}
+
+state_value() {
+  sed -n "s/^$1=//p" "$state_file" | head -1
+}
+
+if [ "${PIBASE_DRILL_POSTREBOOT:-}" = "1" ]; then
+  output_file="pi-drill-$(date -I)-postreboot.txt"
+  project_id="$(state_value project_id)"
+  anon_key="$(state_value anon_key)"
+  [ -n "$project_id" ] && [ -n "$anon_key" ] || { echo "missing $state_file; run the pre-reboot drill first" >&2; exit 1; }
+  {
+  echo "=== pibase Pi drill post-reboot checks ==="
+  echo "Date: $(date -Is)"
+  run docker version
+  run docker compose -f compose.yaml -f compose.pi.yaml ps
+  run curl --fail --silent http://127.0.0.1:18080/healthz
+  run curl --fail --silent http://127.0.0.1:18080/metrics
+  run findmnt -n -o SOURCE,FSTYPE,TARGET --target "$data_root"
+  run stat -c '%U:%G %a %n' "$data_root/postgres" "$data_root/files" "$data_root/backups"
+  row="$(curl --fail --silent "http://127.0.0.1:18080/rest/v1/drill_probe?select=note" -H "apikey: $anon_key")"
+  [ "$row" = '[{"note":"hello from drill"}]' ] || { echo "FAIL: pre-reboot row missing: $row"; exit 1; }
+  echo "OK: project $project_id and pre-reboot row persist"
+  echo "=== Post-reboot checks complete ==="
+  } 2>&1 | tee "$output_file"
+  echo "Drill output saved to $output_file"
+  exit 0
+fi
+
+if [ -f "$data_root/postgres/PG_VERSION" ]; then
+  echo "refusing to run against an existing PostgreSQL data directory: $data_root/postgres" >&2
+  exit 1
+fi
 
 {
 echo "=== pibase Pi drill ==="
@@ -33,9 +70,10 @@ echo ""
 echo "--- 2. Setup (first run) ---"
 run env PIBASE_DATA_ROOT="$data_root" "$repo_root/scripts/setup-pi.sh"
 echo ""
-echo ">>> Log out and back in for Docker group membership, then continue."
-echo ">>> If running non-interactively, the script continues assuming group"
-echo ">>> membership is already active."
+if ! docker version >/dev/null 2>&1; then
+  echo "Docker group membership is not active; log out and back in, then rerun this drill."
+  exit 1
+fi
 echo ""
 
 echo "--- 3. Verify host state ---"
@@ -61,29 +99,33 @@ run docker compose -f compose.yaml -f compose.pi.yaml ps
 echo ""
 
 echo "--- 6. Create a project and round-trip REST ---"
-# Source .env for operator token (without printing it)
-eval "$(grep '^PIBASE_OPERATOR_TOKEN=' .env)"
+# Read secrets without evaluating .env content.
+operator_token="$(sed -n 's/^PIBASE_OPERATOR_TOKEN=//p' .env)"
 project_json="$(curl --fail --silent -X POST http://127.0.0.1:18080/admin/projects \
-  -H "Authorization: Bearer $PIBASE_OPERATOR_TOKEN" \
+  -H "Authorization: Bearer $operator_token" \
   -H 'Content-Type: application/json' \
   -d '{"name":"drill-project"}')"
-project_id="$(echo "$project_json" | grep -o '"id":"[^"]*"' | head -1 | cut -d'"' -f4)"
-anon_key="$(echo "$project_json" | grep -o '"anon_key":"[^"]*"' | head -1 | cut -d'"' -f4)"
+project_id="$(echo "$project_json" | json_field id)"
+anon_key="$(echo "$project_json" | json_field anon_key)"
 echo "Created project: id=$project_id"
 
-# Insert a row
-curl --fail --silent -X POST "http://127.0.0.1:18080/rest/v1/drill_probe" \
+printf 'CREATE TABLE public.drill_probe(note text NOT NULL);' | docker compose -f compose.yaml -f compose.pi.yaml --profile tools run --rm -T \
+  ops migration-apply "$project_id" 0001_pi_drill_probe
+inserted="$(curl --fail --silent -X POST "http://127.0.0.1:18080/rest/v1/drill_probe" \
   -H "apikey: $anon_key" \
   -H "Authorization: Bearer $anon_key" \
   -H 'Content-Type: application/json' \
   -H 'Prefer: return=representation' \
-  -d '{"note":"hello from drill"}' \
-  --output /dev/null --write-out 'REST INSERT: HTTP %{http_code}\n' || echo "(table may not exist yet; expected if no public tables)"
+  -d '{"note":"hello from drill"}')"
+[ "$inserted" = '[{"note":"hello from drill"}]' ] || { echo "FAIL: REST insert: $inserted"; exit 1; }
+read_back="$(curl --fail --silent "http://127.0.0.1:18080/rest/v1/drill_probe?select=note" -H "apikey: $anon_key")"
+[ "$read_back" = '[{"note":"hello from drill"}]' ] || { echo "FAIL: REST read: $read_back"; exit 1; }
+printf 'project_id=%s\nanon_key=%s\n' "$project_id" "$anon_key" >"$state_file"
+chmod 600 "$state_file"
 
 echo ""
 
 echo "--- 7. Backup ---"
-eval "$(grep '^PIBASE_BACKUP_KEY=' .env)"
 run docker compose -f compose.yaml -f compose.pi.yaml --profile tools run --rm \
   ops backup "$project_id" /data/backups
 echo ""
@@ -94,20 +136,9 @@ echo ">>> After reboot, run this script again with PIBASE_DRILL_POSTREBOOT=1"
 echo ">>> to execute the post-reboot checks."
 echo ""
 
-if [ "${PIBASE_DRILL_POSTREBOOT:-}" = "1" ]; then
-  echo "--- 9. Post-reboot checks ---"
-  run docker compose -f compose.yaml -f compose.pi.yaml ps
-  run curl --fail --silent http://127.0.0.1:18080/healthz
-  run curl --fail --silent http://127.0.0.1:18080/metrics
-  run findmnt -n -o SOURCE,FSTYPE,TARGET --target "$data_root"
-  run stat -c '%U:%G %a %n' "$data_root/postgres" "$data_root/files" "$data_root/backups"
-  echo ""
-  echo "--- Post-reboot checks complete ---"
-fi
-
 echo ""
 echo "=== Pi drill complete ==="
-} 2>&1 | tee "$output_file"
+} 2>&1 | tee -a "$output_file"
 
 echo ""
 echo "Drill output saved to $output_file"
