@@ -32,6 +32,7 @@ func TestM6TOTPFlowAndAAL(t *testing.T) {
 		t.Fatal(err)
 	}
 	defer cleanupGatewayProject(t, adminURL, p)
+	exerciseM6cUpgrade(t, adminURL, p)
 	t.Setenv("PIBASE_AUTH_EXPOSE_TOKENS", "true")
 	t.Setenv("PIBASE_ENV", "test")
 	server, err := New(ctx, databaseURL(t, adminURL, "_control", "authenticator", password), masterKey, 0, false)

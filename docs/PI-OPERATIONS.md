@@ -44,8 +44,33 @@ project. Stop the gateway during restore so no writes race with the swap.
 Restore targets an existing pibase project database. Its operator-owned
 extension guard lives in `pg_catalog`, is intentionally absent from `pg_dump`,
 and remains in place while the archive is restored; the archive neither creates
-nor replaces that guard. Provision projects with `project-create` rather than
-restoring into a manually created database.
+nor replaces that guard. Restore reapplies the canonical project-schema upgrade
+so archives taken before M6c return with operator-owned managed schemas.
+Provision projects with `project-create` rather than restoring into a manually
+created database.
+
+Emergency M6c ownership rollback is per project and restores only the version 7
+schema ownership boundary. Stop the gateway first. This deliberately gives the
+project admin `CREATE` again and should be used only while diagnosing an upgrade:
+
+```sh
+psql "$PROJECT_DATABASE_URL" -v admin_role="$PROJECT_ADMIN_ROLE" <<'SQL'
+BEGIN;
+ALTER SCHEMA auth OWNER TO :"admin_role";
+ALTER SCHEMA storage OWNER TO :"admin_role";
+ALTER SCHEMA realtime OWNER TO :"admin_role";
+ALTER SCHEMA cron OWNER TO :"admin_role";
+COMMIT;
+SQL
+psql "$CONTROL_DATABASE_URL" -v project_id="$PROJECT_ID" <<'SQL'
+UPDATE control.projects
+SET schema_version=7, schema_error=NULL
+WHERE id=:'project_id';
+SQL
+```
+
+Restarting bootstrap reapplies version 8. Back up before rollback; database
+ownership and managed-object ownership are unchanged by this snippet.
 
 For unattended backups, use a root-owned environment file and systemd timer per
 project. Copy encrypted `.pib` files to a second device or S3-compatible remote;

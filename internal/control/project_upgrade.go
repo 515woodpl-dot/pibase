@@ -1,11 +1,20 @@
 package control
 
-import "github.com/jackc/pgx/v5"
+import (
+	"context"
+	"fmt"
+	"strings"
+
+	"github.com/jackc/pgx/v5"
+)
 
 // Project schema versions are recorded in _control so workers can distinguish
 // managed customer databases from the intentionally schema-less M0 measurement
-// databases. Version 5 introduced realtime/cron; version 6 added TOTP MFA.
-const currentProjectSchemaVersion = 7
+// databases. Version 5 introduced realtime/cron; version 6 added TOTP MFA;
+// version 8 moved managed schemas from the customer admin to the operator.
+const currentProjectSchemaVersion = 8
+
+var managedSchemas = []string{"auth", "storage", "realtime", "cron"}
 
 const extensionGuardSQL = `
 CREATE OR REPLACE FUNCTION pg_catalog.pibase_guard_extension_ddl() RETURNS event_trigger
@@ -27,8 +36,8 @@ EXECUTE FUNCTION pg_catalog.pibase_guard_extension_ddl();
 func managedProjectUpgradeSQL(anon, authenticated, service, admin string) string {
 	q := func(role string) string { return pgx.Identifier{role}.Sanitize() }
 	return `
-CREATE SCHEMA IF NOT EXISTS storage AUTHORIZATION ` + q(admin) + `;
-ALTER SCHEMA storage OWNER TO ` + q(admin) + `;
+CREATE SCHEMA IF NOT EXISTS storage;
+ALTER SCHEMA storage OWNER TO CURRENT_USER;
 REVOKE ALL ON SCHEMA storage FROM PUBLIC;
 CREATE TABLE IF NOT EXISTS storage.buckets (
   id text PRIMARY KEY,
@@ -78,8 +87,8 @@ CREATE POLICY storage_object_owner ON storage.objects FOR ALL TO ` + q(authentic
 DROP POLICY IF EXISTS storage_object_service ON storage.objects;
 CREATE POLICY storage_object_service ON storage.objects FOR ALL TO ` + q(service) + ` USING (true) WITH CHECK (true);
 
-CREATE SCHEMA IF NOT EXISTS realtime AUTHORIZATION ` + q(admin) + `;
-ALTER SCHEMA realtime OWNER TO ` + q(admin) + `;
+CREATE SCHEMA IF NOT EXISTS realtime;
+ALTER SCHEMA realtime OWNER TO CURRENT_USER;
 REVOKE ALL ON SCHEMA realtime FROM PUBLIC;
 CREATE OR REPLACE FUNCTION realtime.notify_change() RETURNS trigger
 LANGUAGE plpgsql SECURITY DEFINER SET search_path=pg_catalog
@@ -109,8 +118,8 @@ REVOKE ALL ON FUNCTION realtime.notify_change(), realtime.enable_table(regclass)
 GRANT USAGE ON SCHEMA realtime TO ` + q(admin) + `;
 GRANT EXECUTE ON FUNCTION realtime.enable_table(regclass) TO ` + q(admin) + `;
 
-CREATE SCHEMA IF NOT EXISTS cron AUTHORIZATION ` + q(admin) + `;
-ALTER SCHEMA cron OWNER TO ` + q(admin) + `;
+CREATE SCHEMA IF NOT EXISTS cron;
+ALTER SCHEMA cron OWNER TO CURRENT_USER;
 REVOKE ALL ON SCHEMA cron FROM PUBLIC;
 CREATE TABLE IF NOT EXISTS cron.jobs (
   id bigint GENERATED ALWAYS AS IDENTITY PRIMARY KEY,
@@ -182,5 +191,55 @@ GRANT USAGE ON SCHEMA cron TO ` + q(admin) + `;
 GRANT ALL PRIVILEGES ON ALL TABLES IN SCHEMA cron TO ` + q(admin) + `;
 GRANT USAGE,SELECT ON ALL SEQUENCES IN SCHEMA cron TO ` + q(admin) + `;
 GRANT EXECUTE ON FUNCTION cron.enqueue_webhook() TO ` + q(admin) + `;
-` + mfaUpgradeSQL
+` + mfaUpgradeSQL + `
+
+ALTER SCHEMA auth OWNER TO CURRENT_USER;
+ALTER SCHEMA storage OWNER TO CURRENT_USER;
+ALTER SCHEMA realtime OWNER TO CURRENT_USER;
+ALTER SCHEMA cron OWNER TO CURRENT_USER;
+REVOKE CREATE ON SCHEMA auth,storage,realtime,cron FROM ` + q(admin) + `;
+GRANT USAGE ON SCHEMA auth,storage,realtime,cron TO ` + q(admin) + `;
+`
+}
+
+// customerManagedObjects returns objects not owned by the operator inside a
+// managed schema. Before M6c the admin could grant CREATE to another project
+// role as well as create objects directly. Moving any such object would
+// silently claim customer state, so the migration fails closed and names it.
+func customerManagedObjects(ctx context.Context, conn *pgx.Conn) ([]string, error) {
+	rows, err := conn.Query(ctx, `
+SELECT identified.type,identified.identity
+FROM pg_shdepend dependency
+CROSS JOIN LATERAL pg_identify_object(
+  dependency.classid,dependency.objid,dependency.objsubid
+) AS identified
+WHERE dependency.refclassid='pg_authid'::regclass
+  AND dependency.refobjid<>(SELECT oid FROM pg_roles WHERE rolname=current_user)
+  AND dependency.deptype='o'
+  AND identified.schema=ANY($1::text[])
+ORDER BY identified.schema,identified.type,identified.identity`, managedSchemas)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	var objects []string
+	for rows.Next() {
+		var objectType, identity string
+		if err := rows.Scan(&objectType, &identity); err != nil {
+			return nil, err
+		}
+		objects = append(objects, fmt.Sprintf("%s %s", objectType, identity))
+	}
+	return objects, rows.Err()
+}
+
+func ensureNoCustomerManagedObjects(ctx context.Context, conn *pgx.Conn) error {
+	objects, err := customerManagedObjects(ctx, conn)
+	if err != nil {
+		return fmt.Errorf("inspect managed schemas for customer objects: %w", err)
+	}
+	if len(objects) != 0 {
+		return fmt.Errorf("customer-owned objects in managed schemas: %s", strings.Join(objects, ", "))
+	}
+	return nil
 }

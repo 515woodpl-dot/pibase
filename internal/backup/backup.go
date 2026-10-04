@@ -12,6 +12,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/515woodpl-dot/pibase/internal/control"
 	"github.com/jackc/pgx/v5"
 )
 
@@ -171,6 +172,11 @@ func Restore(ctx context.Context, adminURL, projectID, storageRoot, source strin
 	cmd := exec.CommandContext(ctx, "pg_restore", "--clean", "--if-exists", "--dbname", withDatabase(adminURL, database), dump)
 	if output, e := cmd.CombinedOutput(); e != nil {
 		return fmt.Errorf("pg_restore: %w: %s", e, strings.TrimSpace(string(output)))
+	}
+	// A pre-M6c archive restores customer ownership of the managed schemas.
+	// Reapply the canonical upgrade before returning the project to service.
+	if err = control.UpgradeProjectSchema(ctx, adminURL, projectID); err != nil {
+		return fmt.Errorf("upgrade restored project schema: %w", err)
 	}
 	newStorage := filepath.Join(work, "storage")
 	target := filepath.Join(storageRoot, projectID)

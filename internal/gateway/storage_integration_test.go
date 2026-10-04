@@ -33,6 +33,7 @@ func TestM3StorageRLSAndSignedURLs(t *testing.T) {
 		t.Fatal(err)
 	}
 	defer cleanupGatewayProject(t, adminURL, p)
+	exerciseM6cUpgrade(t, adminURL, p)
 	root := t.TempDir()
 	t.Setenv("PIBASE_STORAGE_ROOT", root)
 	t.Setenv("PIBASE_STORAGE_MAX_BYTES", "5242880")

@@ -37,6 +37,7 @@ func TestM5RealtimeRLSAndCronOutbox(t *testing.T) {
 		t.Fatal(err)
 	}
 	defer cleanupGatewayProject(t, adminURL, p)
+	exerciseM6cUpgrade(t, adminURL, p)
 	prefix := "p_" + p.ID
 	fixture := `CREATE TABLE public.realtime_rows (id bigint GENERATED ALWAYS AS IDENTITY PRIMARY KEY, owner_id text NOT NULL, note text NOT NULL);
 CREATE TABLE public.cron_runs (id bigint GENERATED ALWAYS AS IDENTITY PRIMARY KEY, note text NOT NULL);

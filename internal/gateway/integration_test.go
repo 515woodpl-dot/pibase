@@ -35,6 +35,7 @@ func TestRESTWithRLS(t *testing.T) {
 		t.Fatal(err)
 	}
 	defer cleanupGatewayProject(t, adminURL, p)
+	exerciseM6cUpgrade(t, adminURL, p)
 
 	prefix := "p_" + p.ID
 	setup := `CREATE TABLE public.categories (
@@ -171,6 +172,7 @@ func TestM2AuthAndUID(t *testing.T) {
 		t.Fatal(err)
 	}
 	defer cleanupGatewayProject(t, adminURL, p)
+	exerciseM6cUpgrade(t, adminURL, p)
 	prefix := "p_" + p.ID
 	fixture := `CREATE TABLE public.private_rows (id bigint GENERATED ALWAYS AS IDENTITY PRIMARY KEY, user_id uuid NOT NULL, value text NOT NULL);
 ALTER TABLE public.private_rows ENABLE ROW LEVEL SECURITY;
@@ -380,6 +382,40 @@ func urlPassword(t *testing.T, raw string) string {
 	}
 	password, _ := parsed.User.Password()
 	return password
+}
+
+// exerciseM6cUpgrade makes the feature suites run against the version 7
+// ownership boundary before exercising the same public behavior. Separate
+// supabase-js gates continue to cover freshly created version 8 projects.
+func exerciseM6cUpgrade(t *testing.T, adminURL string, p control.Project) {
+	t.Helper()
+	ctx := context.Background()
+	projectURL := databaseURL(t, adminURL, p.Database, parsedUsername(t, adminURL), urlPassword(t, adminURL))
+	projectConn, err := pgx.Connect(ctx, projectURL)
+	if err != nil {
+		t.Fatal(err)
+	}
+	admin := pgx.Identifier{"p_" + p.ID + "_admin"}.Sanitize()
+	for _, schema := range []string{"auth", "storage", "realtime", "cron"} {
+		if _, err = projectConn.Exec(ctx, `ALTER SCHEMA `+pgx.Identifier{schema}.Sanitize()+` OWNER TO `+admin); err != nil {
+			projectConn.Close(ctx)
+			t.Fatal(err)
+		}
+	}
+	projectConn.Close(ctx)
+	controlURL := databaseURL(t, adminURL, "_control", parsedUsername(t, adminURL), urlPassword(t, adminURL))
+	controlConn, err := pgx.Connect(ctx, controlURL)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err = controlConn.Exec(ctx, `UPDATE control.projects SET schema_version=7,schema_error=NULL WHERE id=$1`, p.ID); err != nil {
+		controlConn.Close(ctx)
+		t.Fatal(err)
+	}
+	controlConn.Close(ctx)
+	if err := control.UpgradeProjectSchema(ctx, adminURL, p.ID); err != nil {
+		t.Fatal(err)
+	}
 }
 
 func cleanupGatewayProject(t *testing.T, adminURL string, p control.Project) {

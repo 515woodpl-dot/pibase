@@ -230,7 +230,8 @@ func TestBootstrapContinuesPastBrokenProjectSchema(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	_, err = brokenConn.Exec(ctx, `SET ROLE `+pgx.Identifier{brokenInfo.admin}.Sanitize()+`;
+	_, err = brokenConn.Exec(ctx, `ALTER SCHEMA storage OWNER TO `+pgx.Identifier{brokenInfo.admin}.Sanitize()+`;
+SET ROLE `+pgx.Identifier{brokenInfo.admin}.Sanitize()+`;
 DROP TABLE storage.objects;
 DROP TABLE storage.buckets;
 CREATE TABLE storage.buckets(id text primary key);`)
@@ -271,7 +272,7 @@ CREATE TABLE storage.buckets(id text primary key);`)
 	if err := controlConn.QueryRow(ctx, `SELECT COALESCE(schema_error,'') FROM control.projects WHERE id=$1`, broken.ID).Scan(&schemaError); err != nil {
 		t.Fatal(err)
 	}
-	if !strings.Contains(schemaError, "column \"public\" does not exist") {
+	if !strings.Contains(schemaError, "storage.buckets") {
 		t.Fatalf("broken project schema error = %q", schemaError)
 	}
 	projects, err := ListProjects(ctx, adminURL)

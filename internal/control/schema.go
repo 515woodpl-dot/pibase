@@ -143,10 +143,9 @@ func upgradeProjectSchemas(ctx context.Context, controlConn *pgx.Conn, adminURL 
 	if err != nil {
 		return fmt.Errorf("list projects for schema upgrade: %w", err)
 	}
-	type target struct{ id, database, anon, authenticated, service, admin string }
-	var targets []target
+	var targets []projectUpgradeTarget
 	for rows.Next() {
-		var item target
+		var item projectUpgradeTarget
 		if err := rows.Scan(&item.id, &item.database, &item.anon, &item.authenticated, &item.service, &item.admin); err != nil {
 			rows.Close()
 			return err
@@ -159,84 +158,114 @@ func upgradeProjectSchemas(ctx context.Context, controlConn *pgx.Conn, adminURL 
 	}
 	rows.Close()
 	failures := 0
-	recordFailure := func(item target, projectErr error) error {
+	recordFailure := func(item projectUpgradeTarget, projectErr error) error {
 		failures++
-		message := projectErr.Error()
-		if len(message) > 2000 {
-			message = message[:2000]
-		}
+		message := boundedSchemaError(projectErr)
 		slog.Warn("project schema upgrade skipped", "project", item.id, "database", item.database, "error", message)
 		_, err := controlConn.Exec(ctx, `UPDATE control.projects SET schema_error=$2 WHERE id=$1`, item.id, message)
 		return err
 	}
 	for _, item := range targets {
-		projectURL, err := withDatabase(adminURL, item.database)
+		version, err := applyProjectSchemaUpgrade(ctx, adminURL, item)
 		if err != nil {
 			if recordErr := recordFailure(item, err); recordErr != nil {
 				return fmt.Errorf("record project %s schema failure: %w", item.database, recordErr)
 			}
 			continue
 		}
-		project, err := pgx.Connect(ctx, projectURL)
-		if err != nil {
-			if recordErr := recordFailure(item, fmt.Errorf("connect for schema upgrade: %w", err)); recordErr != nil {
-				return fmt.Errorf("record project %s schema failure: %w", item.database, recordErr)
-			}
-			continue
-		}
-		var authReady bool
-		if err = project.QueryRow(ctx, `SELECT to_regclass('auth.users') IS NOT NULL AND to_regclass('auth.refresh_tokens') IS NOT NULL`).Scan(&authReady); err != nil {
-			project.Close(ctx)
-			if recordErr := recordFailure(item, fmt.Errorf("inspect schema: %w", err)); recordErr != nil {
-				return fmt.Errorf("record project %s schema failure: %w", item.database, recordErr)
-			}
-			continue
-		}
-		// M0 measurement databases intentionally predate the auth schema. They
-		// remain useful for resource measurements but have nothing to migrate.
-		if !authReady {
-			project.Close(ctx)
-			if _, err = controlConn.Exec(ctx, `UPDATE control.projects SET schema_version=0,schema_error=NULL WHERE id=$1`, item.id); err != nil {
-				return fmt.Errorf("record measurement project %s schema: %w", item.database, err)
-			}
-			continue
-		}
-		// Install the database-enforced extension boundary separately so a
-		// customer-damaged managed schema cannot roll it back with its upgrade.
-		if _, err = project.Exec(ctx, extensionGuardSQL); err != nil {
-			project.Close(ctx)
-			if recordErr := recordFailure(item, fmt.Errorf("install extension guard: %w", err)); recordErr != nil {
-				return fmt.Errorf("record project %s schema failure: %w", item.database, recordErr)
-			}
-			continue
-		}
-		tx, beginErr := project.Begin(ctx)
-		if beginErr != nil {
-			project.Close(ctx)
-			if recordErr := recordFailure(item, fmt.Errorf("begin schema upgrade: %w", beginErr)); recordErr != nil {
-				return fmt.Errorf("record project %s schema failure: %w", item.database, recordErr)
-			}
-			continue
-		}
-		_, err = tx.Exec(ctx, managedProjectUpgradeSQL(item.anon, item.authenticated, item.service, item.admin))
-		if err == nil {
-			err = tx.Commit(ctx)
-		} else {
-			_ = tx.Rollback(ctx)
-		}
-		project.Close(ctx)
-		if err != nil {
-			if recordErr := recordFailure(item, fmt.Errorf("upgrade schema: %w", err)); recordErr != nil {
-				return fmt.Errorf("record project %s schema failure: %w", item.database, recordErr)
-			}
-			continue
-		}
-		if _, err = controlConn.Exec(ctx, `UPDATE control.projects SET schema_version=$2,schema_error=NULL WHERE id=$1`, item.id, currentProjectSchemaVersion); err != nil {
+		if _, err = controlConn.Exec(ctx, `UPDATE control.projects SET schema_version=$2,schema_error=NULL WHERE id=$1`, item.id, version); err != nil {
 			return fmt.Errorf("record project %s schema: %w", item.database, err)
 		}
 	}
 	if failures > 0 {
 		slog.Warn("project schema upgrades completed with skipped projects", "failures", failures)
+	}
+	return nil
+}
+
+type projectUpgradeTarget struct{ id, database, anon, authenticated, service, admin string }
+
+func boundedSchemaError(projectErr error) string {
+	message := projectErr.Error()
+	if len(message) > 2000 {
+		message = message[:2000]
+	}
+	return message
+}
+
+func applyProjectSchemaUpgrade(ctx context.Context, adminURL string, item projectUpgradeTarget) (int, error) {
+	projectURL, err := withDatabase(adminURL, item.database)
+	if err != nil {
+		return 0, err
+	}
+	project, err := pgx.Connect(ctx, projectURL)
+	if err != nil {
+		return 0, fmt.Errorf("connect for schema upgrade: %w", err)
+	}
+	defer project.Close(ctx)
+	var authReady bool
+	if err = project.QueryRow(ctx, `SELECT to_regclass('auth.users') IS NOT NULL AND to_regclass('auth.refresh_tokens') IS NOT NULL`).Scan(&authReady); err != nil {
+		return 0, fmt.Errorf("inspect schema: %w", err)
+	}
+	// M0 measurement databases intentionally predate the auth schema. They
+	// remain useful for resource measurements but have nothing to migrate.
+	if !authReady {
+		return 0, nil
+	}
+	// Install the database-enforced extension boundary separately so a
+	// customer-damaged managed schema cannot roll it back with its upgrade.
+	if _, err = project.Exec(ctx, extensionGuardSQL); err != nil {
+		return 0, fmt.Errorf("install extension guard: %w", err)
+	}
+	if err = ensureNoCustomerManagedObjects(ctx, project); err != nil {
+		return 0, err
+	}
+	tx, err := project.Begin(ctx)
+	if err != nil {
+		return 0, fmt.Errorf("begin schema upgrade: %w", err)
+	}
+	defer tx.Rollback(ctx)
+	if _, err = tx.Exec(ctx, managedProjectUpgradeSQL(item.anon, item.authenticated, item.service, item.admin)); err != nil {
+		return 0, fmt.Errorf("upgrade schema: %w", err)
+	}
+	if err = tx.Commit(ctx); err != nil {
+		return 0, fmt.Errorf("commit schema upgrade: %w", err)
+	}
+	return currentProjectSchemaVersion, nil
+}
+
+// UpgradeProjectSchema reapplies the canonical managed schema after a restore.
+// It records the same version/error state as bootstrap but only touches the
+// requested project.
+func UpgradeProjectSchema(ctx context.Context, adminURL, id string) error {
+	controlURL, err := withDatabase(adminURL, "_control")
+	if err != nil {
+		return err
+	}
+	controlConn, err := pgx.Connect(ctx, controlURL)
+	if err != nil {
+		return fmt.Errorf("connect control database: %w", err)
+	}
+	defer controlConn.Close(ctx)
+	var item projectUpgradeTarget
+	err = controlConn.QueryRow(ctx, `SELECT id,database_name,anon_role,authenticated_role,service_role,admin_role FROM control.projects WHERE id=$1`, id).
+		Scan(&item.id, &item.database, &item.anon, &item.authenticated, &item.service, &item.admin)
+	if err == pgx.ErrNoRows {
+		return fmt.Errorf("project %q not found", id)
+	}
+	if err != nil {
+		return err
+	}
+	version, upgradeErr := applyProjectSchemaUpgrade(ctx, adminURL, item)
+	if upgradeErr != nil {
+		message := boundedSchemaError(upgradeErr)
+		if _, err = controlConn.Exec(ctx, `UPDATE control.projects SET schema_error=$2 WHERE id=$1`, id, message); err != nil {
+			return fmt.Errorf("record project %s schema failure: %w", item.database, err)
+		}
+		return upgradeErr
+	}
+	if _, err = controlConn.Exec(ctx, `UPDATE control.projects SET schema_version=$2,schema_error=NULL WHERE id=$1`, id, version); err != nil {
+		return fmt.Errorf("record project %s schema: %w", item.database, err)
 	}
 	return nil
 }
