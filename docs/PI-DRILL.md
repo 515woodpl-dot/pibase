@@ -61,7 +61,7 @@ PIBASE_DATA_ROOT=/mnt/pibase-ssd/pibase ./scripts/pi-drill.sh
 sudo reboot
 cd ~/datbase
 findmnt -n -o SOURCE,FSTYPE,TARGET --target /mnt/pibase-ssd
-# SOURCE must be UUID=$UUID (or the UUID printed by blkid before reboot).
+# SOURCE must be the device whose UUID was printed by blkid before reboot.
 PIBASE_DATA_ROOT=/mnt/pibase-ssd/pibase PIBASE_DRILL_POSTREBOOT=1 ./scripts/pi-drill.sh
 ```
 

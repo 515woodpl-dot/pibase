@@ -69,7 +69,9 @@ roles table access and enable row-level security. The service key bypasses RLS;
 anon and authenticated keys return no rows until the owner creates a policy.
 Owners who deliberately disable RLS expose the table to the anon key because it
 already has table privileges. Tables that existed before this upgrade are not
-changed. To expose an existing table, run as the project owner:
+changed. A table moved into `public` later is also unchanged and unreachable
+by API roles until its owner grants access. To expose an existing or moved
+table, run as the project owner:
 
 ```sql
 GRANT SELECT, INSERT, UPDATE, DELETE ON public.your_table

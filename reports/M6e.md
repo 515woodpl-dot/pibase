@@ -1,6 +1,6 @@
 # M6e gate report — table defaults and concurrent capacity
 
-**Status:** ready for audit
+**Status:** audit complete
 
 ## What was built
 
@@ -93,6 +93,17 @@ version 10 and therefore are not evidence about pre-version-10 tables.
   control and gateway real-Postgres suites.
 - `scripts/test-supabase-js.sh`: passed on a disposable PostgreSQL and gateway
   stack; the Supabase client and realtime acceptance cases passed.
+
+### Re-review closure
+
+- Removed `ALTER TABLE` from the event-trigger scope so owner changes to
+  existing relations neither enable RLS nor alter their ACLs. The trigger no
+  longer changes per-session configuration.
+- A table moved into `public` stays inaccessible to API roles until its owner
+  grants access explicitly. Materialized-view privilege revocation now targets
+  only roles that actually hold an ACL entry.
+- Added regression coverage for moved-table access and existing-table `ALTER`
+  operations. Both full verification gates above were rerun after this change.
 
 ### What was NOT tested
 

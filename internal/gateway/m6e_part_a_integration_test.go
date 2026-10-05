@@ -60,7 +60,7 @@ INSERT INTO public.policy_rows VALUES ('00000000-0000-0000-0000-000000000001','o
 	defer hs.Close()
 	jwtSecret := gatewayJWTSecret(t, adminURL, p.ID, master)
 	token := m6eToken(t, jwtSecret, "00000000-0000-0000-0000-000000000001")
-	relations := []string{"plain", "ctas", "sel_into", "like_table", "part_parent", "part_child", "plain_view", "plain_mat", "moved"}
+	relations := []string{"plain", "ctas", "sel_into", "like_table", "part_parent", "part_child", "plain_view", "plain_mat"}
 	for _, relation := range relations {
 		t.Run(relation, func(t *testing.T) {
 			for _, credential := range []string{p.AnonKey, token} {
@@ -80,6 +80,12 @@ INSERT INTO public.policy_rows VALUES ('00000000-0000-0000-0000-000000000001','o
 			}
 		})
 	}
+	for _, credential := range []string{p.AnonKey, p.ServiceKey} {
+		status, body := m6eRequest(t, hs.Client(), http.MethodGet, hs.URL+"/rest/v1/moved?select=*", p.AnonKey, credential, "")
+		if status != http.StatusNotFound {
+			t.Fatalf("moved table should remain unreachable before owner grants access: status=%d body=%s", status, body)
+		}
+	}
 	for _, relation := range relations {
 		body := requestJSON(t, hs.Client(), http.MethodGet, hs.URL+"/rest/v1/"+relation+"?select=*", p.ServiceKey, "", "", http.StatusOK)
 		var rows []map[string]any
@@ -93,6 +99,49 @@ INSERT INTO public.policy_rows VALUES ('00000000-0000-0000-0000-000000000001','o
 		if err := json.Unmarshal(body, &rows); err != nil || len(rows) != 1 {
 			t.Fatalf("policy isolation %s: body=%s err=%v", user, body, err)
 		}
+	}
+
+	authenticatedRole := pgx.Identifier{"p_" + p.ID + "_authenticated"}.Sanitize()
+	if err := adminsql.ApplyMigration(ctx, authURL, p.ID, "m6e_alter_table_regression", `CREATE TABLE public.old_policy(note text); ALTER TABLE public.old_policy DISABLE ROW LEVEL SECURITY; GRANT SELECT ON public.old_policy TO `+authenticatedRole+`; ALTER TABLE public.old_policy ENABLE ROW LEVEL SECURITY; CREATE POLICY old_policy_members ON public.old_policy FOR SELECT TO `+authenticatedRole+` USING (true); INSERT INTO public.old_policy VALUES ('members-only'); CREATE TABLE public.old_private(note text); ALTER TABLE public.old_private DISABLE ROW LEVEL SECURITY; REVOKE ALL ON public.old_private FROM `+pgx.Identifier{"p_" + p.ID + "_anon"}.Sanitize()+`, `+authenticatedRole+`, `+pgx.Identifier{"p_" + p.ID + "_service_role"}.Sanitize()+`;`); err != nil {
+		t.Fatal(err)
+	}
+	status, body := m6eRequest(t, hs.Client(), http.MethodGet, hs.URL+"/rest/v1/old_policy?select=*", p.AnonKey, p.AnonKey, "")
+	if status != http.StatusNotFound {
+		t.Fatalf("old policy anon access before ALTER: %d %s", status, body)
+	}
+	if _, err := adminsql.Run(ctx, authURL, p.ID, `ALTER TABLE public.old_policy ADD COLUMN extra text`); err != nil {
+		t.Fatal(err)
+	}
+	status, body = m6eRequest(t, hs.Client(), http.MethodGet, hs.URL+"/rest/v1/old_policy?select=*", p.AnonKey, p.AnonKey, "")
+	if status != http.StatusNotFound {
+		t.Fatalf("old policy anon access after ALTER: %d %s", status, body)
+	}
+	if _, err := adminsql.Run(ctx, authURL, p.ID, `ALTER TABLE public.plain DISABLE ROW LEVEL SECURITY`); err != nil {
+		t.Fatal(err)
+	}
+	projectURL := databaseURL(t, adminURL, p.Database, parsedUsername(t, adminURL), urlPassword(t, adminURL))
+	conn, err := pgx.Connect(ctx, projectURL)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer conn.Close(ctx)
+	var plainRLS bool
+	if err := conn.QueryRow(ctx, `SELECT relrowsecurity FROM pg_class WHERE oid='public.plain'::regclass`).Scan(&plainRLS); err != nil || plainRLS {
+		t.Fatalf("RLS disable did not stick: rls=%v err=%v", plainRLS, err)
+	}
+	var beforeACL, afterACL string
+	var beforeRLS, afterRLS bool
+	if err := conn.QueryRow(ctx, `SELECT coalesce(relacl::text,''), relrowsecurity FROM pg_class WHERE oid='public.old_private'::regclass`).Scan(&beforeACL, &beforeRLS); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := adminsql.Run(ctx, authURL, p.ID, `ALTER TABLE public.old_private ADD COLUMN extra text; ALTER TABLE public.old_private ADD CONSTRAINT old_private_note_check CHECK (note IS NULL OR note <> ''); ALTER TABLE public.old_private RENAME COLUMN extra TO extra_renamed`); err != nil {
+		t.Fatal(err)
+	}
+	if err := conn.QueryRow(ctx, `SELECT coalesce(relacl::text,''), relrowsecurity FROM pg_class WHERE oid='public.old_private'::regclass`).Scan(&afterACL, &afterRLS); err != nil {
+		t.Fatal(err)
+	}
+	if beforeACL != afterACL || beforeRLS != afterRLS {
+		t.Fatalf("existing table changed by ALTER: before acl=%q rls=%v after acl=%q rls=%v", beforeACL, beforeRLS, afterACL, afterRLS)
 	}
 }
 
