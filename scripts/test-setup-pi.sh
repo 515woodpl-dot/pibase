@@ -103,6 +103,7 @@ test ! -s "$invalid_root/log/sudo"
 
 run_case packaged /srv/pibase 2.26.1-4 1
 grep -q 'docker-compose' "$test_root/packaged/log/sudo"
+grep -q -- '-o 65532 -g 998 /srv/pibase/files /srv/pibase/backups' "$test_root/packaged/log/sudo"
 test ! -s "$test_root/packaged/log/curl"
 
 run_case fallback /mnt/pibase 1.29.2-3 0

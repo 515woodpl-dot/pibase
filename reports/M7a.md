@@ -50,6 +50,21 @@ supabase-js M5b realtime acceptance passed
 - Capacity harness response bodies at 40 projects; it has status/latency only.
 - M7b tables, row editor, and user management were intentionally not started.
 
+## Post-audit ownership repair
+
+The Pi deployment exposed a host-bind-mount ownership defect: `files` and
+`backups` were owned by the host operator while `admin` and `ops` run as UID
+65532/GID 998. `setup-pi.sh` now creates those two application-writable
+directories with the container identity; its regression script asserts the
+exact ownership command. Existing installations must rerun the setup script
+with the same data root once.
+
+On the engineering Pi after repairing the existing two directories, the
+authenticated dashboard backup returned HTTP 201 and wrote
+`pibase-4cdbd744-20261005T190802.469076522Z.pib`; the equivalent `ops backup`
+command also completed and wrote a second `.pib` file. `scripts/test-setup-pi.sh`
+passed.
+
 ## Manual click-through checklist
 
 1. Start the stack and browse `http://127.0.0.1:18081/dashboard`.
