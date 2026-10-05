@@ -67,8 +67,7 @@ sudo usermod -aG docker "$(id -un)"
 # containers deliberately run as the fixed unprivileged pibase UID/GID, so the
 # two application-writable bind mounts must use that numeric ownership instead
 # of the host operator's account.
-sudo install -d -m 0750 -o "$(id -un)" -g "$(id -gn)" "$data_root" "$data_root/postgres"
-sudo install -d -m 0750 -o 65532 -g 998 "$data_root/files" "$data_root/backups"
+sudo install -d -m 0750 -o "$(id -un)" -g "$(id -gn)" "$data_root" "$data_root/postgres" "$data_root/files" "$data_root/backups"
 
 filesystem="$(findmnt -n -o FSTYPE --target "$data_root")"
 case "$filesystem" in ext4|xfs|btrfs) ;; *) echo "warning: $data_root uses $filesystem; ext4 on a USB3 SSD is recommended" >&2;; esac

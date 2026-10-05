@@ -10,6 +10,7 @@ if [ -e .env ]; then
   if ! grep -q '^PIBASE_OPERATOR_TOKEN=' .env; then
     printf 'PIBASE_OPERATOR_TOKEN=%s\n' "$(head -c 32 /dev/urandom | base64 | tr -d '\n')" >> .env
   fi
+	if ! grep -q '^PIBASE_UID=' .env; then printf 'PIBASE_UID=%s\nPIBASE_GID=%s\n' "$(id -u)" "$(id -g)" >> .env; fi
   exit 0
 fi
 
@@ -26,6 +27,8 @@ authenticator_password="$(od -An -N32 -tx1 /dev/urandom | tr -d ' \n')"
 master_key="$(head -c 32 /dev/urandom | base64 | tr -d '\n')"
 backup_key="$(head -c 32 /dev/urandom | base64 | tr -d '\n')"
 operator_token="$(head -c 32 /dev/urandom | base64 | tr -d '\n')"
+operator_uid="$(id -u)"
+operator_gid="$(id -g)"
 sed \
   -e "s|^POSTGRES_PASSWORD=.*|POSTGRES_PASSWORD=$postgres_password|" \
   -e "s|^PIBASE_AUTHENTICATOR_PASSWORD=.*|PIBASE_AUTHENTICATOR_PASSWORD=$authenticator_password|" \
@@ -33,5 +36,7 @@ sed \
   -e "s|^PIBASE_BACKUP_KEY=.*|PIBASE_BACKUP_KEY=$backup_key|" \
   -e "s|^PIBASE_OPERATOR_TOKEN=.*|PIBASE_OPERATOR_TOKEN=$operator_token|" \
   -e "s|^PIBASE_DATA_ROOT=.*|PIBASE_DATA_ROOT=$data_root|" \
+  -e "s|^PIBASE_UID=.*|PIBASE_UID=$operator_uid|" \
+  -e "s|^PIBASE_GID=.*|PIBASE_GID=$operator_gid|" \
   .env.example > .env
 chmod 600 .env

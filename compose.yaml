@@ -38,6 +38,7 @@ services:
     restart: "no"
 
   gateway:
+	user: "${PIBASE_UID:?set PIBASE_UID}:${PIBASE_GID:?set PIBASE_GID}"
     build:
       context: .
       target: gateway
@@ -60,6 +61,7 @@ services:
       - backup-data:/data/backups
 
   admin:
+	user: "${PIBASE_UID:?set PIBASE_UID}:${PIBASE_GID:?set PIBASE_GID}"
     build:
       context: .
       target: ops
@@ -87,6 +89,7 @@ services:
       - backup-data:/data/backups
 
   ops:
+	user: "${PIBASE_UID:?set PIBASE_UID}:${PIBASE_GID:?set PIBASE_GID}"
     profiles: ["tools"]
     build:
       context: .

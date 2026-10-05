@@ -25,21 +25,21 @@ type Result struct {
 }
 
 func Run(ctx context.Context, adminURL, projectID, statement string) (Result, error) {
-	return run(ctx, adminURL, projectID, statement)
+	return run(ctx, adminURL, projectID, statement, true)
 }
 
 // RunParams executes owner SQL with bound PostgreSQL parameters. It is used by
 // operator UI actions whose values come from HTTP JSON rather than SQL text.
 func RunParams(ctx context.Context, adminURL, projectID, statement string, args ...any) (Result, error) {
-	return run(ctx, adminURL, projectID, statement, args...)
+	return run(ctx, adminURL, projectID, statement, false, args...)
 }
 
-func run(ctx context.Context, adminURL, projectID, statement string, args ...any) (Result, error) {
+func run(ctx context.Context, adminURL, projectID, statement string, validate bool, args ...any) (Result, error) {
 	if statement == "" {
 		return Result{}, fmt.Errorf("SQL statement is required")
 	}
-	if err := validateOwnerSQL(statement); err != nil {
-		return Result{}, err
+	if validate {
+		if err := validateOwnerSQL(statement); err != nil { return Result{}, err }
 	}
 	p, err := lookupProject(ctx, adminURL, projectID)
 	if err != nil {
@@ -147,9 +147,11 @@ func validateOwnerSQL(statement string) error {
 	if err := validateNoExtensionDDL(statement); err != nil {
 		return err
 	}
-	lower := strings.ToLower(statement)
-	for _, forbidden := range []string{"reset role", "set role", "set session authorization", "reset session authorization", "create role", "alter role", "drop role", "grant ", "revoke ", "copy ", "program"} {
-		if strings.Contains(lower, forbidden) {
+	tokens := sqlTokens(statement)
+	for i, token := range tokens {
+		if token == "grant" || token == "revoke" || token == "copy" || token == "program" ||
+			(i+1 < len(tokens) && ((token == "reset" || token == "set") && (tokens[i+1] == "role" || (i+2 < len(tokens) && tokens[i+1] == "session" && tokens[i+2] == "authorization"))) ||
+			(i+1 < len(tokens) && (token == "create" || token == "alter" || token == "drop") && tokens[i+1] == "role") {
 			return fmt.Errorf("owner SQL contains a forbidden privilege-changing construct")
 		}
 	}

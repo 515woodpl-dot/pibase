@@ -16,7 +16,7 @@ COPY --from=toolchain /usr/local/go /usr/local/go
 ENV PATH="/usr/local/go/bin:${PATH}" GOPATH=/go
 
 FROM postgres:16-bookworm AS ops
-RUN useradd --system --uid 65532 --home /nonexistent --shell /usr/sbin/nologin pibase
+RUN groupadd --gid 65532 pibase && useradd --system --uid 65532 --gid 65532 --home /nonexistent --shell /usr/sbin/nologin pibase
 COPY --from=build --chown=pibase:pibase /out/pibase /pibase
 COPY --from=build --chown=pibase:pibase /out/data /data
 USER pibase
