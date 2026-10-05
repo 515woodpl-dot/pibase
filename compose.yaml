@@ -62,7 +62,7 @@ services:
   admin:
     build:
       context: .
-      target: gateway
+      target: ops
     command: ["admin-serve"]
     environment:
       PIBASE_ADMIN_DATABASE_URL: postgres://postgres:${POSTGRES_PASSWORD}@postgres:5432/postgres

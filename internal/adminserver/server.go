@@ -11,7 +11,6 @@ import (
 	"os"
 	"path/filepath"
 	"strings"
-	"time"
 
 	"github.com/515woodpl-dot/pibase/internal/adminsql"
 	"github.com/515woodpl-dot/pibase/internal/backup"
@@ -51,6 +50,14 @@ func (s *Server) Handler() http.Handler {
 	mux.HandleFunc("POST /_pibase/projects/{id}/backup", s.backup)
 	mux.HandleFunc("GET /_pibase/projects/{id}/backups", s.backups)
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		// The page itself is static and holds no data or secrets. A browser
+		// cannot send the bearer token on navigation, so only the page is
+		// served without it; every /_pibase/ endpoint requires the token.
+		if r.Method == http.MethodGet && (r.URL.Path == "/" || r.URL.Path == "/dashboard") {
+			w.Header().Set("Cache-Control", "no-store")
+			s.dashboard(w, r)
+			return
+		}
 		if !s.authorized(r) {
 			w.Header().Set("WWW-Authenticate", "Bearer")
 			http.Error(w, "operator authentication required", http.StatusUnauthorized)
@@ -170,15 +177,15 @@ func (s *Server) extension(w http.ResponseWriter, r *http.Request) {
 	w.WriteHeader(204)
 }
 func (s *Server) backup(w http.ResponseWriter, r *http.Request) {
-	id := r.PathValue("id")
-	dst := filepath.Join(s.BackupRoot, id+"-"+time.Now().UTC().Format("20060102T150405Z")+".pibase")
 	var k [32]byte
 	copy(k[:], s.BackupKey)
-	if err := backup.Backup(r.Context(), s.AdminURL, id, s.StorageRoot, dst, k); err != nil {
+	// The backup package takes a destination directory and names the file.
+	file, err := backup.BackupTo(r.Context(), s.AdminURL, r.PathValue("id"), s.StorageRoot, s.BackupRoot, k)
+	if err != nil {
 		fail(w, err)
 		return
 	}
-	writeJSON(w, 201, map[string]string{"file": filepath.Base(dst)})
+	writeJSON(w, 201, map[string]string{"file": filepath.Base(file)})
 }
 func (s *Server) backups(w http.ResponseWriter, r *http.Request) {
 	entries, err := os.ReadDir(s.BackupRoot)
@@ -186,17 +193,54 @@ func (s *Server) backups(w http.ResponseWriter, r *http.Request) {
 		fail(w, err)
 		return
 	}
-	prefix := r.PathValue("id") + "-"
+	id := r.PathValue("id")
 	out := make([]map[string]any, 0)
 	for _, e := range entries {
-		if e.IsDir() || !strings.HasPrefix(e.Name(), prefix) {
+		name := e.Name()
+		ours := strings.HasPrefix(name, "pibase-"+id+"-") || strings.HasPrefix(name, "pre-restore-"+id+"-")
+		if e.IsDir() || !ours || !strings.HasSuffix(name, ".pib") {
 			continue
 		}
-		i, _ := e.Info()
-		out = append(out, map[string]any{"name": e.Name(), "size": i.Size(), "time": i.ModTime()})
+		i, err := e.Info()
+		if err != nil {
+			continue
+		}
+		out = append(out, map[string]any{"name": name, "size": i.Size(), "time": i.ModTime()})
 	}
 	writeJSON(w, 200, out)
 }
 
-const page = `<!doctype html><meta charset="utf-8"><title>pibase operator</title><h1>pibase operator</h1><p>Operator token: <input id="token" type="password"><button id="load">Load projects</button></p><pre id="out"></pre><h2>Create project</h2><input id="name"><button id="create">Create</button><h2>Owner SQL / migrations</h2><p>Project id <input id="project"></p><textarea id="sql" rows="8" cols="80"></textarea><p><button id="run">Run SQL</button> <input id="migration" placeholder="migration name"><button id="migrate">Apply migration</button></p><h2>Extensions and backups</h2><button id="postgis">Enable PostGIS</button> <button id="vector">Enable pgvector</button> <button id="backup">Back up now</button><script>
-const q=id=>document.getElementById(id), out=q('out'), auth=()=>({Authorization:'Bearer '+q('token').value,'Content-Type':'application/json'});async function call(path,opt={}){opt.headers={...auth(),...(opt.headers||{})};let r=await fetch(path,opt),t=await r.text();out.textContent=r.ok?t:r.status+' '+t;return r}q('load').onclick=()=>call('/_pibase/projects').then(async r=>{if(r.ok)out.textContent=JSON.stringify(await r.json(),null,2)});q('create').onclick=()=>call('/_pibase/projects',{method:'POST',body:JSON.stringify({name:q('name').value})});q('run').onclick=()=>call('/_pibase/projects/'+encodeURIComponent(q('project').value)+'/sql',{method:'POST',body:JSON.stringify({sql:q('sql').value})});q('migrate').onclick=()=>call('/_pibase/projects/'+encodeURIComponent(q('project').value)+'/migrations',{method:'POST',body:JSON.stringify({name:q('migration').value,sql:q('sql').value})});q('postgis').onclick=()=>call('/_pibase/projects/'+encodeURIComponent(q('project').value)+'/extensions/postgis',{method:'POST'});q('vector').onclick=()=>call('/_pibase/projects/'+encodeURIComponent(q('project').value)+'/extensions/pgvector',{method:'POST'});q('backup').onclick=()=>call('/_pibase/projects/'+encodeURIComponent(q('project').value)+'/backup',{method:'POST'});</script>`
+const page = `<!doctype html><meta charset="utf-8"><title>pibase operator</title><h1>pibase operator</h1>
+<p>Operator token: <input id="token" type="password"> <button id="load">Load projects</button></p>
+<h2>Create project</h2><p>Name <input id="name"> <button id="create">Create</button> (keys are shown once, below)</p>
+<h2>Selected project</h2><p>Project id <input id="project"></p>
+<p><button id="postgis">Enable PostGIS</button> <button id="vector">Enable pgvector</button> <button id="backup">Back up now</button> <button id="backups">List backups</button> <button id="migrations">List applied migrations</button></p>
+<p>Delete: type the project id again <input id="confirm"> <button id="delete">Delete project</button></p>
+<h2>Owner SQL / migration</h2><textarea id="sql" rows="8" cols="80"></textarea>
+<p><button id="run">Run SQL</button> Migration name <input id="migration"> <button id="migrate">Apply as migration</button></p>
+<h2>Result</h2><pre id="out"></pre>
+<script>
+const q=id=>document.getElementById(id), out=q('out');
+const auth=()=>({Authorization:'Bearer '+q('token').value,'Content-Type':'application/json'});
+const proj=()=>'/_pibase/projects/'+encodeURIComponent(q('project').value);
+async function call(path,opt={}){
+  opt.headers=auth(); out.textContent='Working...';
+  try{
+    const r=await fetch(path,opt), t=await r.text(); let shown=t;
+    if(r.ok){ try{ shown=JSON.stringify(JSON.parse(t),null,2) }catch(e){} if(!shown) shown='Done ('+r.status+')'; }
+    else shown='Error '+r.status+': '+t;
+    out.textContent=shown; return r;
+  }catch(e){ out.textContent='Request failed: '+e }
+}
+const body=o=>({method:'POST',body:JSON.stringify(o)});
+q('load').onclick=()=>call('/_pibase/projects');
+q('create').onclick=()=>call('/_pibase/projects',body({name:q('name').value}));
+q('run').onclick=()=>call(proj()+'/sql',body({sql:q('sql').value}));
+q('migrate').onclick=()=>call(proj()+'/migrations',body({name:q('migration').value,sql:q('sql').value}));
+q('migrations').onclick=()=>call(proj()+'/sql',body({sql:'SELECT name, applied_at FROM public.pibase_migrations ORDER BY applied_at'}));
+q('postgis').onclick=()=>call(proj()+'/extensions/postgis',{method:'POST'});
+q('vector').onclick=()=>call(proj()+'/extensions/pgvector',{method:'POST'});
+q('backup').onclick=()=>call(proj()+'/backup',{method:'POST'});
+q('backups').onclick=()=>call(proj()+'/backups');
+q('delete').onclick=()=>call(proj(),{method:'DELETE',body:JSON.stringify({confirm:q('confirm').value})});
+</script>`

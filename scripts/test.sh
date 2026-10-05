@@ -32,7 +32,7 @@ test_postgres_endpoint="$(docker port "$test_postgres" 5432/tcp)"
 test_postgres_port="${test_postgres_endpoint##*:}"
 docker run --rm --network host -v "$PWD:/src" -v pibase-go-mod:/go/pkg/mod -v pibase-go-build:/root/.cache/go-build -w /src \
   -e PIBASE_TEST_ADMIN_DATABASE_URL="postgres://postgres:$postgres_password@127.0.0.1:$test_postgres_port/postgres" \
-  "$test_image" go test -p 1 -count=1 ./internal/control ./internal/gateway
+  "$test_image" go test -p 1 -count=1 ./internal/backup ./internal/control ./internal/gateway ./internal/adminserver
 cleanup_test_postgres
 trap - EXIT INT TERM
 docker run --rm -v "$PWD:/src" -v pibase-go-mod:/go/pkg/mod -v pibase-go-build:/root/.cache/go-build -w /src -e GOOS=linux -e GOARCH=arm64 -e CGO_ENABLED=0 \

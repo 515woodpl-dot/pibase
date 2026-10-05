@@ -633,6 +633,9 @@ func writeAPIError(w http.ResponseWriter, err error) {
 	var requestErr requestError
 	if errors.As(err, &requestErr) {
 		status, message = requestErr.status, requestErr.message
+		if status == http.StatusServiceUnavailable {
+			w.Header().Set("Retry-After", "1")
+		}
 	} else {
 		var pgErr *pgconn.PgError
 		if errors.As(err, &pgErr) {

@@ -33,6 +33,12 @@ func Backup(ctx context.Context, adminURL, projectID, storageRoot, destination s
 	return nil
 }
 
+// BackupTo writes an encrypted archive into the destination directory and
+// returns its path without printing it. The operator dashboard uses it.
+func BackupTo(ctx context.Context, adminURL, projectID, storageRoot, destination string, key [32]byte) (string, error) {
+	return backup(ctx, adminURL, projectID, storageRoot, destination, key, "pibase")
+}
+
 func backup(ctx context.Context, adminURL, projectID, storageRoot, destination string, key [32]byte, prefix string) (final string, err error) {
 	database, err := projectDatabase(ctx, adminURL, projectID)
 	if err != nil {
@@ -208,7 +214,9 @@ func Restore(ctx context.Context, adminURL, projectID, storageRoot, source strin
 	upgradeErr := control.UpgradeProjectSchema(ctx, adminURL, projectID)
 	newStorage := filepath.Join(work, "storage")
 	target := filepath.Join(storageRoot, projectID)
-	old := target + ".before-restore-" + time.Now().UTC().Format("20060102T150405Z")
+	// Nanosecond precision: two restores of one project within the same second
+	// must not collide on the saved copy of the previous file tree.
+	old := target + ".before-restore-" + time.Now().UTC().Format("20060102T150405.000000000Z")
 	if _, e := os.Stat(target); e == nil {
 		if e = os.Rename(target, old); e != nil {
 			return e

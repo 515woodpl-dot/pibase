@@ -1,6 +1,6 @@
 # M7a gate report — isolated operator listener and capacity limits
 
-**Status:** ready for audit
+**Status:** approved after auditor-applied fixes (see `reviews/M7a-review.md` on `pibase/review-m7`)
 
 ## What was built
 
@@ -68,3 +68,46 @@ supabase-js M5b realtime acceptance passed
 1. The 40-project harness recorded 148 non-2xx responses but cannot preserve
    their response bodies. Should the harness record a bounded sample of bodies
    before tuning the connection limit further?
+
+## Auditor-applied fixes (2026-10-05)
+
+Applied by the auditor at the owner's request, so these changes have **not** had an
+independent review.
+
+- **Page could not load in a browser.** Every route, including `GET /dashboard`, required the
+  bearer token, which a browser cannot send on navigation. The static page (no data, no
+  secrets) now loads without the token; every `/_pibase/` endpoint and every non-GET request
+  still returns 401 without it.
+- **Backup wrote a directory and the list was always empty.** The handler passed a file name
+  where the backup package expects a directory. It now writes into the backup root and returns
+  the real file name; the list shows that project's `pibase-<id>-*.pib` and
+  `pre-restore-<id>-*.pib` files.
+- **Admin service image.** `compose.yaml` built the admin service from the distroless
+  `gateway` target, which has no `pg_dump`. It now uses the `ops` target.
+- **Page controls.** Added delete (typed id), list backups, and list applied migrations.
+- **`Retry-After: 1`** is now sent on the slot-timeout 503 as well as on PostgreSQL `53300`.
+- **Restore name collision.** Two restores of one project within the same second failed with
+  `file exists` after the database had already been restored. The saved-copy name now has
+  nanosecond precision. This predates M7a and showed up as a flaky backup test.
+- **Gate script.** `scripts/test.sh` now also runs `./internal/backup` and
+  `./internal/adminserver` in the real-Postgres step; the backup suite was never part of it.
+- **Tests.** `TestOperatorDashboardEndpoints` drives create, list (no keys), migration, SQL,
+  backup, backup list, mistyped delete and delete against real PostgreSQL.
+
+Capacity question answered from the committed raw file: at 40 projects all 148 failures are
+HTTP `503` (none are `400`), so no response-body sampling is needed.
+
+Run on Linux x86_64, Go 1.24.7, fresh PostgreSQL 16.13, twice in a row
+(`go vet ./...` clean, arm64 cross-build passes):
+
+```
+$ go test -p 1 -count=1 ./internal/backup ./internal/control ./internal/gateway ./internal/adminserver ./cmd/...
+ok  	github.com/515woodpl-dot/pibase/internal/backup	3.144s
+ok  	github.com/515woodpl-dot/pibase/internal/control	7.471s
+ok  	github.com/515woodpl-dot/pibase/internal/gateway	20.013s
+ok  	github.com/515woodpl-dot/pibase/internal/adminserver	0.523s
+ok  	github.com/515woodpl-dot/pibase/cmd/pibase	0.005s
+```
+
+Not run for this commit: `scripts/test.sh`, `scripts/test-supabase-js.sh`, the Compose stack
+with the `ops`-based admin service, and the page in a real browser.
