@@ -12,8 +12,9 @@ import (
 // managed customer databases from the intentionally schema-less M0 measurement
 // databases. Version 5 introduced realtime/cron; version 6 added TOTP MFA;
 // version 8 moved managed schemas from the customer admin to the operator;
-// version 9 narrowed admin table grants and data-driven CREATE revoke.
-const currentProjectSchemaVersion = 9
+// version 9 narrowed admin table grants and data-driven CREATE revoke; version
+// 10 adds public-table API defaults and RLS for owner-created tables.
+const currentProjectSchemaVersion = 10
 
 var managedSchemas = []string{"auth", "storage", "realtime", "cron"}
 
@@ -32,6 +33,26 @@ CREATE EVENT TRIGGER pibase_guard_extension_ddl
 ON ddl_command_start
 WHEN TAG IN ('CREATE EXTENSION','ALTER EXTENSION','DROP EXTENSION')
 EXECUTE FUNCTION pg_catalog.pibase_guard_extension_ddl();
+
+CREATE OR REPLACE FUNCTION pg_catalog.pibase_enable_public_table_rls() RETURNS event_trigger
+LANGUAGE plpgsql SECURITY DEFINER SET search_path=pg_catalog
+AS $$
+DECLARE command record;
+BEGIN
+  IF (SELECT rolsuper FROM pg_roles WHERE rolname=session_user) THEN
+    RETURN;
+  END IF;
+  FOR command IN SELECT * FROM pg_event_trigger_ddl_commands() LOOP
+    IF command.object_type = 'table' AND command.schema_name = 'public' THEN
+      EXECUTE format('ALTER TABLE %s ENABLE ROW LEVEL SECURITY', command.object_identity);
+    END IF;
+  END LOOP;
+END $$;
+REVOKE ALL ON FUNCTION pg_catalog.pibase_enable_public_table_rls() FROM PUBLIC;
+DROP EVENT TRIGGER IF EXISTS pibase_enable_public_table_rls;
+CREATE EVENT TRIGGER pibase_enable_public_table_rls
+ON ddl_command_end WHEN TAG IN ('CREATE TABLE')
+EXECUTE FUNCTION pg_catalog.pibase_enable_public_table_rls();
 `
 
 func managedProjectUpgradeSQL(anon, authenticated, service, admin string) string {
@@ -202,6 +223,10 @@ ALTER SCHEMA realtime OWNER TO CURRENT_USER;
 ALTER SCHEMA cron OWNER TO CURRENT_USER;
 GRANT USAGE ON SCHEMA auth,storage TO ` + q(anon) + `, ` + q(authenticated) + `, ` + q(service) + `, ` + q(admin) + `;
 GRANT USAGE ON SCHEMA realtime,cron TO ` + q(admin) + `;
+ALTER DEFAULT PRIVILEGES FOR ROLE ` + q(admin) + ` IN SCHEMA public
+GRANT SELECT,INSERT,UPDATE,DELETE ON TABLES TO ` + q(anon) + `, ` + q(authenticated) + `, ` + q(service) + `;
+ALTER DEFAULT PRIVILEGES FOR ROLE ` + q(admin) + ` IN SCHEMA public
+GRANT USAGE,SELECT ON SEQUENCES TO ` + q(anon) + `, ` + q(authenticated) + `, ` + q(service) + `;
 `
 }
 

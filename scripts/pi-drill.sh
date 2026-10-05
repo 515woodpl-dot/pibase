@@ -113,7 +113,7 @@ service_key="$(echo "$project_json" | json_field service_key)"
 [ -n "$project_id" ] && [ -n "$service_key" ] || { echo "FAIL: project creation returned incomplete JSON"; exit 1; }
 echo "Created project: id=$project_id"
 
-printf 'CREATE TABLE public.drill_probe(note text NOT NULL); GRANT SELECT, INSERT ON public.drill_probe TO p_%s_service_role;' "$project_id" | docker compose -f compose.yaml -f compose.pi.yaml --profile tools run --rm -T \
+printf 'CREATE TABLE public.drill_probe(note text NOT NULL);' | docker compose -f compose.yaml -f compose.pi.yaml --profile tools run --rm -T \
   ops migration-apply "$project_id" 0001_pi_drill_probe
 inserted="$(curl --fail --silent -X POST "http://127.0.0.1:18080/rest/v1/drill_probe" \
   -H "apikey: $service_key" \

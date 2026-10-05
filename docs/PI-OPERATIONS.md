@@ -62,6 +62,20 @@ project needs operator attention before the gateway serves it.
 Provision projects with `project-create` rather than restoring into a manually
 created database.
 
+### New public tables
+
+Tables created by the project owner in `public` automatically grant the API
+roles table access and enable row-level security. The service key bypasses RLS;
+anon and authenticated keys return no rows until the owner creates a policy.
+Owners who deliberately disable RLS expose the table to the anon key because it
+already has table privileges. Tables that existed before this upgrade are not
+changed. To expose an existing table, run as the project owner:
+
+```sql
+GRANT SELECT, INSERT, UPDATE, DELETE ON public.your_table
+  TO p_PROJECT_anon, p_PROJECT_authenticated, p_PROJECT_service_role;
+```
+
 Emergency M6c ownership rollback is per project and restores only the version 7
 schema ownership boundary. Stop the gateway first. This deliberately gives the
 project admin `CREATE` again and should be used only while diagnosing an upgrade:

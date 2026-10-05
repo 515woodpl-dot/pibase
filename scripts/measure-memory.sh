@@ -77,7 +77,7 @@ auth_db_url="postgres://authenticator:${auth_password}@127.0.0.1:${pg_port}/_con
 project_keys="$(mktemp)"
 project_id="$(printf '%s\n' "$project_json" | sed -n 's/.*"id"[[:space:]]*:[[:space:]]*"\([^"]*\)".*/\1/p')"
 service_key="$(printf '%s\n' "$project_json" | sed -n 's/.*"service_key"[[:space:]]*:[[:space:]]*"\([^"]*\)".*/\1/p')"
-printf 'CREATE TABLE public.pss_probe(id integer PRIMARY KEY); GRANT SELECT ON public.pss_probe TO p_%s_service_role;' "$project_id" | docker run --rm -i --network host \
+printf 'CREATE TABLE public.pss_probe(id integer PRIMARY KEY);' | docker run --rm -i --network host \
   --env PIBASE_DATABASE_URL="$auth_db_url" "$ops_image" migration-apply "$project_id" 0001_pss_probe
 printf '%s %s\n' "$project_id" "$service_key" >>"$project_keys"
 
@@ -112,7 +112,7 @@ for n in $(seq 2 20); do
     "$ops_image" project-create "$proj_name")"
   project_id="$(printf '%s\n' "$project_json" | sed -n 's/.*"id"[[:space:]]*:[[:space:]]*"\([^"]*\)".*/\1/p')"
   service_key="$(printf '%s\n' "$project_json" | sed -n 's/.*"service_key"[[:space:]]*:[[:space:]]*"\([^"]*\)".*/\1/p')"
-  printf 'CREATE TABLE public.pss_probe(id integer PRIMARY KEY); GRANT SELECT ON public.pss_probe TO p_%s_service_role;' "$project_id" | docker run --rm -i --network host \
+  printf 'CREATE TABLE public.pss_probe(id integer PRIMARY KEY);' | docker run --rm -i --network host \
     --env PIBASE_DATABASE_URL="$auth_db_url" "$ops_image" migration-apply "$project_id" 0001_pss_probe
   printf '%s %s\n' "$project_id" "$service_key" >>"$project_keys"
 done

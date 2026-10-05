@@ -50,7 +50,7 @@ json_field() { sed -n 's/.*"'"$1"'"[[:space:]]*:[[:space:]]*"\([^"]*\)".*/\1/p' 
 project_id="$(printf '%s\n' "$project_json" | json_field id)"
 service_key="$(printf '%s\n' "$project_json" | json_field service_key)"
 [ -n "$project_id" ] && [ -n "$service_key" ]
-printf 'CREATE TABLE public.drill_probe(note text NOT NULL); GRANT SELECT, INSERT ON public.drill_probe TO p_%s_service_role;' "$project_id" | compose --profile tools run --rm -T ops migration-apply "$project_id" 0001_pi_drill_probe
+printf 'CREATE TABLE public.drill_probe(note text NOT NULL);' | compose --profile tools run --rm -T ops migration-apply "$project_id" 0001_pi_drill_probe
 inserted="$(curl --fail --silent -X POST "http://127.0.0.1:${gateway_port}/rest/v1/drill_probe" -H "apikey: $service_key" -H 'Content-Type: application/json' -H 'Prefer: return=representation' -d '{"note":"hello from drill"}')"
 [ "$(printf '%s' "$inserted" | tr -d '[:space:]')" = '[{"note":"hellofromdrill"}]' ]
 read_back="$(curl --fail --silent "http://127.0.0.1:${gateway_port}/rest/v1/drill_probe?select=note" -H "apikey: $service_key")"
