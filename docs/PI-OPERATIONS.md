@@ -23,9 +23,18 @@ which intentionally have no auth schema, are left unchanged.
 Expose port 18080 only through the trusted LAN/Tailnet or an HTTPS reverse
 proxy. The operator dashboard is a separate local listener at
 `http://127.0.0.1:18081/dashboard`; its token is entered in memory and is
-never persisted by the page. Reach it remotely with `ssh -L 18081:127.0.0.1:18081
-pi@PI_HOST` (or a private Tailscale route), never by exposing it through the
-public gateway. Rotate the operator token after suspected browser
+never persisted by the page. By default it answers only on the Pi itself, so the Pi's LAN or Tailscale
+address will not load it. Two ways to reach it from another machine:
+
+- Tailscale: add `PIBASE_ADMIN_BIND=<Pi Tailscale IP>` to `.env` (find the IP
+  with `tailscale ip -4`), run `docker compose up -d admin`, then open
+  `http://<Pi Tailscale IP>:18081/dashboard`. Only devices on your tailnet can
+  connect, and every action still needs the operator token.
+- SSH tunnel, no configuration change: `ssh -L 18081:127.0.0.1:18081 pi@PI_HOST`,
+  then open `http://127.0.0.1:18081/dashboard` on your own machine.
+
+Never set `PIBASE_ADMIN_BIND=0.0.0.0` on a machine reachable from the internet,
+and never route the dashboard through the public gateway. Rotate the operator token after suspected browser
 or host compromise.
 
 Backups are encrypted before they reach the operator-selected destination:

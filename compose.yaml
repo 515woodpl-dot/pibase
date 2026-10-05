@@ -78,7 +78,10 @@ services:
       bootstrap:
         condition: service_completed_successfully
     ports:
-      - "127.0.0.1:18081:18081"
+      # Local only by default. To reach the dashboard over Tailscale, set
+      # PIBASE_ADMIN_BIND in .env to this machine's Tailscale IP (tailscale ip -4).
+      # Never set it to 0.0.0.0 on a machine reachable from the internet.
+      - "${PIBASE_ADMIN_BIND:-127.0.0.1}:18081:18081"
     volumes:
       - storage-data:/data/files
       - backup-data:/data/backups
