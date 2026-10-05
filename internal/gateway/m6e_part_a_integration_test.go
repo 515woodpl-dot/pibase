@@ -81,10 +81,20 @@ INSERT INTO public.policy_rows VALUES ('00000000-0000-0000-0000-000000000001','o
 		})
 	}
 	for _, credential := range []string{p.AnonKey, p.ServiceKey} {
-		status, body := m6eRequest(t, hs.Client(), http.MethodGet, hs.URL+"/rest/v1/moved?select=*", p.AnonKey, credential, "")
+		// Each key is sent as its own apikey: pairing the anon apikey with a
+		// service bearer token is rejected with 403 before the table is reached.
+		status, body := m6eRequest(t, hs.Client(), http.MethodGet, hs.URL+"/rest/v1/moved?select=*", credential, credential, "")
 		if status != http.StatusNotFound {
 			t.Fatalf("moved table should remain unreachable before owner grants access: status=%d body=%s", status, body)
 		}
+	}
+	// The materialized-view revoke must not lock the owner out of their own object.
+	owned, err := adminsql.Run(ctx, authURL, p.ID, `SELECT note FROM public.plain_mat`)
+	if err != nil || len(owned.Rows) != 1 {
+		t.Fatalf("owner read of own materialized view: rows=%d err=%v", len(owned.Rows), err)
+	}
+	if status, body := m6eRequest(t, hs.Client(), http.MethodGet, hs.URL+"/rest/v1/plain_mat?select=*", p.AnonKey, p.AnonKey, ""); status != http.StatusNotFound {
+		t.Fatalf("anon must not reach the materialized view: status=%d body=%s", status, body)
 	}
 	for _, relation := range relations {
 		body := requestJSON(t, hs.Client(), http.MethodGet, hs.URL+"/rest/v1/"+relation+"?select=*", p.ServiceKey, "", "", http.StatusOK)
@@ -102,7 +112,7 @@ INSERT INTO public.policy_rows VALUES ('00000000-0000-0000-0000-000000000001','o
 	}
 
 	authenticatedRole := pgx.Identifier{"p_" + p.ID + "_authenticated"}.Sanitize()
-	if err := adminsql.ApplyMigration(ctx, authURL, p.ID, "m6e_alter_table_regression", `CREATE TABLE public.old_policy(note text); ALTER TABLE public.old_policy DISABLE ROW LEVEL SECURITY; GRANT SELECT ON public.old_policy TO `+authenticatedRole+`; ALTER TABLE public.old_policy ENABLE ROW LEVEL SECURITY; CREATE POLICY old_policy_members ON public.old_policy FOR SELECT TO `+authenticatedRole+` USING (true); INSERT INTO public.old_policy VALUES ('members-only'); CREATE TABLE public.old_private(note text); ALTER TABLE public.old_private DISABLE ROW LEVEL SECURITY; REVOKE ALL ON public.old_private FROM `+pgx.Identifier{"p_" + p.ID + "_anon"}.Sanitize()+`, `+authenticatedRole+`, `+pgx.Identifier{"p_" + p.ID + "_service_role"}.Sanitize()+`;`); err != nil {
+	if err := adminsql.ApplyMigration(ctx, authURL, p.ID, "m6e_alter_table_regression", `CREATE TABLE public.old_policy(note text); ALTER TABLE public.old_policy DISABLE ROW LEVEL SECURITY; REVOKE ALL ON public.old_policy FROM `+pgx.Identifier{"p_" + p.ID + "_anon"}.Sanitize()+`, `+authenticatedRole+`, `+pgx.Identifier{"p_" + p.ID + "_service_role"}.Sanitize()+`; GRANT SELECT ON public.old_policy TO `+authenticatedRole+`; ALTER TABLE public.old_policy ENABLE ROW LEVEL SECURITY; CREATE POLICY old_policy_members ON public.old_policy FOR SELECT TO `+authenticatedRole+` USING (true); INSERT INTO public.old_policy VALUES ('members-only'); CREATE TABLE public.old_private(note text); ALTER TABLE public.old_private DISABLE ROW LEVEL SECURITY; REVOKE ALL ON public.old_private FROM `+pgx.Identifier{"p_" + p.ID + "_anon"}.Sanitize()+`, `+authenticatedRole+`, `+pgx.Identifier{"p_" + p.ID + "_service_role"}.Sanitize()+`;`); err != nil {
 		t.Fatal(err)
 	}
 	status, body := m6eRequest(t, hs.Client(), http.MethodGet, hs.URL+"/rest/v1/old_policy?select=*", p.AnonKey, p.AnonKey, "")
@@ -134,8 +144,15 @@ INSERT INTO public.policy_rows VALUES ('00000000-0000-0000-0000-000000000001','o
 	if err := conn.QueryRow(ctx, `SELECT coalesce(relacl::text,''), relrowsecurity FROM pg_class WHERE oid='public.old_private'::regclass`).Scan(&beforeACL, &beforeRLS); err != nil {
 		t.Fatal(err)
 	}
-	if _, err := adminsql.Run(ctx, authURL, p.ID, `ALTER TABLE public.old_private ADD COLUMN extra text; ALTER TABLE public.old_private ADD CONSTRAINT old_private_note_check CHECK (note IS NULL OR note <> ''); ALTER TABLE public.old_private RENAME COLUMN extra TO extra_renamed`); err != nil {
-		t.Fatal(err)
+	// Owner SQL runs one statement per call.
+	for _, statement := range []string{
+		`ALTER TABLE public.old_private ADD COLUMN extra text`,
+		`ALTER TABLE public.old_private ADD CONSTRAINT old_private_note_check CHECK (note IS NULL OR note <> '')`,
+		`ALTER TABLE public.old_private RENAME COLUMN extra TO extra_renamed`,
+	} {
+		if _, err := adminsql.Run(ctx, authURL, p.ID, statement); err != nil {
+			t.Fatalf("%s: %v", statement, err)
+		}
 	}
 	if err := conn.QueryRow(ctx, `SELECT coalesce(relacl::text,''), relrowsecurity FROM pg_class WHERE oid='public.old_private'::regclass`).Scan(&afterACL, &afterRLS); err != nil {
 		t.Fatal(err)

@@ -55,6 +55,7 @@ BEGIN
         JOIN pg_roles r ON r.oid = acl.grantee
         WHERE c.oid = command.objid
           AND NOT r.rolsuper AND NOT r.rolbypassrls
+          AND r.oid <> c.relowner
       LOOP
         EXECUTE format('REVOKE ALL PRIVILEGES ON %s FROM %I', command.object_identity, role_name);
       END LOOP;

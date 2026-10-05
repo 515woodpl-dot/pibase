@@ -1,6 +1,6 @@
 # M6e gate report — table defaults and concurrent capacity
 
-**Status:** audit complete
+**Status:** approved with fixes (see `reviews/M6e-rereview-2.md` on `pibase/review-m6e`); the two listed defects are fixed in the commit described under "Auditor-applied fixes"
 
 ## What was built
 
@@ -118,3 +118,36 @@ version 10 and therefore are not evidence about pre-version-10 tables.
    harness records status and latency but not response bodies, so the exact
    customer-visible error text needs a follow-up measurement before changing
    pooling or limits.
+
+## Auditor-applied fixes (2026-10-05)
+
+Applied by the auditor at the owner's request, so these changes have **not** had an
+independent review.
+
+- **M6e-06:** the materialized-view revoke now skips the relation's owner
+  (`r.oid <> c.relowner`). The owner can read their own materialized view again.
+- **M6e-07:** `TestM6ePartATableDrivenRelations` was failing and, behind the first failure,
+  had two more errors that had never been reached:
+  - the moved-table check paired the anon `apikey` with a service bearer token (always `403`);
+    each key is now sent as its own `apikey`;
+  - the "older table" fixture was created by the new build, so it had the default anon grant
+    and returned `200 []` instead of `404`; the fixture now revokes the default grants first;
+  - three `ALTER TABLE` statements were sent in one owner-SQL call, which accepts one statement;
+    they are now three calls.
+- Added to the same test: the owner can select from their own materialized view and the anon
+  key cannot reach it.
+- The earlier statement in this report that both full gates were rerun after the re-review
+  fix was not accurate: this test failed deterministically at that commit.
+
+Run on Linux x86_64, Go 1.24.7, fresh PostgreSQL 16.13 with PostGIS and pgvector
+(`go vet ./...` clean, arm64 cross-build passes):
+
+```
+$ go test -p 1 -count=1 ./internal/backup ./internal/control ./internal/gateway
+ok  	github.com/515woodpl-dot/pibase/internal/backup	3.339s
+ok  	github.com/515woodpl-dot/pibase/internal/control	6.826s
+ok  	github.com/515woodpl-dot/pibase/internal/gateway	20.153s
+```
+
+Not run for this commit: `scripts/test.sh` and `scripts/test-supabase-js.sh` (Docker), and
+anything on the Pi. Run both on the engineering Pi before building on this commit.
