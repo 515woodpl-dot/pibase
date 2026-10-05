@@ -25,7 +25,7 @@ p95() { sort -n "$1" | awk '{a[NR]=$1} END {if(NR) print a[int((NR*95+99)/100)]}
 echo "=== M6e concurrent capacity measurement ==="
 echo "Date: $(date -Is)"; echo "Machine: $(uname -a)"; echo "All numbers below are measured."
 echo "Host free memory before load (measured MiB): $(free -m | awk '/Mem:/{print $7}')"
-docker run --rm -d --name "$pg" -e POSTGRES_PASSWORD="$password" -p 127.0.0.1::5432 "$pg_image" postgres -c shared_buffers=128MB -c max_connections=40 >/dev/null
+docker run --rm -d --name "$pg" -e POSTGRES_PASSWORD="$password" -p 127.0.0.1::5432 "$pg_image" postgres -c shared_buffers=128MB -c work_mem=4MB -c max_connections=40 >/dev/null
 i=0; until docker exec "$pg" pg_isready -U postgres >/dev/null 2>&1; do i=$((i+1)); [ "$i" -lt 30 ] || exit 1; sleep 1; done
 port="$(docker port "$pg" 5432 | sed 's/.*://')"
 admin="postgres://postgres:${password}@127.0.0.1:${port}/postgres?sslmode=disable"

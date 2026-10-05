@@ -44,6 +44,7 @@ func TestRestorePreM6cBackupReappliesManagedOwnership(t *testing.T) {
 	adminRole := "p_" + project.ID + "_admin"
 	if _, err = conn.Exec(ctx, `
 CREATE TABLE public.restore_probe(id integer PRIMARY KEY, location geometry(Point,4326), embedding vector(3));
+ALTER TABLE public.restore_probe DISABLE ROW LEVEL SECURITY;
 INSERT INTO public.restore_probe VALUES (1,ST_SetSRID(ST_MakePoint(-73.5,40.7),4326),'[1,2,3]');
 CREATE TABLE public.user_probe(user_id uuid REFERENCES auth.users(id));
 DROP TABLE auth.mfa_challenges;
@@ -117,15 +118,16 @@ ALTER SCHEMA cron OWNER TO `+pgx.Identifier{adminRole}.Sanitize()+`;`); err != n
 	defer conn.Close(ctx)
 	var rows, dimensions, version int
 	var longitude float64
-	var owners, guard, publicFK bool
+	var owners, guard, publicFK, restoreProbeRLS bool
 	if err := conn.QueryRow(ctx, `SELECT
   (SELECT count(*) FROM public.restore_probe),
   (SELECT ST_X(location) FROM public.restore_probe WHERE id=1),
   (SELECT vector_dims(embedding) FROM public.restore_probe WHERE id=1),
   (SELECT bool_and(pg_get_userbyid(nspowner)=current_user) FROM pg_namespace WHERE nspname=ANY($1::text[])),
   EXISTS(SELECT 1 FROM pg_event_trigger WHERE evtname='pibase_guard_extension_ddl'),
-  EXISTS(SELECT 1 FROM pg_constraint WHERE conrelid='public.user_probe'::regclass AND confrelid='auth.users'::regclass)
-`, []string{"auth", "storage", "realtime", "cron"}).Scan(&rows, &longitude, &dimensions, &owners, &guard, &publicFK); err != nil {
+	  EXISTS(SELECT 1 FROM pg_constraint WHERE conrelid='public.user_probe'::regclass AND confrelid='auth.users'::regclass),
+  (SELECT relrowsecurity FROM pg_class WHERE oid='public.restore_probe'::regclass)
+`, []string{"auth", "storage", "realtime", "cron"}).Scan(&rows, &longitude, &dimensions, &owners, &guard, &publicFK, &restoreProbeRLS); err != nil {
 		t.Fatal(err)
 	}
 	controlConn, err = pgx.Connect(ctx, withDatabase(adminURL, "_control"))
@@ -140,8 +142,8 @@ ALTER SCHEMA cron OWNER TO `+pgx.Identifier{adminRole}.Sanitize()+`;`); err != n
 	if err != nil {
 		t.Fatal(err)
 	}
-	if rows != 1 || longitude != -73.5 || dimensions != 3 || !owners || !guard || !publicFK || version != 9 || string(storageBytes) != "before-m6c" {
-		t.Fatalf("restore rows=%d longitude=%v dimensions=%d owners=%v guard=%v public_fk=%v version=%d storage=%q", rows, longitude, dimensions, owners, guard, publicFK, version, storageBytes)
+	if rows != 1 || longitude != -73.5 || dimensions != 3 || !owners || !guard || !publicFK || restoreProbeRLS || version != 10 || string(storageBytes) != "before-m6c" {
+		t.Fatalf("restore rows=%d longitude=%v dimensions=%d owners=%v guard=%v public_fk=%v rls=%v version=%d storage=%q", rows, longitude, dimensions, owners, guard, publicFK, restoreProbeRLS, version, storageBytes)
 	}
 	if err := Restore(ctx, adminURL, project.ID, storageRoot, safetyArchives[0], key); err != nil {
 		t.Fatalf("restore safety backup: %v", err)

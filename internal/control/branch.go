@@ -104,10 +104,33 @@ func BranchProject(ctx context.Context, adminURL, sourceID, name string, masterK
 	if output, restoreErr := exec.CommandContext(ctx, "pg_restore", restoreArgs...).CombinedOutput(); restoreErr != nil {
 		return Project{}, fmt.Errorf("pg_restore branch target: %w: %s", restoreErr, output)
 	}
+	if err = revokeBranchAPIAccess(ctx, withDatabaseMust(adminURL, targetInfo.database), targetInfo); err != nil {
+		return Project{}, fmt.Errorf("revoke branch API access: %w", err)
+	}
 	if err = remapBranchSecurity(ctx, withDatabaseMust(adminURL, source.database), withDatabaseMust(adminURL, targetInfo.database), source, targetInfo); err != nil {
 		return Project{}, fmt.Errorf("remap branch security: %w", err)
 	}
 	return target, nil
+}
+
+// pg_restore runs as the branch admin, so version-10 default privileges can
+// grant every restored public relation to the API roles. Clear those grants
+// before restoring the source ACL map; otherwise private source objects leak.
+func revokeBranchAPIAccess(ctx context.Context, targetURL string, target branchProjectInfo) error {
+	conn, err := pgx.Connect(ctx, targetURL)
+	if err != nil {
+		return err
+	}
+	defer conn.Close(ctx)
+	for _, role := range []string{target.anon, target.authenticated, target.service} {
+		roleSQL := pgx.Identifier{role}.Sanitize()
+		for _, kind := range []string{"TABLES", "SEQUENCES"} {
+			if _, err := conn.Exec(ctx, "REVOKE ALL PRIVILEGES ON ALL "+kind+" IN SCHEMA public FROM "+roleSQL); err != nil {
+				return fmt.Errorf("revoke %s from %s: %w", kind, role, err)
+			}
+		}
+	}
+	return nil
 }
 
 func filterPublicSchemaTOC(dst io.Writer, src io.Reader) error {

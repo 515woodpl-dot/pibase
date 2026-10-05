@@ -53,6 +53,10 @@ func TestBranchProjectRemapsCatalogSecurity(t *testing.T) {
 CREATE TABLE public.branch_rows (id integer PRIMARY KEY, owner text NOT NULL, secret text NOT NULL);
 CREATE TABLE public.branch_spatial (id integer PRIMARY KEY, location geometry(Point,4326), embedding vector(3));
 CREATE TABLE public.notes(body text);
+CREATE TABLE public.old_private(id integer PRIMARY KEY, note text);
+ALTER TABLE public.old_private DISABLE ROW LEVEL SECURITY;
+REVOKE ALL ON public.old_private FROM ` + pgx.Identifier{sourceInfo.anon}.Sanitize() + `, ` + pgx.Identifier{sourceInfo.authenticated}.Sanitize() + `, ` + pgx.Identifier{sourceInfo.service}.Sanitize() + `;
+INSERT INTO public.old_private VALUES (1, 'legacy-secret');
 CREATE FUNCTION public.snippet() RETURNS text LANGUAGE sql AS 'SELECT 1::text ||
 $x$
 CREATE SCHEMA public;
@@ -93,6 +97,13 @@ INSERT INTO public.branch_spatial VALUES (1,ST_SetSRID(ST_MakePoint(-73.5,40.7),
 	}
 	if !targetSelect || sourceSelect || !targetPolicy || sourcePolicy {
 		t.Fatalf("security was not remapped: target grant=%v source grant=%v target policy=%v source policy=%v", targetSelect, sourceSelect, targetPolicy, sourcePolicy)
+	}
+	var sourcePrivate, targetPrivate bool
+	if err := targetConn.QueryRow(ctx, `SELECT has_table_privilege($1,'public.old_private','SELECT'), has_table_privilege($2,'public.old_private','SELECT')`, sourceInfo.anon, targetInfo.anon).Scan(&sourcePrivate, &targetPrivate); err != nil {
+		t.Fatal(err)
+	}
+	if sourcePrivate || targetPrivate {
+		t.Fatalf("private table ACL was exposed by branch: source=%v target=%v", sourcePrivate, targetPrivate)
 	}
 	var rows, authRows, storageRows int
 	if err := targetConn.QueryRow(ctx, `SELECT (SELECT count(*) FROM public.branch_rows), (SELECT count(*) FROM auth.users), (SELECT count(*) FROM storage.objects)`).Scan(&rows, &authRows, &storageRows); err != nil {

@@ -38,12 +38,23 @@ let raw = await fetch(`${url}/auth/v1/signup`, {
 assert.equal(raw.status, 200);
 let signup = await raw.json();
 assert(signup.confirmation_token);
+const userID = signup.user.id;
 raw = await fetch(`${url}/auth/v1/verify?token=${encodeURIComponent(signup.confirmation_token)}&type=signup`, { headers: { apikey: anonKey } });
 assert.equal(raw.status, 200);
 result = await anon.auth.signInWithPassword({ email, password: "correct horse battery staple" });
 assert.ifError(result.error);
 assert(result.data.session);
-result = await anon.auth.refreshSession({ refresh_token: result.data.session.refresh_token });
+const signedInSession = result.data.session;
+result = await service.from("m6e_client_rows").insert({ user_id: userID, note: "service-created" }).select();
+assert.ifError(result.error);
+const publicM6eRows = await createClient(url, anonKey, options).from("m6e_client_rows").select();
+assert.ifError(publicM6eRows.error);
+assert.equal(publicM6eRows.data.length, 0);
+result = await anon.from("m6e_client_rows").select();
+assert.ifError(result.error);
+assert.equal(result.data.length, 1);
+assert.equal(result.data[0].note, "service-created");
+result = await anon.auth.refreshSession({ refresh_token: signedInSession.refresh_token });
 assert.ifError(result.error);
 assert(result.data.session);
 raw = await fetch(`${url}/auth/v1/recover`, {

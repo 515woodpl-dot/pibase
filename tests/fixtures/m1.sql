@@ -17,6 +17,13 @@ CREATE POLICY anon_groups ON public.groups FOR SELECT TO p___PROJECT_ID___anon U
 CREATE POLICY anon_items ON public.items FOR SELECT TO p___PROJECT_ID___anon USING (visible);
 CREATE POLICY service_groups ON public.groups FOR ALL TO p___PROJECT_ID___service_role USING (true) WITH CHECK (true);
 CREATE POLICY service_items ON public.items FOR ALL TO p___PROJECT_ID___service_role USING (true) WITH CHECK (true);
+CREATE TABLE public.m6e_client_rows (
+  user_id uuid NOT NULL,
+  note text NOT NULL
+);
+CREATE POLICY m6e_client_rows_owner ON public.m6e_client_rows
+FOR SELECT TO p___PROJECT_ID___authenticated
+USING (user_id = auth.uid());
 CREATE FUNCTION public.add_numbers(a integer,b integer) RETURNS integer LANGUAGE sql IMMUTABLE AS 'SELECT a+b';
 REVOKE ALL ON FUNCTION public.add_numbers(integer,integer) FROM PUBLIC;
 GRANT EXECUTE ON FUNCTION public.add_numbers(integer,integer) TO p___PROJECT_ID___anon;

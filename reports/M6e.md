@@ -67,10 +67,39 @@ version 10 and therefore are not evidence about pre-version-10 tables.
 ## What was NOT tested
 
 - A fresh physical Raspberry Pi OS install and reboot; this is owner-run Part C.
-- Part A’s full real-Postgres integration matrix for `pibase sql`, two signed-in
-  users with policy isolation, explicit RLS disable across restore/branch, and
-  event-trigger tamper attempts.
-- `tests/supabase-js.mjs` Part A case.
+
+## Audit fixes
+
+### What changed
+
+- Extended the operator-owned public-relation trigger to cover query-created
+  tables, moved tables, views, and materialized views. Tables receive RLS;
+  views use `security_invoker`; materialized-view API grants are revoked from
+  non-bypass roles. Owner changes remain explicit opt-in exposure decisions.
+- Branch restore now clears API-role relation and sequence privileges before
+  applying the mapped source ACLs, preserving private source objects.
+- Added real-Postgres coverage for the relation matrix, service reads,
+  anonymous and signed-user denial, policy isolation, branch private ACLs,
+  RLS-disabled backup restore, and the Supabase client migration case. The
+  backup expectation follows the current schema version rather than the old
+  value.
+- Corrected the Pi drill’s safe disk selection, UUID fstab mount, reboot mount
+  check, and private-repository bundle route. The capacity harness now sets
+  `work_mem=4MB`; no capacity remeasurement was requested.
+
+### Tests run
+
+- `scripts/test.sh`: passed on a disposable PostgreSQL stack, including the
+  control and gateway real-Postgres suites.
+- `scripts/test-supabase-js.sh`: passed on a disposable PostgreSQL and gateway
+  stack; the Supabase client and realtime acceptance cases passed.
+
+### What was NOT tested
+
+- A physical Raspberry Pi fresh install, disk formatting, and reboot remain an
+  owner-run drill.
+- Capacity was not remeasured after adding the prescribed `work_mem=4MB`
+  setting; the committed raw measurement remains the prior measured run.
 
 ## Questions for the planner
 

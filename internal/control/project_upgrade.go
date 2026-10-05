@@ -37,21 +37,56 @@ EXECUTE FUNCTION pg_catalog.pibase_guard_extension_ddl();
 CREATE OR REPLACE FUNCTION pg_catalog.pibase_enable_public_table_rls() RETURNS event_trigger
 LANGUAGE plpgsql SECURITY DEFINER SET search_path=pg_catalog
 AS $$
-DECLARE command record;
+DECLARE command record; owner_name text; role_name text;
 BEGIN
   IF (SELECT rolsuper FROM pg_roles WHERE rolname=session_user) THEN
     RETURN;
   END IF;
+  IF current_setting('pibase.public_relation_trigger', true) = 'on' THEN
+    RETURN;
+  END IF;
+  PERFORM set_config('pibase.public_relation_trigger', 'on', true);
   FOR command IN SELECT * FROM pg_event_trigger_ddl_commands() LOOP
-    IF command.object_type = 'table' AND command.schema_name = 'public' THEN
+    IF command.schema_name = 'public' AND command.object_type = 'table' THEN
       EXECUTE format('ALTER TABLE %s ENABLE ROW LEVEL SECURITY', command.object_identity);
+      -- ALTER TABLE ... SET SCHEMA public is not covered by default
+      -- privileges. Apply the project's API grants when a table is moved in.
+      SELECT pg_get_userbyid(relowner) INTO owner_name
+      FROM pg_class WHERE oid = to_regclass(command.object_identity);
+      IF owner_name IS NOT NULL AND owner_name LIKE '%_admin' THEN
+        FOR role_name IN
+          SELECT r.rolname FROM pg_roles r
+          WHERE r.rolname IN
+            (regexp_replace(owner_name, '_admin$', '_anon'),
+             regexp_replace(owner_name, '_admin$', '_authenticated'),
+             regexp_replace(owner_name, '_admin$', '_service_role'))
+        LOOP
+          EXECUTE format('GRANT SELECT, INSERT, UPDATE, DELETE ON TABLE %s TO %I', command.object_identity, role_name);
+        END LOOP;
+      END IF;
+    ELSIF command.schema_name = 'public' AND command.object_type = 'view' THEN
+      EXECUTE format('ALTER VIEW %s SET (security_invoker = true)', command.object_identity);
+    ELSIF command.schema_name = 'public' AND command.object_type = 'materialized view' THEN
+      SELECT pg_get_userbyid(relowner) INTO owner_name
+      FROM pg_class WHERE oid = command.objid;
+      FOR role_name IN
+        SELECT r.rolname FROM pg_roles r
+        WHERE NOT r.rolsuper AND NOT r.rolbypassrls
+          AND (owner_name IS NULL OR r.rolname <> owner_name)
+      LOOP
+        EXECUTE format('REVOKE ALL PRIVILEGES ON %s FROM %I', command.object_identity, role_name);
+      END LOOP;
     END IF;
   END LOOP;
+  PERFORM set_config('pibase.public_relation_trigger', 'off', true);
+EXCEPTION WHEN OTHERS THEN
+  PERFORM set_config('pibase.public_relation_trigger', 'off', true);
+  RAISE;
 END $$;
 REVOKE ALL ON FUNCTION pg_catalog.pibase_enable_public_table_rls() FROM PUBLIC;
 DROP EVENT TRIGGER IF EXISTS pibase_enable_public_table_rls;
 CREATE EVENT TRIGGER pibase_enable_public_table_rls
-ON ddl_command_end WHEN TAG IN ('CREATE TABLE')
+ON ddl_command_end WHEN TAG IN ('CREATE TABLE','CREATE TABLE AS','SELECT INTO','ALTER TABLE','CREATE VIEW','CREATE MATERIALIZED VIEW')
 EXECUTE FUNCTION pg_catalog.pibase_enable_public_table_rls();
 `
 
