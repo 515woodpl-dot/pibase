@@ -25,6 +25,16 @@ type Result struct {
 }
 
 func Run(ctx context.Context, adminURL, projectID, statement string) (Result, error) {
+	return run(ctx, adminURL, projectID, statement)
+}
+
+// RunParams executes owner SQL with bound PostgreSQL parameters. It is used by
+// operator UI actions whose values come from HTTP JSON rather than SQL text.
+func RunParams(ctx context.Context, adminURL, projectID, statement string, args ...any) (Result, error) {
+	return run(ctx, adminURL, projectID, statement, args...)
+}
+
+func run(ctx context.Context, adminURL, projectID, statement string, args ...any) (Result, error) {
 	if statement == "" {
 		return Result{}, fmt.Errorf("SQL statement is required")
 	}
@@ -48,7 +58,7 @@ func Run(ctx context.Context, adminURL, projectID, statement string) (Result, er
 	if _, err := tx.Exec(ctx, `SET LOCAL ROLE `+pgx.Identifier{p.role}.Sanitize()+`; SET LOCAL statement_timeout='30s'`); err != nil {
 		return Result{}, err
 	}
-	rows, err := tx.Query(ctx, statement)
+	rows, err := tx.Query(ctx, statement, args...)
 	if err != nil {
 		return Result{}, err
 	}
