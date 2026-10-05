@@ -109,7 +109,7 @@ The M0 measurement harness remains available for reproducing Pi memory data.
 ## Operations (M4)
 
 `/healthz` is the readiness check, `/metrics` exposes compact Prometheus text
-metrics, and `/dashboard` is a static, no-Node operator UI. The dashboard lists
+metrics, and the loopback-only admin listener's `/dashboard` is a static, no-Node operator UI. The dashboard lists
 request, database, and file-storage usage and provides the owner SQL editor.
 Dashboard API calls require `PIBASE_OPERATOR_TOKEN`; owner SQL executes through
 the M1 authenticator boundary, with a 30-second timeout and 1,000-row cap.

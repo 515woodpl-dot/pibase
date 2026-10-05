@@ -50,14 +50,35 @@ services:
       PIBASE_ENV: ${PIBASE_ENV:-production}
       PIBASE_AUTH_EXPOSE_TOKENS: ${PIBASE_AUTH_EXPOSE_TOKENS:-false}
       PIBASE_STORAGE_ROOT: /data/files
-      PIBASE_ADMIN_DATABASE_URL: postgres://authenticator:${PIBASE_AUTHENTICATOR_PASSWORD}@postgres:5432/_control
-      PIBASE_OPERATOR_TOKEN: ${PIBASE_OPERATOR_TOKEN:-}
-      PIBASE_BACKUP_KEY: ${PIBASE_BACKUP_KEY:-}
     depends_on:
       bootstrap:
         condition: service_completed_successfully
     ports:
       - "127.0.0.1:18080:8080"
+    volumes:
+      - storage-data:/data/files
+      - backup-data:/data/backups
+
+  admin:
+    build:
+      context: .
+      target: gateway
+    command: ["admin-serve"]
+    environment:
+      PIBASE_ADMIN_DATABASE_URL: postgres://postgres:${POSTGRES_PASSWORD}@postgres:5432/postgres
+      PIBASE_DATABASE_URL: postgres://authenticator:${PIBASE_AUTHENTICATOR_PASSWORD}@postgres:5432/_control
+      PIBASE_MASTER_KEY: ${PIBASE_MASTER_KEY:?set PIBASE_MASTER_KEY in .env}
+      PIBASE_BACKUP_KEY: ${PIBASE_BACKUP_KEY:?set PIBASE_BACKUP_KEY in .env}
+      PIBASE_OPERATOR_TOKEN: ${PIBASE_OPERATOR_TOKEN:?set PIBASE_OPERATOR_TOKEN in .env}
+      PIBASE_ADMIN_LISTEN_ADDR: 0.0.0.0:18081
+      PIBASE_ADMIN_ALLOW_NONLOCAL: "1"
+      PIBASE_STORAGE_ROOT: /data/files
+      PIBASE_BACKUP_ROOT: /data/backups
+    depends_on:
+      bootstrap:
+        condition: service_completed_successfully
+    ports:
+      - "127.0.0.1:18081:18081"
     volumes:
       - storage-data:/data/files
       - backup-data:/data/backups

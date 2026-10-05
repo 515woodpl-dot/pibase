@@ -21,8 +21,11 @@ Back up first for normal production upgrades; M0 measurement-only databases,
 which intentionally have no auth schema, are left unchanged.
 
 Expose port 18080 only through the trusted LAN/Tailnet or an HTTPS reverse
-proxy. The dashboard is at `/dashboard`; its token is entered in memory and is
-never persisted by the page. Rotate the operator token after suspected browser
+proxy. The operator dashboard is a separate local listener at
+`http://127.0.0.1:18081/dashboard`; its token is entered in memory and is
+never persisted by the page. Reach it remotely with `ssh -L 18081:127.0.0.1:18081
+pi@PI_HOST` (or a private Tailscale route), never by exposing it through the
+public gateway. Rotate the operator token after suspected browser
 or host compromise.
 
 Backups are encrypted before they reach the operator-selected destination:

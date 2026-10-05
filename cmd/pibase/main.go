@@ -7,12 +7,14 @@ import (
 	"fmt"
 	"io"
 	"log/slog"
+	"net"
 	"net/http"
 	"os"
 	"os/signal"
 	"syscall"
 	"time"
 
+	"github.com/515woodpl-dot/pibase/internal/adminserver"
 	"github.com/515woodpl-dot/pibase/internal/adminsql"
 	"github.com/515woodpl-dot/pibase/internal/backup"
 	"github.com/515woodpl-dot/pibase/internal/config"
@@ -30,7 +32,7 @@ func main() {
 
 func run() error {
 	if len(os.Args) < 2 {
-		return errors.New("usage: pibase <bootstrap|project-create|project-branch|project-delete|project-list|project-usage|pgvector-enable|postgis-enable|backup|restore|migration-apply|sql|serve>")
+		return errors.New("usage: pibase <bootstrap|project-create|project-branch|project-delete|project-list|project-usage|pgvector-enable|postgis-enable|backup|restore|migration-apply|sql|serve|admin-serve>")
 	}
 	ctx := context.Background()
 	switch os.Args[1] {
@@ -190,6 +192,8 @@ func run() error {
 		return backup.Restore(ctx, url, os.Args[2], storageRoot, os.Args[3], key)
 	case "serve":
 		return serve()
+	case "admin-serve":
+		return adminServe()
 	case "migration-apply":
 		if len(os.Args) != 4 {
 			return errors.New("usage: pibase migration-apply <project-id> <name> < migration.sql")
@@ -228,6 +232,75 @@ func run() error {
 	default:
 		return fmt.Errorf("unknown command %q", os.Args[1])
 	}
+}
+
+func adminServe() error {
+	adminURL, err := config.Required("PIBASE_ADMIN_DATABASE_URL")
+	if err != nil {
+		return err
+	}
+	databaseURL, err := config.Required("PIBASE_DATABASE_URL")
+	if err != nil {
+		return err
+	}
+	token, err := config.Required("PIBASE_OPERATOR_TOKEN")
+	if err != nil {
+		return err
+	}
+	masterRaw, err := config.Required("PIBASE_MASTER_KEY")
+	if err != nil {
+		return err
+	}
+	backupRaw, err := config.Required("PIBASE_BACKUP_KEY")
+	if err != nil {
+		return err
+	}
+	master, err := secretbox.DecodeKey(masterRaw)
+	if err != nil {
+		return err
+	}
+	backupKey, err := secretbox.DecodeKey(backupRaw)
+	if err != nil {
+		return err
+	}
+	addr := os.Getenv("PIBASE_ADMIN_LISTEN_ADDR")
+	if addr == "" {
+		addr = "127.0.0.1:18081"
+	}
+	if err := validateAdminAddr(addr, os.Getenv("PIBASE_ADMIN_ALLOW_NONLOCAL") == "1"); err != nil {
+		return err
+	}
+	s, err := adminserver.New(adminserver.Config{AdminURL: adminURL, DatabaseURL: databaseURL, StorageRoot: os.Getenv("PIBASE_STORAGE_ROOT"), BackupRoot: os.Getenv("PIBASE_BACKUP_ROOT"), Token: token, MasterKey: master, BackupKey: backupKey})
+	if err != nil {
+		return err
+	}
+	ctx, stop := signal.NotifyContext(context.Background(), syscall.SIGINT, syscall.SIGTERM)
+	defer stop()
+	h := &http.Server{Addr: addr, Handler: s.Handler(), ReadHeaderTimeout: 5 * time.Second, ReadTimeout: 5 * time.Minute, WriteTimeout: 5 * time.Minute, IdleTimeout: 60 * time.Second}
+	go func() {
+		<-ctx.Done()
+		c, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+		defer cancel()
+		_ = h.Shutdown(c)
+	}()
+	slog.Info("operator dashboard listening", "address", addr)
+	err = h.ListenAndServe()
+	if errors.Is(err, http.ErrServerClosed) {
+		return nil
+	}
+	return err
+}
+
+func validateAdminAddr(addr string, allowNonLocal bool) error {
+	host, _, err := net.SplitHostPort(addr)
+	if err != nil {
+		return fmt.Errorf("invalid PIBASE_ADMIN_LISTEN_ADDR: %w", err)
+	}
+	ip := net.ParseIP(host)
+	if !allowNonLocal && (ip == nil || !ip.IsLoopback()) {
+		return errors.New("admin listener must be loopback; set PIBASE_ADMIN_ALLOW_NONLOCAL=1 to override")
+	}
+	return nil
 }
 
 func serve() error {

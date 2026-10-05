@@ -12,6 +12,7 @@ import (
 	"sync/atomic"
 	"time"
 
+	"github.com/515woodpl-dot/pibase/internal/config"
 	"github.com/jackc/pgx/v5"
 	"github.com/jackc/pgx/v5/pgxpool"
 )
@@ -30,8 +31,6 @@ type Server struct {
 	exposeAuthTokens  bool
 	storageRoot       string
 	storageQuotaBytes int64
-	adminDatabaseURL  string
-	operatorToken     string
 	startedAt         time.Time
 	requestCount      atomic.Uint64
 	realtime          *realtimeHub
@@ -43,18 +42,18 @@ func New(ctx context.Context, databaseURL string, masterKey []byte, activeProjec
 	if len(masterKey) != 32 {
 		return nil, fmt.Errorf("master key must be 32 bytes")
 	}
-	config, err := pgxpool.ParseConfig(databaseURL)
+	poolConfig, err := pgxpool.ParseConfig(databaseURL)
 	if err != nil {
 		return nil, err
 	}
-	config.MaxConns = 2
-	config.MinConns = 1
-	config.MaxConnIdleTime = 30 * time.Second
-	config.AfterConnect = func(ctx context.Context, conn *pgx.Conn) error {
+	poolConfig.MaxConns = 2
+	poolConfig.MinConns = 1
+	poolConfig.MaxConnIdleTime = 30 * time.Second
+	poolConfig.AfterConnect = func(ctx context.Context, conn *pgx.Conn) error {
 		_, err := conn.Exec(ctx, `SET statement_timeout = '5s'`)
 		return err
 	}
-	controlPool, err := pgxpool.NewWithConfig(ctx, config)
+	controlPool, err := pgxpool.NewWithConfig(ctx, poolConfig)
 	if err != nil {
 		return nil, err
 	}
@@ -84,19 +83,22 @@ func New(ctx context.Context, databaseURL string, masterKey []byte, activeProjec
 		controlPool.Close()
 		return nil, fmt.Errorf("PIBASE_AUTH_EXPOSE_TOKENS requires PIBASE_ENV=test")
 	}
+	maxProjectConnections, err := config.Int("PIBASE_MAX_PROJECT_CONNECTIONS", 30)
+	if err != nil || maxProjectConnections < 1 {
+		controlPool.Close()
+		return nil, fmt.Errorf("PIBASE_MAX_PROJECT_CONNECTIONS must be a positive integer")
+	}
 	s := &Server{
 		control:           controlPool,
 		databaseURL:       databaseURL,
 		masterKey:         append([]byte(nil), masterKey...),
 		pools:             make(map[string]*pgxpool.Pool),
-		databaseSlots:     make(chan struct{}, 32),
+		databaseSlots:     make(chan struct{}, maxProjectConnections),
 		rates:             make(map[string]rateWindow),
 		authRates:         make(map[string]rateWindow),
 		exposeAuthTokens:  exposeAuthTokens,
 		storageRoot:       storageRoot,
 		storageQuotaBytes: storageQuotaBytes,
-		adminDatabaseURL:  os.Getenv("PIBASE_ADMIN_DATABASE_URL"),
-		operatorToken:     os.Getenv("PIBASE_OPERATOR_TOKEN"),
 		startedAt:         time.Now(),
 	}
 	if s.realtime, err = newRealtimeHub(s); err != nil {
@@ -139,7 +141,7 @@ func New(ctx context.Context, databaseURL string, masterKey []byte, activeProjec
 			cfg.ConnConfig.Database = database
 			cfg.MaxConns, cfg.MinConns = 1, 0
 			cfg.MaxConnIdleTime = 1 * time.Second
-			cfg.AfterConnect = config.AfterConnect
+			cfg.AfterConnect = poolConfig.AfterConnect
 			pool, err := pgxpool.NewWithConfig(ctx, cfg)
 			if err != nil {
 				s.Close()
@@ -186,10 +188,6 @@ func (s *Server) lightLoad(ctx context.Context) {
 func (s *Server) Handler() http.Handler {
 	mux := http.NewServeMux()
 	mux.HandleFunc("GET /metrics", s.metricsHandler)
-	mux.HandleFunc("GET /dashboard", s.dashboardHandler)
-	mux.HandleFunc("GET /dashboard/", s.dashboardHandler)
-	mux.HandleFunc("GET /_pibase/projects", s.operatorProjects)
-	mux.HandleFunc("POST /_pibase/projects/{id}/sql", s.operatorSQL)
 	mux.HandleFunc("GET /realtime/v1/websocket", s.realtime.websocket)
 	mux.HandleFunc("POST /auth/v1/signup", s.authSignup)
 	mux.HandleFunc("POST /auth/v1/token", s.authToken)

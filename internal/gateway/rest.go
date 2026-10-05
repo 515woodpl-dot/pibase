@@ -644,6 +644,9 @@ func writeAPIError(w http.ResponseWriter, err error) {
 				status = http.StatusForbidden
 			case "57014":
 				status = http.StatusRequestTimeout
+			case "53300":
+				status = http.StatusServiceUnavailable
+				w.Header().Set("Retry-After", "1")
 			default:
 				status = http.StatusBadRequest
 			}

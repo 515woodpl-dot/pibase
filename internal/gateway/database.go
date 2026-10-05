@@ -51,6 +51,8 @@ func (s *Server) transaction(ctx context.Context, who principal, fn func(pgx.Tx)
 	select {
 	case s.databaseSlots <- struct{}{}:
 		defer func() { <-s.databaseSlots }()
+	case <-time.After(5 * time.Second):
+		return httpError(http.StatusServiceUnavailable, "project connection limit reached; retry shortly")
 	case <-ctx.Done():
 		return ctx.Err()
 	}
