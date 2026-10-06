@@ -634,6 +634,30 @@ func Usage(ctx context.Context, adminURL, projectID string, from, to time.Time) 
 	return usage, rows.Err()
 }
 
+// SetLimits updates the per-project resource caps. Only non-zero fields are
+// applied; pass maxDatabaseBytes > 0 to change the database quota.
+func SetLimits(ctx context.Context, adminURL, projectID string, maxDatabaseBytes int64) error {
+	if projectID == "" {
+		return fmt.Errorf("project id is required")
+	}
+	if maxDatabaseBytes <= 0 {
+		return fmt.Errorf("max_database_bytes must be positive")
+	}
+	conn, err := controlDBConn(ctx, adminURL)
+	if err != nil {
+		return err
+	}
+	defer conn.Close(ctx)
+	tag, err := conn.Exec(ctx, `UPDATE control.projects SET max_database_bytes=$1 WHERE id=$2`, maxDatabaseBytes, projectID)
+	if err != nil {
+		return err
+	}
+	if tag.RowsAffected() == 0 {
+		return ErrNotFound
+	}
+	return nil
+}
+
 func DeleteProject(ctx context.Context, adminURL, id string) error {
 	controlURL, err := withDatabase(adminURL, "_control")
 	if err != nil {

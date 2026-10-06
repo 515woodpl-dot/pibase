@@ -97,6 +97,8 @@ func (s *Server) Handler() http.Handler {
 	mux.HandleFunc("GET /_pibase/projects/{id}/tables/{table}/rows", s.rows)
 	mux.HandleFunc("GET /_pibase/projects/{id}/migrations", s.migrations)
 	mux.HandleFunc("GET /_pibase/projects/{id}/users", s.users)
+	mux.HandleFunc("GET /_pibase/projects/{id}/usage", s.usage)
+	mux.HandleFunc("PATCH /_pibase/projects/{id}/limits", s.setLimits)
 	mux.HandleFunc("POST /_pibase/projects/{id}/users", s.createUser)
 	mux.HandleFunc("DELETE /_pibase/projects/{id}/users/{user}", s.deleteUser)
 	// Auth endpoints — no token required.
@@ -681,6 +683,48 @@ func (s *Server) renameProject(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	if err := control.RenameProject(r.Context(), s.AdminURL, projectID, b.Name); err != nil {
+		if errors.Is(err, control.ErrNotFound) {
+			http.NotFound(w, r)
+			return
+		}
+		http.Error(w, err.Error(), http.StatusBadRequest)
+		return
+	}
+	w.WriteHeader(http.StatusNoContent)
+}
+
+func (s *Server) usage(w http.ResponseWriter, r *http.Request) {
+	id := r.PathValue("id")
+	if !s.checkOwner(w, r, id) {
+		return
+	}
+	rows, err := control.Usage(r.Context(), s.AdminURL, id, time.Time{}, time.Time{})
+	if err != nil {
+		if errors.Is(err, control.ErrNotFound) {
+			http.NotFound(w, r)
+			return
+		}
+		fail(w, err)
+		return
+	}
+	if rows == nil {
+		rows = []control.ProjectUsage{}
+	}
+	writeJSON(w, 200, rows)
+}
+
+func (s *Server) setLimits(w http.ResponseWriter, r *http.Request) {
+	id := r.PathValue("id")
+	if !s.checkOwner(w, r, id) {
+		return
+	}
+	var b struct {
+		MaxDatabaseBytes int64 `json:"max_database_bytes"`
+	}
+	if !jsonBody(w, r, &b) {
+		return
+	}
+	if err := control.SetLimits(r.Context(), s.AdminURL, id, b.MaxDatabaseBytes); err != nil {
 		if errors.Is(err, control.ErrNotFound) {
 			http.NotFound(w, r)
 			return

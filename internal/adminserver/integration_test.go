@@ -1518,4 +1518,59 @@ func TestProjectManagement(t *testing.T) {
 		rb, _ := json.Marshal(map[string]string{"name": "sneaky rename"})
 		acctCall("PATCH", "/_pibase/projects/"+acctProjID, string(rb), cookieB, 403)
 	})
+
+	// U1: usage endpoint returns a JSON array (may be empty on a fresh project).
+	t.Run("U1_usage_returns_array", func(t *testing.T) {
+		data := opCall("GET", "/_pibase/projects/"+opProjID+"/usage", "", 200)
+		if len(data) == 0 {
+			t.Fatal("empty response from usage endpoint")
+		}
+		var rows []map[string]any
+		if err := json.Unmarshal(data, &rows); err != nil {
+			t.Fatalf("usage response is not a JSON array: %v — body: %s", err, data)
+		}
+	})
+
+	// U2: non-owner cannot read usage.
+	t.Run("U2_non_owner_usage_forbidden", func(t *testing.T) {
+		acctCall("GET", "/_pibase/projects/"+acctProjID+"/usage", "", cookieB, 403)
+	})
+
+	// U3: owner can read their own project's usage.
+	t.Run("U3_owner_usage_allowed", func(t *testing.T) {
+		_, data := acctCall("GET", "/_pibase/projects/"+acctProjID+"/usage", "", cookieA, 200)
+		var rows []map[string]any
+		if err := json.Unmarshal(data, &rows); err != nil {
+			t.Fatalf("owner usage response is not a JSON array: %v — body: %s", err, data)
+		}
+	})
+
+	// L1: operator can set max_database_bytes; returns 204.
+	t.Run("L1_set_limits_succeeds", func(t *testing.T) {
+		rb, _ := json.Marshal(map[string]int64{"max_database_bytes": 2 << 30})
+		opCall("PATCH", "/_pibase/projects/"+opProjID+"/limits", string(rb), 204)
+		// Verify the new limit is reflected in the project list.
+		listData := opCall("GET", "/_pibase/projects", "", 200)
+		if !strings.Contains(string(listData), fmt.Sprintf("%d", int64(2<<30))) {
+			t.Fatalf("new limit not visible in project list: %s", listData)
+		}
+	})
+
+	// L2: zero or negative max_database_bytes is rejected with 400.
+	t.Run("L2_invalid_limit_rejected", func(t *testing.T) {
+		rb, _ := json.Marshal(map[string]int64{"max_database_bytes": 0})
+		opCall("PATCH", "/_pibase/projects/"+opProjID+"/limits", string(rb), 400)
+	})
+
+	// L3: non-owner cannot set limits.
+	t.Run("L3_non_owner_limits_forbidden", func(t *testing.T) {
+		rb, _ := json.Marshal(map[string]int64{"max_database_bytes": 1 << 30})
+		acctCall("PATCH", "/_pibase/projects/"+acctProjID+"/limits", string(rb), cookieB, 403)
+	})
+
+	// L4: owner can set limits on their own project.
+	t.Run("L4_owner_limits_allowed", func(t *testing.T) {
+		rb, _ := json.Marshal(map[string]int64{"max_database_bytes": 512 << 20})
+		acctCall("PATCH", "/_pibase/projects/"+acctProjID+"/limits", string(rb), cookieA, 204)
+	})
 }
