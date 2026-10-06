@@ -234,8 +234,17 @@ CREATE POLICY owner_only ON public.private_rows FOR SELECT TO ` + pgx.Identifier
 		t.Fatalf("refresh response: %s", rotated)
 	}
 	requestAuthJSON(t, httpServer.Client(), http.MethodPost, httpServer.URL+"/auth/v1/token?grant_type=refresh_token", p.AnonKey, `{"refresh_token":"`+session.Refresh+`"}`, http.StatusBadRequest)
-	requestAuthJSONBearer(t, httpServer.Client(), http.MethodPost, httpServer.URL+"/auth/v1/logout", p.AnonKey, next.Access, "{}", http.StatusNoContent)
 	requestAuthJSON(t, httpServer.Client(), http.MethodPost, httpServer.URL+"/auth/v1/token?grant_type=refresh_token", p.AnonKey, `{"refresh_token":"`+next.Refresh+`"}`, http.StatusBadRequest)
+	loginAgain := requestAuthJSON(t, httpServer.Client(), http.MethodPost, httpServer.URL+"/auth/v1/token?grant_type=password", p.AnonKey, `{"email":"`+email+`","password":"correct horse battery staple"}`, http.StatusOK)
+	var logoutSession struct {
+		Access  string `json:"access_token"`
+		Refresh string `json:"refresh_token"`
+	}
+	if err := json.Unmarshal(loginAgain, &logoutSession); err != nil || logoutSession.Access == "" || logoutSession.Refresh == "" {
+		t.Fatalf("second login response: %s", loginAgain)
+	}
+	requestAuthJSONBearer(t, httpServer.Client(), http.MethodPost, httpServer.URL+"/auth/v1/logout", p.AnonKey, logoutSession.Access, "{}", http.StatusNoContent)
+	requestAuthJSON(t, httpServer.Client(), http.MethodPost, httpServer.URL+"/auth/v1/token?grant_type=refresh_token", p.AnonKey, `{"refresh_token":"`+logoutSession.Refresh+`"}`, http.StatusBadRequest)
 	recovery := requestAuthJSON(t, httpServer.Client(), http.MethodPost, httpServer.URL+"/auth/v1/recover", p.AnonKey, `{"email":"`+email+`"}`, http.StatusOK)
 	var reset struct {
 		Token string `json:"reset_token"`

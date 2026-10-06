@@ -18,25 +18,27 @@ import (
 )
 
 type Server struct {
-	control           *pgxpool.Pool
-	projects          []*pgxpool.Pool
-	databaseURL       string
-	masterKey         []byte
-	poolMu            sync.Mutex
-	pools             map[string]*pgxpool.Pool
-	databaseSlots     chan struct{}
-	rateMu            sync.Mutex
-	rates             map[string]rateWindow
-	authRates         map[string]rateWindow
-	exposeAuthTokens  bool
-	storageRoot       string
-	storageQuotaBytes int64
-	startedAt         time.Time
-	requestCount      atomic.Uint64
-	realtime          *realtimeHub
-	schedulerStop     context.CancelFunc
-	schedulerWG       sync.WaitGroup
-	smtp              smtpConfig
+	control            *pgxpool.Pool
+	projects           []*pgxpool.Pool
+	databaseURL        string
+	masterKey          []byte
+	poolMu             sync.Mutex
+	pools              map[string]*pgxpool.Pool
+	databaseSlots      chan struct{}
+	rateMu             sync.Mutex
+	rates              map[string]rateWindow
+	authRates          map[string]rateWindow
+	lastAuthRateSweep  time.Time
+	exposeAuthTokens   bool
+	storageRoot        string
+	storageQuotaBytes  int64
+	storageUploadLocks sync.Map
+	startedAt          time.Time
+	requestCount       atomic.Uint64
+	realtime           *realtimeHub
+	schedulerStop      context.CancelFunc
+	schedulerWG        sync.WaitGroup
+	smtp               smtpConfig
 }
 
 func New(ctx context.Context, databaseURL string, masterKey []byte, activeProjects int, lightLoad bool) (*Server, error) {

@@ -311,6 +311,14 @@ func (s *Server) storageUploadObject(w http.ResponseWriter, r *http.Request) {
 		writeAPIError(w, err)
 		return
 	}
+	lockValue, _ := s.storageUploadLocks.LoadOrStore(who.project.id, make(chan struct{}, 1))
+	lock := lockValue.(chan struct{})
+	select {
+	case lock <- struct{}{}:
+		defer func() { <-lock }()
+	case <-r.Context().Done():
+		return
+	}
 	mimeType := r.Header.Get("Content-Type")
 	if mimeType == "" {
 		mimeType = "application/octet-stream"
@@ -324,12 +332,8 @@ func (s *Server) storageUploadObject(w http.ResponseWriter, r *http.Request) {
 	}
 	finalPath := s.storageFile(who.project, bucket, name)
 	tmpPath := finalPath + ".tmp-" + strconv.FormatInt(time.Now().UnixNano(), 10)
-	committed := false
-	defer func() {
-		if !committed {
-			_ = os.Remove(tmpPath)
-		}
-	}()
+	backupPath := tmpPath + ".old"
+	defer func() { _ = os.Remove(tmpPath) }()
 	if err = os.MkdirAll(filepath.Dir(finalPath), 0o750); err != nil {
 		writeAPIError(w, err)
 		return
@@ -341,6 +345,20 @@ func (s *Server) storageUploadObject(w http.ResponseWriter, r *http.Request) {
 	}); err != nil {
 		writeAPIError(w, httpError(http.StatusNotFound, "bucket not found"))
 		return
+	}
+	usage, err := storageUsage(s.storageRoot, who.project.id)
+	if err != nil {
+		writeAPIError(w, err)
+		return
+	}
+	remaining := s.storageQuotaBytes - usage
+	if remaining <= 0 {
+		writeAPIError(w, httpError(http.StatusInsufficientStorage, "storage quota exceeded"))
+		return
+	}
+	copyLimit := int64(maxStorageObjectBytes)
+	if remaining < copyLimit {
+		copyLimit = remaining
 	}
 	tmp, openErr := os.OpenFile(tmpPath, os.O_WRONLY|os.O_CREATE|os.O_EXCL, 0o640)
 	if openErr != nil {
@@ -375,11 +393,11 @@ func (s *Server) storageUploadObject(w http.ResponseWriter, r *http.Request) {
 				if part.Header.Get("Content-Type") != "" {
 					mimeType = part.Header.Get("Content-Type")
 				}
-				size, err = copyLimited(tmp, part, maxStorageObjectBytes)
+				size, err = copyLimited(tmp, part, copyLimit)
 				if err != nil {
 					_ = tmp.Close()
 					if errors.Is(err, errStorageObjectTooLarge) {
-						writeAPIError(w, httpError(http.StatusRequestEntityTooLarge, "object exceeds 1 GiB limit"))
+						writeAPIError(w, storageSizeError(copyLimit))
 					} else {
 						writeAPIError(w, err)
 					}
@@ -401,11 +419,11 @@ func (s *Server) storageUploadObject(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 	} else {
-		size, err = copyLimited(tmp, r.Body, maxStorageObjectBytes)
+		size, err = copyLimited(tmp, r.Body, copyLimit)
 		if err != nil {
 			_ = tmp.Close()
 			if errors.Is(err, errStorageObjectTooLarge) {
-				writeAPIError(w, httpError(http.StatusRequestEntityTooLarge, "object exceeds 1 GiB limit"))
+				writeAPIError(w, storageSizeError(copyLimit))
 			} else {
 				writeAPIError(w, err)
 			}
@@ -417,6 +435,7 @@ func (s *Server) storageUploadObject(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	var objectID string
+	var swapped, hadPreviousFile bool
 	err = s.storageTransaction(r.Context(), who, func(tx pgx.Tx) error {
 		if bucketLimit != nil && size > *bucketLimit {
 			return httpError(http.StatusRequestEntityTooLarge, "object exceeds bucket file size limit")
@@ -432,20 +451,12 @@ func (s *Server) storageUploadObject(w http.ResponseWriter, r *http.Request) {
 				return httpError(http.StatusUnsupportedMediaType, "mime type is not allowed for bucket")
 			}
 		}
-		var previousSize int64
-		err := tx.QueryRow(r.Context(), `SELECT id,size FROM storage.objects WHERE bucket_id=$1 AND name=$2`, bucket, name).Scan(&objectID, &previousSize)
+		err := tx.QueryRow(r.Context(), `SELECT id FROM storage.objects WHERE bucket_id=$1 AND name=$2`, bucket, name).Scan(&objectID)
 		if err == nil && !upsert {
 			return httpError(http.StatusConflict, "object already exists")
 		}
 		if err != nil && err != pgx.ErrNoRows {
 			return err
-		}
-		usage, usageErr := storageUsage(s.storageRoot, who.project.id)
-		if usageErr != nil {
-			return usageErr
-		}
-		if usage-previousSize+size > s.storageQuotaBytes {
-			return httpError(http.StatusInsufficientStorage, "storage quota exceeded")
 		}
 		if objectID == "" {
 			objectID, err = auth.UUID()
@@ -456,22 +467,53 @@ func (s *Server) storageUploadObject(w http.ResponseWriter, r *http.Request) {
 		} else {
 			_, err = tx.Exec(r.Context(), `UPDATE storage.objects SET metadata=$1,size=$2,mime_type=$3,updated_at=now() WHERE id=$4`, map[string]any{"mimetype": mimeType, "cacheControl": cacheControl}, size, mimeType, objectID)
 		}
-		return err
+		if err != nil {
+			return err
+		}
+		if existing, statErr := os.Lstat(finalPath); statErr == nil {
+			if !existing.Mode().IsRegular() {
+				return httpError(http.StatusConflict, "object path conflicts with an existing directory or link")
+			}
+			if err = os.Rename(finalPath, backupPath); err != nil {
+				return err
+			}
+			hadPreviousFile = true
+		} else if !os.IsNotExist(statErr) {
+			return statErr
+		}
+		if err = os.Rename(tmpPath, finalPath); err != nil {
+			if hadPreviousFile {
+				_ = os.Rename(backupPath, finalPath)
+			}
+			return err
+		}
+		swapped = true
+		return nil
 	})
 	if err != nil {
+		if swapped {
+			_ = os.Remove(finalPath)
+			if hadPreviousFile {
+				_ = os.Rename(backupPath, finalPath)
+			}
+		}
 		writeAPIError(w, err)
 		return
 	}
-	if err = os.Rename(tmpPath, finalPath); err != nil {
-		_ = os.Remove(finalPath)
-		writeAPIError(w, err)
-		return
+	if hadPreviousFile {
+		_ = os.Remove(backupPath)
 	}
-	committed = true
 	writeJSON(w, http.StatusOK, map[string]any{"Key": bucket + "/" + name, "Id": objectID, "FullPath": bucket + "/" + name})
 }
 
 var errStorageObjectTooLarge = errors.New("storage object too large")
+
+func storageSizeError(limit int64) error {
+	if limit < maxStorageObjectBytes {
+		return httpError(http.StatusInsufficientStorage, "storage quota exceeded")
+	}
+	return httpError(http.StatusRequestEntityTooLarge, "object exceeds 1 GiB limit")
+}
 
 func copyLimited(dst io.Writer, src io.Reader, maximum int64) (int64, error) {
 	limited := io.LimitReader(src, maximum+1)
@@ -501,7 +543,7 @@ func storageUsage(root, project string) (int64, error) {
 			}
 			return err
 		}
-		if !info.IsDir() && !strings.Contains(filepath.Base(path), ".tmp-") {
+		if !info.IsDir() {
 			total += info.Size()
 		}
 		return nil
