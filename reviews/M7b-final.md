@@ -49,3 +49,13 @@ When all three pass, append "Tier 1 closed" with the date and the test output su
 
 ## Next
 Tier 2 starts with `reviews/T2a-gate.md` (customer accounts), in a new session, after Tier 1 closes.
+
+## Update 2026-10-06: tested in the cloud sandbox at 3b90f92
+3b90f92 is 25dab9c plus a test-only fix: `control/TestExtensionGuardRejectsDynamicCustomerDDL` broke when the SQL tab began refusing `DO`. It now also runs the `DO` block as a migration, so the database guard stays covered. Details are in `reports/M7b.md` → "Full test run in the cloud sandbox".
+
+What ran:
+- **Full Go suite:** 9 of 9 packages pass against real Postgres 16 with PostGIS and pgvector installed.
+- **supabase-js acceptance:** the steps of `scripts/test-supabase-js.sh`, run natively against a fresh cluster. M6a passed and M5b realtime passed.
+- **Click-through checklist:** all items pass against real `admin-serve` and the gateway, driven in Chromium. This includes item 2, never run before: a user created in the dashboard signs in through the gateway with supabase-js, and reads only their own rows through RLS. The public gateway returns 404 for `/dashboard`, and admin endpoints return 401 without the token.
+
+That satisfies conditions 2 and 3 above in substance. **Remaining condition to close Tier 1:** run `scripts/test.sh` and `scripts/test-supabase-js.sh` as written on the Pi. That is the only place the Docker images are built and run end to end, on arm64 with the Pi's memory limits. The sandbox blocked apt inside containers.
