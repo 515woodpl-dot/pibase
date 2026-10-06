@@ -114,6 +114,17 @@ func (s *Server) storageFile(p *project, bucket, name string) string {
 	return filepath.Join(s.storageRoot, p.id, bucket, filepath.FromSlash(name))
 }
 
+func (s *Server) acquireStorageLock(ctx context.Context, projectID string) (func(), error) {
+	value, _ := s.storageUploadLocks.LoadOrStore(projectID, make(chan struct{}, 1))
+	lock := value.(chan struct{})
+	select {
+	case lock <- struct{}{}:
+		return func() { <-lock }, nil
+	case <-ctx.Done():
+		return nil, ctx.Err()
+	}
+}
+
 func storageSubject(who principal) string {
 	var claims struct {
 		Subject string `json:"sub"`
@@ -273,6 +284,12 @@ func (s *Server) storageDeleteBucket(w http.ResponseWriter, r *http.Request) {
 		writeAPIError(w, err)
 		return
 	}
+	release, err := s.acquireStorageLock(r.Context(), p.id)
+	if err != nil {
+		writeAPIError(w, err)
+		return
+	}
+	defer release()
 	err = s.storageTransaction(r.Context(), storageServicePrincipal(p), func(tx pgx.Tx) error {
 		var count int
 		if e := tx.QueryRow(r.Context(), `SELECT count(*) FROM storage.objects WHERE bucket_id=$1`, name).Scan(&count); e != nil {
@@ -311,14 +328,12 @@ func (s *Server) storageUploadObject(w http.ResponseWriter, r *http.Request) {
 		writeAPIError(w, err)
 		return
 	}
-	lockValue, _ := s.storageUploadLocks.LoadOrStore(who.project.id, make(chan struct{}, 1))
-	lock := lockValue.(chan struct{})
-	select {
-	case lock <- struct{}{}:
-		defer func() { <-lock }()
-	case <-r.Context().Done():
+	release, err := s.acquireStorageLock(r.Context(), who.project.id)
+	if err != nil {
+		writeAPIError(w, err)
 		return
 	}
+	defer release()
 	mimeType := r.Header.Get("Content-Type")
 	if mimeType == "" {
 		mimeType = "application/octet-stream"
@@ -465,7 +480,13 @@ func (s *Server) storageUploadObject(w http.ResponseWriter, r *http.Request) {
 			}
 			_, err = tx.Exec(r.Context(), `INSERT INTO storage.objects(id,bucket_id,name,owner_id,metadata,size,mime_type) VALUES($1,$2,$3,$4,$5,$6,$7)`, objectID, bucket, name, nullableUUID(owner), map[string]any{"mimetype": mimeType, "cacheControl": cacheControl}, size, mimeType)
 		} else {
-			_, err = tx.Exec(r.Context(), `UPDATE storage.objects SET metadata=$1,size=$2,mime_type=$3,updated_at=now() WHERE id=$4`, map[string]any{"mimetype": mimeType, "cacheControl": cacheControl}, size, mimeType, objectID)
+			tag, updateErr := tx.Exec(r.Context(), `UPDATE storage.objects SET metadata=$1,size=$2,mime_type=$3,updated_at=now() WHERE id=$4`, map[string]any{"mimetype": mimeType, "cacheControl": cacheControl}, size, mimeType, objectID)
+			if updateErr != nil {
+				return updateErr
+			}
+			if tag.RowsAffected() != 1 {
+				return httpError(http.StatusForbidden, "object update is not allowed")
+			}
 		}
 		if err != nil {
 			return err
@@ -736,6 +757,7 @@ func (s *Server) storageDeleteObjects(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	names := make([]string, 0, len(request.Prefixes))
+	seen := make(map[string]bool, len(request.Prefixes))
 	for _, raw := range request.Prefixes {
 		var name string
 		if json.Unmarshal(raw, &name) != nil {
@@ -752,12 +774,25 @@ func (s *Server) storageDeleteObjects(w http.ResponseWriter, r *http.Request) {
 			writeAPIError(w, err)
 			return
 		}
-		names = append(names, name)
+		if !seen[name] {
+			names = append(names, name)
+			seen[name] = true
+		}
 	}
+	release, err := s.acquireStorageLock(r.Context(), who.project.id)
+	if err != nil {
+		writeAPIError(w, err)
+		return
+	}
+	defer release()
 	err = s.storageTransaction(r.Context(), who, func(tx pgx.Tx) error {
 		for _, name := range names {
-			if _, e := tx.Exec(r.Context(), `DELETE FROM storage.objects WHERE bucket_id=$1 AND name=$2`, bucket, name); e != nil {
+			tag, e := tx.Exec(r.Context(), `DELETE FROM storage.objects WHERE bucket_id=$1 AND name=$2`, bucket, name)
+			if e != nil {
 				return e
+			}
+			if tag.RowsAffected() != 1 {
+				return httpError(http.StatusNotFound, "object not found")
 			}
 		}
 		return nil

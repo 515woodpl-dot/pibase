@@ -74,6 +74,26 @@ func TestM3StorageRLSAndSignedURLs(t *testing.T) {
 	if upsertResponse.StatusCode != http.StatusOK {
 		t.Fatalf("upsert status: %d", upsertResponse.StatusCode)
 	}
+	otherToken, err := keys.SignJWT(secret, map[string]any{"iss": "pibase", "aud": "authenticated", "role": "authenticated", "sub": "22222222-2222-4222-8222-222222222222", "iat": time.Now().Unix(), "exp": time.Now().Add(time.Hour).Unix()})
+	if err != nil {
+		t.Fatal(err)
+	}
+	otherUpsert, err := http.NewRequest(http.MethodPost, httpServer.URL+"/storage/v1/object/public-files/hello.txt", strings.NewReader("unauthorized replacement"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	otherUpsert.Header.Set("apikey", p.AnonKey)
+	otherUpsert.Header.Set("Authorization", "Bearer "+otherToken)
+	otherUpsert.Header.Set("x-upsert", "true")
+	otherResponse, err := httpServer.Client().Do(otherUpsert)
+	if err != nil {
+		t.Fatal(err)
+	}
+	_ = otherResponse.Body.Close()
+	if otherResponse.StatusCode != http.StatusForbidden {
+		t.Fatalf("cross-user upsert status: got %d, want 403", otherResponse.StatusCode)
+	}
+	requestStorage(t, httpServer.Client(), http.MethodDelete, httpServer.URL+"/storage/v1/object/public-files", p.AnonKey, otherToken, []byte(`{"prefixes":["hello.txt"]}`), "application/json", http.StatusNotFound)
 	response := requestStorage(t, httpServer.Client(), http.MethodGet, httpServer.URL+"/storage/v1/object/public/public-files/hello.txt", "", "", nil, "", http.StatusOK)
 	if string(response) != "updated storage" {
 		t.Fatalf("public download: %q", response)
