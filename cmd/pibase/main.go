@@ -270,7 +270,7 @@ func adminServe() error {
 	if err := validateAdminAddr(addr, os.Getenv("PIBASE_ADMIN_ALLOW_NONLOCAL") == "1"); err != nil {
 		return err
 	}
-	s, err := adminserver.New(adminserver.Config{AdminURL: adminURL, DatabaseURL: databaseURL, StorageRoot: os.Getenv("PIBASE_STORAGE_ROOT"), BackupRoot: os.Getenv("PIBASE_BACKUP_ROOT"), Token: token, MasterKey: master, BackupKey: backupKey})
+	s, err := adminserver.New(adminserver.Config{AdminURL: adminURL, DatabaseURL: databaseURL, StorageRoot: os.Getenv("PIBASE_STORAGE_ROOT"), BackupRoot: os.Getenv("PIBASE_BACKUP_ROOT"), Token: token, MasterKey: master, BackupKey: backupKey, PublicURL: os.Getenv("PIBASE_PUBLIC_URL")})
 	if err != nil {
 		return err
 	}

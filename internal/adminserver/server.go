@@ -29,8 +29,11 @@ import (
 type Config struct {
 	AdminURL, DatabaseURL, StorageRoot, BackupRoot, Token string
 	MasterKey, BackupKey                                  []byte
-	// Env is "test" in test environments; disables Secure cookie flag.
+	// Env is "test" in test environments; disables Secure cookie flag and rate limiting.
 	Env string
+	// PublicURL is the base URL of the public gateway (e.g. "https://api.example.com").
+	// When set, every project stat includes api_url = PublicURL+"/"+id.
+	PublicURL string
 }
 
 type Server struct {
@@ -99,6 +102,8 @@ func (s *Server) Handler() http.Handler {
 	mux.HandleFunc("POST /_pibase/auth/login", s.authLogin)
 	mux.HandleFunc("POST /_pibase/auth/logout", s.authLogout)
 	mux.HandleFunc("GET /_pibase/auth/me", s.authMe)
+	mux.HandleFunc("POST /_pibase/auth/password", s.authPassword)
+	mux.HandleFunc("DELETE /_pibase/auth/account", s.authDeleteAccount)
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		w.Header().Set("Cache-Control", "no-store")
 		// Page and auth endpoints need no operator credential.
@@ -279,6 +284,69 @@ func (s *Server) authMe(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	writeJSON(w, http.StatusOK, account)
+}
+
+func (s *Server) authPassword(w http.ResponseWriter, r *http.Request) {
+	token := sessionCookieValue(r)
+	if token == "" {
+		http.Error(w, "not authenticated", http.StatusUnauthorized)
+		return
+	}
+	account, err := control.ResolveSession(r.Context(), s.AdminURL, token)
+	if err != nil {
+		http.Error(w, "not authenticated", http.StatusUnauthorized)
+		return
+	}
+	ip := clientIP(r)
+	if s.Env != "test" && !s.loginLimit.Allow(ip, 5, 10*time.Minute) {
+		http.Error(w, "too many requests", http.StatusTooManyRequests)
+		return
+	}
+	var b struct {
+		CurrentPassword string `json:"current_password"`
+		NewPassword     string `json:"new_password"`
+	}
+	if !jsonBody(w, r, &b) {
+		return
+	}
+	if err := control.ChangePassword(r.Context(), s.AdminURL, account.ID, b.CurrentPassword, b.NewPassword); err != nil {
+		if strings.Contains(err.Error(), "invalid credentials") {
+			http.Error(w, "invalid credentials", http.StatusUnauthorized)
+			return
+		}
+		http.Error(w, err.Error(), http.StatusBadRequest)
+		return
+	}
+	w.WriteHeader(http.StatusNoContent)
+}
+
+func (s *Server) authDeleteAccount(w http.ResponseWriter, r *http.Request) {
+	token := sessionCookieValue(r)
+	if token == "" {
+		http.Error(w, "not authenticated", http.StatusUnauthorized)
+		return
+	}
+	account, err := control.ResolveSession(r.Context(), s.AdminURL, token)
+	if err != nil {
+		http.Error(w, "not authenticated", http.StatusUnauthorized)
+		return
+	}
+	var b struct {
+		Confirm string `json:"confirm"`
+	}
+	if !jsonBody(w, r, &b) {
+		return
+	}
+	if b.Confirm != account.Email {
+		http.Error(w, "type your email address to confirm deletion", http.StatusBadRequest)
+		return
+	}
+	if err := control.DeleteAccount(r.Context(), s.AdminURL, account.ID); err != nil {
+		fail(w, err)
+		return
+	}
+	clearSessionCookie(w)
+	w.WriteHeader(http.StatusNoContent)
 }
 
 // --- Project endpoints ---
@@ -529,6 +597,11 @@ func (s *Server) projects(w http.ResponseWriter, r *http.Request) {
 	if err != nil {
 		fail(w, err)
 		return
+	}
+	if s.PublicURL != "" {
+		for i := range stats {
+			stats[i].APIURL = strings.TrimRight(s.PublicURL, "/") + "/" + stats[i].ID
+		}
 	}
 	writeJSON(w, 200, stats)
 }

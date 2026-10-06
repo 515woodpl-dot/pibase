@@ -43,9 +43,10 @@ type ProjectUsage struct {
 
 type ProjectStat struct {
 	ProjectSummary
-	DatabaseBytes int64 `json:"database_bytes"`
-	StorageBytes  int64 `json:"storage_bytes"`
-	Requests30d   int64 `json:"requests_30d"`
+	DatabaseBytes int64  `json:"database_bytes"`
+	StorageBytes  int64  `json:"storage_bytes"`
+	Requests30d   int64  `json:"requests_30d"`
+	APIURL        string `json:"api_url,omitempty"`
 }
 
 // ProjectStats returns bounded operator telemetry without keys or encrypted material.

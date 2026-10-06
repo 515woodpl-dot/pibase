@@ -200,6 +200,68 @@ func SetProjectOwner(ctx context.Context, adminURL, projectID, accountID string)
 	return nil
 }
 
+// ChangePassword verifies currentPassword then replaces the stored hash.
+func ChangePassword(ctx context.Context, adminURL, accountID, currentPassword, newPassword string) error {
+	if len(newPassword) < 8 || len(newPassword) > 1024 {
+		return fmt.Errorf("password must be between 8 and 1024 characters")
+	}
+	conn, err := controlDBConn(ctx, adminURL)
+	if err != nil {
+		return fmt.Errorf("invalid credentials")
+	}
+	defer conn.Close(ctx)
+	var stored string
+	err = conn.QueryRow(ctx, `SELECT password_hash FROM control.accounts WHERE id=$1`, accountID).Scan(&stored)
+	if err != nil {
+		auth.VerifyPassword(currentPassword, auth.DummyPasswordHash())
+		return fmt.Errorf("invalid credentials")
+	}
+	if !auth.VerifyPassword(currentPassword, stored) {
+		return fmt.Errorf("invalid credentials")
+	}
+	hash, err := auth.HashPassword(newPassword)
+	if err != nil {
+		return err
+	}
+	_, err = conn.Exec(ctx, `UPDATE control.accounts SET password_hash=$1 WHERE id=$2`, hash, accountID)
+	return err
+}
+
+// DeleteAccount deletes all projects owned by accountID then deletes the account.
+// Sessions are removed via ON DELETE CASCADE on control.sessions.
+func DeleteAccount(ctx context.Context, adminURL, accountID string) error {
+	conn, err := controlDBConn(ctx, adminURL)
+	if err != nil {
+		return err
+	}
+	defer conn.Close(ctx)
+	rows, err := conn.Query(ctx, `SELECT id FROM control.projects WHERE owner_id=$1`, accountID)
+	if err != nil {
+		return err
+	}
+	var projectIDs []string
+	for rows.Next() {
+		var id string
+		if err := rows.Scan(&id); err != nil {
+			rows.Close()
+			return err
+		}
+		projectIDs = append(projectIDs, id)
+	}
+	if err := rows.Err(); err != nil {
+		rows.Close()
+		return err
+	}
+	rows.Close()
+	for _, id := range projectIDs {
+		if err := DeleteProject(ctx, adminURL, id); err != nil {
+			return fmt.Errorf("delete project %s: %w", id, err)
+		}
+	}
+	_, err = conn.Exec(ctx, `DELETE FROM control.accounts WHERE id=$1`, accountID)
+	return err
+}
+
 // controlDBConn opens a connection to the _control database.
 func controlDBConn(ctx context.Context, adminURL string) (*pgx.Conn, error) {
 	u, err := withDatabase(adminURL, "_control")
