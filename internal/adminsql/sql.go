@@ -151,18 +151,26 @@ func validateOwnerSQL(statement string) error {
 	}
 	tokens := sqlTokens(statement)
 	for i, token := range tokens {
+		token = sqlToken(token)
+		next := ""
+		if i+1 < len(tokens) {
+			next = sqlToken(tokens[i+1])
+		}
 		if token == "grant" || token == "revoke" || token == "copy" || token == "program" || token == "set_config" {
+			if strings.HasPrefix(tokens[i], "\x00") {
+				continue
+			}
 			return fmt.Errorf("owner SQL contains a forbidden privilege-changing construct")
 		}
-		if token == "reset" && (i+1 >= len(tokens) || tokens[i+1] == "all" || tokens[i+1] == "role" || tokens[i+1] == "session_authorization") {
+		if token == "reset" && (i+1 >= len(tokens) || next == "all" || next == "role" || next == "session_authorization" || (next == "session" && i+2 < len(tokens) && sqlToken(tokens[i+2]) == "authorization")) {
 			return fmt.Errorf("owner SQL contains a forbidden privilege-changing construct")
 		}
 		if token == "set" {
 			j := i + 1
-			for j < len(tokens) && (tokens[j] == "local" || tokens[j] == "session") {
+			for j < len(tokens) && (sqlToken(tokens[j]) == "local" || sqlToken(tokens[j]) == "session") {
 				j++
 			}
-			if j < len(tokens) && (tokens[j] == "role" || tokens[j] == "session_authorization") {
+			if j < len(tokens) && (sqlToken(tokens[j]) == "role" || sqlToken(tokens[j]) == "session_authorization" || (sqlToken(tokens[j]) == "session" && j+1 < len(tokens) && sqlToken(tokens[j+1]) == "authorization")) {
 				return fmt.Errorf("owner SQL contains a forbidden privilege-changing construct")
 			}
 		}
@@ -172,6 +180,8 @@ func validateOwnerSQL(statement string) error {
 	}
 	return nil
 }
+
+func sqlToken(token string) string { return strings.TrimPrefix(token, "\x00") }
 
 func validateNoExtensionDDL(statement string) error {
 	tokens := sqlTokens(statement)
@@ -240,7 +250,7 @@ func sqlTokens(statement string) []string {
 				i++
 				break
 			}
-			tokens = append(tokens, strings.ToLower(quoted.String()))
+			tokens = append(tokens, "\x00"+strings.ToLower(quoted.String()))
 		case statement[i] == '$':
 			end := i + 1
 			for end < len(statement) && (statement[end] == '_' || statement[end] >= 'a' && statement[end] <= 'z' || statement[end] >= 'A' && statement[end] <= 'Z' || statement[end] >= '0' && statement[end] <= '9') {

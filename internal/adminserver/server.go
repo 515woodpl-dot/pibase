@@ -19,10 +19,10 @@ import (
 	"time"
 
 	"github.com/515woodpl-dot/pibase/internal/adminsql"
+	"github.com/515woodpl-dot/pibase/internal/auth"
 	"github.com/515woodpl-dot/pibase/internal/backup"
 	"github.com/515woodpl-dot/pibase/internal/control"
 	"github.com/jackc/pgx/v5"
-	"golang.org/x/crypto/bcrypt"
 )
 
 type Config struct {
@@ -357,7 +357,12 @@ func keyText(pk []string, key map[string]any) string {
 // auth schema is operator-owned and is not accessible to project owner SQL.
 // Its statements are fixed and all caller values are bound.
 func (s *Server) projectDB(ctx context.Context, id string) (*pgx.Conn, error) {
-	c, err := pgx.Connect(ctx, s.AdminURL)
+	controlURL, err := url.Parse(s.AdminURL)
+	if err != nil {
+		return nil, err
+	}
+	controlURL.Path = "/_control"
+	c, err := pgx.Connect(ctx, controlURL.String())
 	if err != nil {
 		return nil, err
 	}
@@ -417,7 +422,7 @@ func (s *Server) createUser(w http.ResponseWriter, r *http.Request) {
 		fail(w, fmt.Errorf("email and a password of at least 8 characters are required"))
 		return
 	}
-	hash, err := bcrypt.GenerateFromPassword([]byte(b.Password), bcrypt.DefaultCost)
+	hash, err := auth.HashPassword(b.Password)
 	if err != nil {
 		fail(w, err)
 		return
@@ -437,7 +442,7 @@ func (s *Server) createUser(w http.ResponseWriter, r *http.Request) {
 	if b.EmailConfirm {
 		confirmed = time.Now().UTC()
 	}
-	_, err = c.Exec(r.Context(), `INSERT INTO auth.users(id,email,password_hash,email_confirmed_at) VALUES($1,$2,$3,$4)`, id, b.Email, string(hash), confirmed)
+	_, err = c.Exec(r.Context(), `INSERT INTO auth.users(id,email,password_hash,email_confirmed_at) VALUES($1,$2,$3,$4)`, id, b.Email, hash, confirmed)
 	if err != nil {
 		fail(w, err)
 		return
