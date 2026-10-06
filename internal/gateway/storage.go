@@ -87,7 +87,7 @@ func (s *Server) storageTransaction(ctx context.Context, who principal, fn func(
 
 func storageBucketName(raw string) (string, error) {
 	name, err := url.PathUnescape(raw)
-	if err != nil || name == "" || name == "." || name == ".." || len(name) > 100 || strings.ContainsAny(name, `/\\\x00`) {
+	if err != nil || name == "" || name == "." || name == ".." || len(name) > 100 || strings.ContainsAny(name, "/\\\x00") {
 		return "", httpError(http.StatusBadRequest, "invalid bucket name")
 	}
 	for _, r := range name {
