@@ -59,3 +59,18 @@ What ran:
 - **Click-through checklist:** all items pass against real `admin-serve` and the gateway, driven in Chromium. This includes item 2, never run before: a user created in the dashboard signs in through the gateway with supabase-js, and reads only their own rows through RLS. The public gateway returns 404 for `/dashboard`, and admin endpoints return 401 without the token.
 
 That satisfies conditions 2 and 3 above in substance. **Remaining condition to close Tier 1:** run `scripts/test.sh` and `scripts/test-supabase-js.sh` as written on the Pi. That is the only place the Docker images are built and run end to end, on arm64 with the Pi's memory limits. The sandbox blocked apt inside containers.
+
+## Tier 1 closed — 2026-10-06
+The remaining condition is met by George's commit c0efb64 on `pibase/m7`. Its parent is 3b90f92, and it changes no code, only the two Pi logs under `reports/raw/`. Both scripts were run as written on the Raspberry Pi (aarch64):
+- `scripts/test.sh`:
+  - The setup-pi checks passed.
+  - The in-Docker gofmt, vet and unit tests passed in all packages.
+  - The production image and `Dockerfile.postgres` (pgvector + PostGIS) both built.
+  - The real-Postgres integration tests passed: backup, control, gateway and adminserver.
+  - No FAIL or error lines appear in the log. The log does not record the script's exit status, and its last step (the arm64 binary build) prints nothing when it succeeds.
+- `scripts/test-supabase-js.sh`: "supabase-js M6a acceptance passed" and "supabase-js M5b realtime acceptance passed".
+
+**M7 is approved and Tier 1 (M0 to M7) is closed at 3b90f92.** Carried forward:
+- Decide whether to replace the SQL-tab filter with a real parser before Tier 2 exposes SQL to customers.
+- The accepted gaps listed above remain.
+- Next: `reviews/T2a-gate.md` (customer accounts), in a new session.
