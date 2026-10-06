@@ -81,7 +81,7 @@ func run(ctx context.Context, adminURL, projectID, statement string, validate bo
 		}
 		row := make(map[string]any, len(values))
 		for i, value := range values {
-			row[result.Columns[i]] = value
+			row[result.Columns[i]] = displayValue(value)
 		}
 		result.Rows = append(result.Rows, row)
 	}
@@ -190,6 +190,18 @@ func validateOwnerSQL(statement string) error {
 		}
 	}
 	return nil
+}
+
+// displayValue keeps uuid and bytea readable in JSON instead of byte arrays.
+func displayValue(v any) any {
+	switch x := v.(type) {
+	case [16]byte:
+		h := hex.EncodeToString(x[:])
+		return h[0:8] + "-" + h[8:12] + "-" + h[12:16] + "-" + h[16:20] + "-" + h[20:]
+	case []byte:
+		return `\x` + hex.EncodeToString(x)
+	}
+	return v
 }
 
 func sqlToken(token string) string { return strings.TrimPrefix(token, "\x00") }

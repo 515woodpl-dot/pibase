@@ -51,11 +51,21 @@ None of these are related to M7b changes.
 - **Real browser clicking**: screenshots taken programmatically; no manual click-through.
 
 ## Screenshots
-- `reports/m7b-1280.png` (1280px): Layout correct — left sidebar, pane columns, no overflow.
-- `reports/m7b-390.png` (390px): **Left sidebar overlaps main content** — "Projects" heading and "Create project" text partially hidden behind the sidebar. The sidebar has a fixed width that doesn't collapse at narrow viewports. This is a pre-existing layout issue, not introduced by M7b.
+Taken with headless Chromium driving the real page against real Postgres (token entered, project opened, Tables → customers → Browse rows, then Users, SQL, Backups, Migrations at both widths; no page errors).
+- `reports/m7b-1280.png`: rows pane (wide pane, table scrolls inside it).
+- `reports/m7b-390.png`: rows page 2 at phone width, Next disabled.
+
+### UI fixes after the first screenshots (follow-up commit)
+The first screenshots were of the empty landing page (wrong URL), so they missed these. All found by driving the page and fixed:
+1. Opening a pane scrolled the chain to its far right, slicing the left-most visible pane mid-word (both widths). Now `alignChain()` scrolls so the left-most visible pane starts on its own edge.
+2. At 390px panes were 330px in a 270px column, so no pane was ever fully visible. Panes now take exactly the width beside the menu on phones.
+3. The rows table pushed its pane wider instead of scrolling. Rows and SQL panes are now wide panes (760px) with the table scrolling inside.
+4. SQL results were raw JSON and a uuid showed as an array of 16 numbers. Results now render as the same table as Browse; uuid and bytea are converted to text server-side (`displayValue`, unit-tested).
+5. "Back up now" and "Apply migration" reloaded their pane and wiped the "Created: …" / "Applied: …" message. The message now survives the reload (checked in the browser).
+6. Disabled Previous/Next looked enabled; pager buttons were misaligned; project action buttons and the user form had no spacing; migration times were raw ISO strings; favicon request returned 401 in the console.
 
 ## Known gaps
-1. Mobile layout overlap at 390px (pre-existing, not M7b).
+1. The 390px layout is usable but cramped: the left menu keeps 120px (the UI rules require a left menu).
 2. Gateway sign-in test not added for M7b-02 (would need full gateway wiring).
 3. Docker gates pending.
 4. Connection count assertion for M7b-07 not added (would need `pg_stat_activity` query in test); the implementation uses a single `TableMeta` call so it is structurally one connection.

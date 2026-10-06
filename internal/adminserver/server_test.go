@@ -46,7 +46,7 @@ func TestDashboardUIHardRules(t *testing.T) {
 			t.Fatalf("dashboard contains forbidden %q", forbidden)
 		}
 	}
-	for _, required := range []string{"--ink:#333", "-webkit-tap-highlight-color:transparent", ":focus-visible", "chain.scrollLeft=chain.scrollWidth", "textContent"} {
+	for _, required := range []string{"--ink:#333", "-webkit-tap-highlight-color:transparent", ":focus-visible", "function alignChain()", "chain.scrollLeft=x", "function dataTable(", "textContent"} {
 		if !strings.Contains(page, required) {
 			t.Fatalf("dashboard misses %q", required)
 		}

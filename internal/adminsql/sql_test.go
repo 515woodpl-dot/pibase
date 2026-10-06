@@ -141,3 +141,16 @@ func TestSQLFilterComprehensive(t *testing.T) {
 		}
 	}
 }
+
+func TestDisplayValueMakesUUIDAndByteaReadable(t *testing.T) {
+	id := [16]byte{0x00, 0xf4, 0x7c, 0x10, 0x34, 0xaa, 0x40, 0x50, 0x82, 0x5b, 0xe8, 0xd8, 0x78, 0x33, 0xde, 0x9e}
+	if got := displayValue(id); got != "00f47c10-34aa-4050-825b-e8d87833de9e" {
+		t.Fatalf("uuid = %v", got)
+	}
+	if got := displayValue([]byte{0xde, 0xad}); got != `\xdead` {
+		t.Fatalf("bytea = %v", got)
+	}
+	if got := displayValue("text"); got != "text" {
+		t.Fatalf("text = %v", got)
+	}
+}
