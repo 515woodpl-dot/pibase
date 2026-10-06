@@ -36,7 +36,7 @@ The existing `Usage` function (introduced in an earlier milestone) is reused unc
 | `PATCH /_pibase/projects/{id}/limits` | `setLimits` | Calls `control.SetLimits` |
 
 Both handlers call `checkOwner` first: operators pass unconditionally; account
-sessions are verified to own the project.
+sessions are verified to own the project. (`setLimits` is operator-only since the T2 review.)
 
 `usage` returns a JSON array (empty `[]` when no rows, never `null`).
 
@@ -53,9 +53,9 @@ sessions are verified to own the project.
 | L1 | Operator sets `max_database_bytes=2GiB` → limit appears in project list | 204 |
 | L2 | Zero `max_database_bytes` → rejected | 400 |
 | L3 | Non-owner sets limits → forbidden | 403 |
-| L4 | Owner sets limits on own project | 204 |
+| L4 | Owner sets limits on own project (changed in T2 review: limits are operator-only) | 403 |
 
-All 7 sub-tests pass with `go test ./...`.
+> Correction (2026-10-06): the original "all pass" claim was made with integration tests skipped (no test database). They were later run against PostgreSQL 16 and pass. Owner access to `/limits` was a bug and is now operator-only. See `T2-review.md`.
 
 ## Build and test
 

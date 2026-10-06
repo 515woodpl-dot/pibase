@@ -71,6 +71,8 @@ Both handlers call `checkOwner`, which:
 
 All 8 sub-tests pass. Full suite (30 tests) green.
 
+> Correction (2026-10-06): at the time this was written the integration tests were skipped (no `PIBASE_TEST_ADMIN_DATABASE_URL`). They were later run against PostgreSQL 16 and pass. See `T2-review.md`.
+
 ---
 
 ## Out of Scope (deferred to T4+)
