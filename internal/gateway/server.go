@@ -33,6 +33,7 @@ type Server struct {
 	storageRoot        string
 	storageQuotaBytes  int64
 	storageUploadLocks sync.Map
+	storageUploadSlots sync.Map
 	startedAt          time.Time
 	requestCount       atomic.Uint64
 	realtime           *realtimeHub

@@ -87,7 +87,7 @@ func (s *Server) storageTransaction(ctx context.Context, who principal, fn func(
 
 func storageBucketName(raw string) (string, error) {
 	name, err := url.PathUnescape(raw)
-	if err != nil || name == "" || len(name) > 100 || strings.ContainsAny(name, `/\\\x00`) {
+	if err != nil || name == "" || name == "." || name == ".." || len(name) > 100 || strings.ContainsAny(name, `/\\\x00`) {
 		return "", httpError(http.StatusBadRequest, "invalid bucket name")
 	}
 	for _, r := range name {
@@ -110,8 +110,77 @@ func storageObjectName(raw string) (string, error) {
 	return name, nil
 }
 
-func (s *Server) storageFile(p *project, bucket, name string) string {
-	return filepath.Join(s.storageRoot, p.id, bucket, filepath.FromSlash(name))
+func (s *Server) storageFile(p *project, bucket, name string) (string, error) {
+	// Validate catalog values too: older databases may contain unsafe names.
+	if validated, err := storageBucketName(bucket); err != nil || validated != bucket {
+		return "", httpError(http.StatusBadRequest, "invalid bucket name")
+	}
+	if validated, err := storageObjectName(url.PathEscape(name)); err != nil || validated != name {
+		return "", httpError(http.StatusBadRequest, "invalid object path")
+	}
+	return filepath.Join(s.storageRoot, p.id, bucket, filepath.FromSlash(name)), nil
+}
+
+// Read from the network outside the lock. Serialize only quota accounting and
+// local writes, so stalled clients cannot block deletes or other uploads.
+type storageQuotaWriter struct {
+	s         *Server
+	ctx       context.Context
+	projectID string
+	file      *os.File
+}
+
+func (w storageQuotaWriter) Write(data []byte) (int, error) {
+	release, err := w.s.acquireStorageLock(w.ctx, w.projectID)
+	if err != nil {
+		return 0, err
+	}
+	defer release()
+	usage, err := storageUsage(w.s.storageRoot, w.projectID)
+	if err != nil {
+		return 0, err
+	}
+	if int64(len(data)) > w.s.storageQuotaBytes-usage {
+		return 0, httpError(http.StatusInsufficientStorage, "storage quota exceeded")
+	}
+	return w.file.Write(data)
+}
+
+var errStoragePreflightComplete = errors.New("storage authorization checked")
+
+func (s *Server) storageUploadPreflight(ctx context.Context, who principal, bucket, name, owner string, upsert bool) error {
+	err := s.storageTransaction(ctx, who, func(tx pgx.Tx) error {
+		var id string
+		err := tx.QueryRow(ctx, `SELECT id FROM storage.objects WHERE bucket_id=$1 AND name=$2`, bucket, name).Scan(&id)
+		if err == nil {
+			if !upsert {
+				return httpError(http.StatusConflict, "object already exists")
+			}
+			tag, err := tx.Exec(ctx, `UPDATE storage.objects SET name=name WHERE id=$1`, id)
+			if err != nil {
+				return err
+			}
+			if tag.RowsAffected() != 1 {
+				return httpError(http.StatusForbidden, "object update is not allowed")
+			}
+		} else if errors.Is(err, pgx.ErrNoRows) {
+			id, err = auth.UUID()
+			if err != nil {
+				return err
+			}
+			if _, err = tx.Exec(ctx, `INSERT INTO storage.objects(id,bucket_id,name,owner_id,size) VALUES($1,$2,$3,$4,0)`, id, bucket, name, nullableUUID(owner)); err != nil {
+				return err
+			}
+		} else {
+			return err
+		}
+		// Roll back the probe; authorization is checked again at finalization.
+		return errStoragePreflightComplete
+	})
+	if errors.Is(err, errStoragePreflightComplete) {
+		return nil
+	}
+	return err
 }
 
 func (s *Server) acquireStorageLock(ctx context.Context, projectID string) (func(), error) {
@@ -328,12 +397,6 @@ func (s *Server) storageUploadObject(w http.ResponseWriter, r *http.Request) {
 		writeAPIError(w, err)
 		return
 	}
-	release, err := s.acquireStorageLock(r.Context(), who.project.id)
-	if err != nil {
-		writeAPIError(w, err)
-		return
-	}
-	defer release()
 	mimeType := r.Header.Get("Content-Type")
 	if mimeType == "" {
 		mimeType = "application/octet-stream"
@@ -345,14 +408,23 @@ func (s *Server) storageUploadObject(w http.ResponseWriter, r *http.Request) {
 		writeAPIError(w, httpError(http.StatusUnauthorized, "authenticated storage session required"))
 		return
 	}
-	finalPath := s.storageFile(who.project, bucket, name)
-	tmpPath := finalPath + ".tmp-" + strconv.FormatInt(time.Now().UnixNano(), 10)
-	backupPath := tmpPath + ".old"
-	defer func() { _ = os.Remove(tmpPath) }()
-	if err = os.MkdirAll(filepath.Dir(finalPath), 0o750); err != nil {
+	value, _ := s.storageUploadSlots.LoadOrStore(who.project.id, make(chan struct{}, 8))
+	slots := value.(chan struct{})
+	select {
+	case slots <- struct{}{}:
+		defer func() { <-slots }()
+	default:
+		writeAPIError(w, httpError(http.StatusTooManyRequests, "too many active uploads"))
+		return
+	}
+	finalPath, err := s.storageFile(who.project, bucket, name)
+	if err != nil {
 		writeAPIError(w, err)
 		return
 	}
+	tmpPath := finalPath + ".tmp-" + strconv.FormatInt(time.Now().UnixNano(), 10)
+	backupPath := tmpPath + ".old"
+	defer func() { _ = os.Remove(tmpPath) }()
 	var bucketLimit *int64
 	var allowedMimes []string
 	if err = s.storageTransaction(r.Context(), storageServicePrincipal(*who.project), func(tx pgx.Tx) error {
@@ -361,25 +433,21 @@ func (s *Server) storageUploadObject(w http.ResponseWriter, r *http.Request) {
 		writeAPIError(w, httpError(http.StatusNotFound, "bucket not found"))
 		return
 	}
-	usage, err := storageUsage(s.storageRoot, who.project.id)
-	if err != nil {
+	if err = s.storageUploadPreflight(r.Context(), who, bucket, name, owner, upsert); err != nil {
 		writeAPIError(w, err)
 		return
 	}
-	remaining := s.storageQuotaBytes - usage
-	if remaining <= 0 {
-		writeAPIError(w, httpError(http.StatusInsufficientStorage, "storage quota exceeded"))
+	if err = os.MkdirAll(filepath.Dir(finalPath), 0o750); err != nil {
+		writeAPIError(w, err)
 		return
 	}
 	copyLimit := int64(maxStorageObjectBytes)
-	if remaining < copyLimit {
-		copyLimit = remaining
-	}
 	tmp, openErr := os.OpenFile(tmpPath, os.O_WRONLY|os.O_CREATE|os.O_EXCL, 0o640)
 	if openErr != nil {
 		writeAPIError(w, openErr)
 		return
 	}
+	quotaWriter := storageQuotaWriter{s: s, ctx: r.Context(), projectID: who.project.id, file: tmp}
 	var size int64
 	if strings.HasPrefix(strings.ToLower(mimeType), "multipart/form-data") {
 		mediaType, params, parseErr := mime.ParseMediaType(mimeType)
@@ -408,7 +476,7 @@ func (s *Server) storageUploadObject(w http.ResponseWriter, r *http.Request) {
 				if part.Header.Get("Content-Type") != "" {
 					mimeType = part.Header.Get("Content-Type")
 				}
-				size, err = copyLimited(tmp, part, copyLimit)
+				size, err = copyLimited(quotaWriter, part, copyLimit)
 				if err != nil {
 					_ = tmp.Close()
 					if errors.Is(err, errStorageObjectTooLarge) {
@@ -434,7 +502,7 @@ func (s *Server) storageUploadObject(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 	} else {
-		size, err = copyLimited(tmp, r.Body, copyLimit)
+		size, err = copyLimited(quotaWriter, r.Body, copyLimit)
 		if err != nil {
 			_ = tmp.Close()
 			if errors.Is(err, errStorageObjectTooLarge) {
@@ -449,6 +517,12 @@ func (s *Server) storageUploadObject(w http.ResponseWriter, r *http.Request) {
 		writeAPIError(w, err)
 		return
 	}
+	release, err := s.acquireStorageLock(r.Context(), who.project.id)
+	if err != nil {
+		writeAPIError(w, err)
+		return
+	}
+	defer release()
 	var objectID string
 	var swapped, hadPreviousFile bool
 	err = s.storageTransaction(r.Context(), who, func(tx pgx.Tx) error {
@@ -587,7 +661,11 @@ func (s *Server) readStorageObject(ctx context.Context, who principal, bucket, n
 }
 
 func (s *Server) serveStorageObject(w http.ResponseWriter, r *http.Request, p *project, object objectInfo) {
-	file := s.storageFile(p, object.Bucket, object.Name)
+	file, err := s.storageFile(p, object.Bucket, object.Name)
+	if err != nil {
+		writeAPIError(w, err)
+		return
+	}
 	if _, err := os.Stat(file); err != nil {
 		writeAPIError(w, httpError(http.StatusNotFound, "object data not found"))
 		return
@@ -802,7 +880,12 @@ func (s *Server) storageDeleteObjects(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	for _, name := range names {
-		if removeErr := os.Remove(s.storageFile(who.project, bucket, name)); removeErr != nil && !os.IsNotExist(removeErr) {
+		file, pathErr := s.storageFile(who.project, bucket, name)
+		if pathErr != nil {
+			writeAPIError(w, pathErr)
+			return
+		}
+		if removeErr := os.Remove(file); removeErr != nil && !os.IsNotExist(removeErr) {
 			writeAPIError(w, removeErr)
 			return
 		}
