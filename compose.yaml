@@ -76,6 +76,7 @@ services:
       PIBASE_ADMIN_ALLOW_NONLOCAL: "1"
       PIBASE_STORAGE_ROOT: /data/files
       PIBASE_BACKUP_ROOT: /data/backups
+      PIBASE_MAX_PROJECTS_PER_ACCOUNT: ${PIBASE_MAX_PROJECTS_PER_ACCOUNT:-2}
     depends_on:
       bootstrap:
         condition: service_completed_successfully

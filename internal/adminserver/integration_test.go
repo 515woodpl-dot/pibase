@@ -1568,9 +1568,105 @@ func TestProjectManagement(t *testing.T) {
 		acctCall("PATCH", "/_pibase/projects/"+acctProjID+"/limits", string(rb), cookieB, 403)
 	})
 
-	// L4: owner can set limits on their own project.
-	t.Run("L4_owner_limits_allowed", func(t *testing.T) {
-		rb, _ := json.Marshal(map[string]int64{"max_database_bytes": 512 << 20})
-		acctCall("PATCH", "/_pibase/projects/"+acctProjID+"/limits", string(rb), cookieA, 204)
+	// L4: limits are operator-only; an owner cannot raise their own quota.
+	t.Run("L4_owner_limits_forbidden", func(t *testing.T) {
+		rb, _ := json.Marshal(map[string]int64{"max_database_bytes": 1 << 40})
+		acctCall("PATCH", "/_pibase/projects/"+acctProjID+"/limits", string(rb), cookieA, 403)
+	})
+}
+
+// TestAccountHardening covers the T2 review fixes: password change signs out
+// other sessions, per-account project cap, email validation.
+func TestAccountHardening(t *testing.T) {
+	adminURL := os.Getenv("PIBASE_TEST_ADMIN_DATABASE_URL")
+	if adminURL == "" {
+		t.Skip("PIBASE_TEST_ADMIN_DATABASE_URL is not set")
+	}
+	ctx := context.Background()
+	const password = "t2-hard-pw"
+	if err := control.Bootstrap(ctx, adminURL, password); err != nil {
+		t.Fatal(err)
+	}
+	parsed, _ := url.Parse(adminURL)
+	parsed.User = url.UserPassword("authenticator", password)
+	parsed.Path = "/_control"
+	root := t.TempDir()
+	s, err := New(Config{AdminURL: adminURL, DatabaseURL: parsed.String(), Token: "t2h-op",
+		StorageRoot: filepath.Join(root, "f"), BackupRoot: filepath.Join(root, "b"),
+		MasterKey: bytes.Repeat([]byte{7}, 32), BackupKey: bytes.Repeat([]byte{9}, 32), Env: "test"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	hs := httptest.NewServer(s.Handler())
+	defer hs.Close()
+	call := func(method, path, body string, cookie *http.Cookie, want int) (*http.Response, []byte) {
+		t.Helper()
+		req, _ := http.NewRequest(method, hs.URL+path, strings.NewReader(body))
+		req.Header.Set("Content-Type", "application/json")
+		if cookie != nil {
+			req.AddCookie(cookie)
+		}
+		resp, err := hs.Client().Do(req)
+		if err != nil {
+			t.Fatal(err)
+		}
+		defer resp.Body.Close()
+		data, _ := io.ReadAll(resp.Body)
+		if resp.StatusCode != want {
+			t.Fatalf("%s %s: status=%d want=%d body=%s", method, path, resp.StatusCode, want, data)
+		}
+		return resp, data
+	}
+	cookieOf := func(r *http.Response) *http.Cookie {
+		for _, c := range r.Cookies() {
+			if c.Name == "pibase_session" {
+				return c
+			}
+		}
+		t.Fatal("no session cookie")
+		return nil
+	}
+	email := fmt.Sprintf("t2h%d@t2.test", time.Now().UnixNano())
+	cred := func(pw string) string {
+		b, _ := json.Marshal(map[string]string{"email": email, "password": pw})
+		return string(b)
+	}
+	r1, _ := call("POST", "/_pibase/auth/signup", cred("first-password"), nil, 201)
+	c1 := cookieOf(r1)
+	defer func() {
+		var a struct{ ID string }
+		_, me := call("GET", "/_pibase/auth/me", "", c1, 200)
+		_ = json.Unmarshal(me, &a)
+		_ = control.DeleteAccount(ctx, adminURL, a.ID)
+	}()
+
+	t.Run("H1_password_change_signs_out_other_sessions", func(t *testing.T) {
+		r2, _ := call("POST", "/_pibase/auth/login", cred("first-password"), nil, 200)
+		c2 := cookieOf(r2)
+		call("GET", "/_pibase/auth/me", "", c2, 200)
+		call("POST", "/_pibase/auth/password", `{"current_password":"first-password","new_password":"second-password"}`, c1, 204)
+		call("GET", "/_pibase/auth/me", "", c1, 200)
+		call("GET", "/_pibase/auth/me", "", c2, 401)
+		call("GET", "/_pibase/projects", "", c2, 401)
+	})
+
+	t.Run("H2_project_cap_per_account", func(t *testing.T) {
+		for i := 0; i < 2; i++ {
+			call("POST", "/_pibase/projects", `{"name":"cap"}`, c1, 201)
+		}
+		call("POST", "/_pibase/projects", `{"name":"cap over"}`, c1, 403)
+		_, list := call("GET", "/_pibase/projects", "", c1, 200)
+		var ps []map[string]any
+		_ = json.Unmarshal(list, &ps)
+		if len(ps) != 2 {
+			t.Fatalf("want 2 owned projects, got %d", len(ps))
+		}
+	})
+
+	t.Run("H3_invalid_email_rejected", func(t *testing.T) {
+		for _, e := range []string{"not-an-email", "@x.test", "a@", "a b@x.test"} {
+			b, _ := json.Marshal(map[string]string{"email": e, "password": "long-enough-pw"})
+			call("POST", "/_pibase/auth/signup", string(b), nil, 400)
+		}
 	})
 }

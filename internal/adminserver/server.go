@@ -11,6 +11,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"net"
 	"net/http"
 	"net/url"
 	"os"
@@ -34,12 +35,15 @@ type Config struct {
 	// PublicURL is the base URL of the public gateway (e.g. "https://api.example.com").
 	// When set, every project stat includes api_url = PublicURL+"/"+id.
 	PublicURL string
+	// MaxProjectsPerAccount caps projects an account session may own; 0 means 2.
+	MaxProjectsPerAccount int
 }
 
 type Server struct {
 	Config
-	loginLimit  *rateLimiter
-	signupLimit *rateLimiter
+	loginLimit    *rateLimiter
+	signupLimit   *rateLimiter
+	passwordLimit *rateLimiter
 }
 
 func New(c Config) (*Server, error) {
@@ -52,7 +56,10 @@ func New(c Config) (*Server, error) {
 	if c.BackupRoot == "" {
 		c.BackupRoot = "/data/backups"
 	}
-	return &Server{Config: c, loginLimit: newRateLimiter(), signupLimit: newRateLimiter()}, nil
+	if c.MaxProjectsPerAccount <= 0 {
+		c.MaxProjectsPerAccount = 2
+	}
+	return &Server{Config: c, loginLimit: newRateLimiter(), signupLimit: newRateLimiter(), passwordLimit: newRateLimiter()}, nil
 }
 
 // identityKind distinguishes operator-token auth from account-session auth.
@@ -301,8 +308,7 @@ func (s *Server) authPassword(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, "not authenticated", http.StatusUnauthorized)
 		return
 	}
-	ip := clientIP(r)
-	if s.Env != "test" && !s.loginLimit.Allow(ip, 5, 10*time.Minute) {
+	if s.Env != "test" && !s.passwordLimit.Allow(account.ID, 5, 10*time.Minute) {
 		http.Error(w, "too many requests", http.StatusTooManyRequests)
 		return
 	}
@@ -313,7 +319,7 @@ func (s *Server) authPassword(w http.ResponseWriter, r *http.Request) {
 	if !jsonBody(w, r, &b) {
 		return
 	}
-	if err := control.ChangePassword(r.Context(), s.AdminURL, account.ID, b.CurrentPassword, b.NewPassword); err != nil {
+	if err := control.ChangePassword(r.Context(), s.AdminURL, account.ID, token, b.CurrentPassword, b.NewPassword); err != nil {
 		if strings.Contains(err.Error(), "invalid credentials") {
 			http.Error(w, "invalid credentials", http.StatusUnauthorized)
 			return
@@ -617,14 +623,27 @@ func (s *Server) createProject(w http.ResponseWriter, r *http.Request) {
 	if !jsonBody(w, r, &b) {
 		return
 	}
+	id, _ := getIdentity(r.Context())
+	if id.kind == accountKind {
+		n, err := control.CountOwnedProjects(r.Context(), s.AdminURL, id.accountID)
+		if err != nil {
+			fail(w, err)
+			return
+		}
+		if n >= s.MaxProjectsPerAccount {
+			http.Error(w, fmt.Sprintf("project limit reached (%d per account)", s.MaxProjectsPerAccount), http.StatusForbidden)
+			return
+		}
+	}
 	p, err := control.CreateProject(r.Context(), s.AdminURL, b.Name, s.MasterKey)
 	if err != nil {
 		fail(w, err)
 		return
 	}
-	// If the caller is an account (not operator), assign project ownership.
-	if id, ok := getIdentity(r.Context()); ok && id.kind == accountKind {
+	if id.kind == accountKind {
 		if err := control.SetProjectOwner(r.Context(), s.AdminURL, p.ID, id.accountID); err != nil {
+			// An ownerless project would be invisible to its creator; remove it.
+			_ = control.DeleteProject(context.Background(), s.AdminURL, p.ID)
 			fail(w, err)
 			return
 		}
@@ -715,7 +734,8 @@ func (s *Server) usage(w http.ResponseWriter, r *http.Request) {
 
 func (s *Server) setLimits(w http.ResponseWriter, r *http.Request) {
 	id := r.PathValue("id")
-	if !s.checkOwner(w, r, id) {
+	if ident, ok := getIdentity(r.Context()); !ok || ident.kind != opKind {
+		http.Error(w, "operator token required to change limits", http.StatusForbidden)
 		return
 	}
 	var b struct {
@@ -872,21 +892,30 @@ func writeJSON(w http.ResponseWriter, status int, v any) {
 }
 func fail(w http.ResponseWriter, err error) { http.Error(w, err.Error(), http.StatusBadRequest) }
 
+// clientIP keys rate limits. X-Forwarded-For is honoured only from a loopback
+// peer (the local reverse proxy), and only its last entry, which that proxy
+// wrote; earlier entries are client-controlled.
 func clientIP(r *http.Request) string {
-	if fwd := r.Header.Get("X-Forwarded-For"); fwd != "" {
-		return strings.SplitN(fwd, ",", 2)[0]
+	host, _, err := net.SplitHostPort(r.RemoteAddr)
+	if err != nil {
+		host = r.RemoteAddr
 	}
-	host := r.RemoteAddr
-	if i := strings.LastIndex(host, ":"); i >= 0 {
-		host = host[:i]
+	if ip := net.ParseIP(host); ip != nil && ip.IsLoopback() {
+		if fwd := r.Header.Get("X-Forwarded-For"); fwd != "" {
+			parts := strings.Split(fwd, ",")
+			if last := strings.TrimSpace(parts[len(parts)-1]); last != "" {
+				return last
+			}
+		}
 	}
 	return host
 }
 
 // rateLimiter is a simple in-memory sliding-window rate limiter.
 type rateLimiter struct {
-	mu      sync.Mutex
-	buckets map[string][]time.Time
+	mu        sync.Mutex
+	buckets   map[string][]time.Time
+	lastSweep time.Time
 }
 
 func newRateLimiter() *rateLimiter {
@@ -899,6 +928,14 @@ func (r *rateLimiter) Allow(key string, maxN int, window time.Duration) bool {
 	defer r.mu.Unlock()
 	now := time.Now()
 	cutoff := now.Add(-window)
+	if now.Sub(r.lastSweep) > window {
+		for k, ts := range r.buckets {
+			if len(ts) == 0 || !ts[len(ts)-1].After(cutoff) {
+				delete(r.buckets, k)
+			}
+		}
+		r.lastSweep = now
+	}
 	prev := r.buckets[key]
 	valid := prev[:0]
 	for _, t := range prev {

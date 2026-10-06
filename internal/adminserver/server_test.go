@@ -71,3 +71,22 @@ func TestDashboardShowsKeysOnceAndWiresEveryEndpoint(t *testing.T) {
 		t.Error("dashboard must not store keys or the token in browser storage")
 	}
 }
+
+func TestClientIPIgnoresSpoofedForwardedFor(t *testing.T) {
+	cases := []struct{ remote, xff, want string }{
+		{"203.0.113.9:4000", "1.2.3.4", "203.0.113.9"},
+		{"127.0.0.1:4000", "1.2.3.4, 198.51.100.7", "198.51.100.7"},
+		{"[::1]:4000", "198.51.100.8", "198.51.100.8"},
+		{"127.0.0.1:4000", "", "127.0.0.1"},
+	}
+	for _, c := range cases {
+		r := httptest.NewRequest("GET", "/", nil)
+		r.RemoteAddr = c.remote
+		if c.xff != "" {
+			r.Header.Set("X-Forwarded-For", c.xff)
+		}
+		if got := clientIP(r); got != c.want {
+			t.Errorf("clientIP(%q, %q) = %q, want %q", c.remote, c.xff, got, c.want)
+		}
+	}
+}

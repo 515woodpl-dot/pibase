@@ -34,8 +34,8 @@ const sessionTTL = 24 * time.Hour
 // CreateAccount creates a new dashboard account with the given email and password.
 func CreateAccount(ctx context.Context, adminURL, email, password string) (Account, error) {
 	email = strings.ToLower(strings.TrimSpace(email))
-	if email == "" {
-		return Account{}, fmt.Errorf("email is required")
+	if at := strings.IndexByte(email, '@'); at < 1 || at == len(email)-1 || len(email) > 254 || strings.ContainsAny(email, " \t\r\n") {
+		return Account{}, fmt.Errorf("a valid email address is required")
 	}
 	if len(password) < 8 || len(password) > 1024 {
 		return Account{}, fmt.Errorf("password must be between 8 and 1024 characters")
@@ -110,6 +110,9 @@ func IssueSession(ctx context.Context, adminURL, accountID string) (string, erro
 		return "", err
 	}
 	defer conn.Close(ctx)
+	if _, err := conn.Exec(ctx, `DELETE FROM control.sessions WHERE expires_at <= now()`); err != nil {
+		return "", err
+	}
 	expiresAt := time.Now().UTC().Add(sessionTTL)
 	_, err = conn.Exec(ctx,
 		`INSERT INTO control.sessions(token_hash,account_id,expires_at) VALUES($1,$2,$3)`,
@@ -200,8 +203,9 @@ func SetProjectOwner(ctx context.Context, adminURL, projectID, accountID string)
 	return nil
 }
 
-// ChangePassword verifies currentPassword then replaces the stored hash.
-func ChangePassword(ctx context.Context, adminURL, accountID, currentPassword, newPassword string) error {
+// ChangePassword verifies currentPassword, replaces the stored hash and signs
+// out every other session of the account; keepToken's session stays valid.
+func ChangePassword(ctx context.Context, adminURL, accountID, keepToken, currentPassword, newPassword string) error {
 	if len(newPassword) < 8 || len(newPassword) > 1024 {
 		return fmt.Errorf("password must be between 8 and 1024 characters")
 	}
@@ -223,8 +227,31 @@ func ChangePassword(ctx context.Context, adminURL, accountID, currentPassword, n
 	if err != nil {
 		return err
 	}
-	_, err = conn.Exec(ctx, `UPDATE control.accounts SET password_hash=$1 WHERE id=$2`, hash, accountID)
-	return err
+	keep := sha256.Sum256([]byte(keepToken))
+	tx, err := conn.Begin(ctx)
+	if err != nil {
+		return err
+	}
+	defer func() { _ = tx.Rollback(ctx) }()
+	if _, err = tx.Exec(ctx, `UPDATE control.accounts SET password_hash=$1 WHERE id=$2`, hash, accountID); err != nil {
+		return err
+	}
+	if _, err = tx.Exec(ctx, `DELETE FROM control.sessions WHERE account_id=$1 AND token_hash<>$2`, accountID, keep[:]); err != nil {
+		return err
+	}
+	return tx.Commit(ctx)
+}
+
+// CountOwnedProjects returns how many projects accountID owns.
+func CountOwnedProjects(ctx context.Context, adminURL, accountID string) (int, error) {
+	conn, err := controlDBConn(ctx, adminURL)
+	if err != nil {
+		return 0, err
+	}
+	defer conn.Close(ctx)
+	var n int
+	err = conn.QueryRow(ctx, `SELECT count(*) FROM control.projects WHERE owner_id=$1`, accountID).Scan(&n)
+	return n, err
 }
 
 // DeleteAccount deletes all projects owned by accountID then deletes the account.
