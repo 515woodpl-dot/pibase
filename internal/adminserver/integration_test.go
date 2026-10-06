@@ -1336,3 +1336,186 @@ func TestOwnerSQLRoleIsolation(t *testing.T) {
 		call("POST", pathA+"/sql", string(qb), 400)
 	}
 }
+
+// TestProjectManagement covers K1–K6: API key rotation and project rename.
+func TestProjectManagement(t *testing.T) {
+	adminURL := os.Getenv("PIBASE_TEST_ADMIN_DATABASE_URL")
+	if adminURL == "" {
+		t.Skip("PIBASE_TEST_ADMIN_DATABASE_URL is not set")
+	}
+	ctx := context.Background()
+	const password = "t3-mgmt-pw"
+	if err := control.Bootstrap(ctx, adminURL, password); err != nil {
+		t.Fatal(err)
+	}
+	parsed, _ := url.Parse(adminURL)
+	parsed.User = url.UserPassword("authenticator", password)
+	parsed.Path = "/_control"
+	root := t.TempDir()
+	s, err := New(Config{
+		AdminURL:    adminURL,
+		DatabaseURL: parsed.String(),
+		Token:       "t3-op-token",
+		StorageRoot: filepath.Join(root, "f"),
+		BackupRoot:  filepath.Join(root, "b"),
+		MasterKey:   bytes.Repeat([]byte{7}, 32),
+		BackupKey:   bytes.Repeat([]byte{9}, 32),
+		Env:         "test",
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	hs := httptest.NewServer(s.Handler())
+	defer hs.Close()
+
+	sfx := fmt.Sprintf("%d", time.Now().UnixNano())
+
+	opCall := func(method, path, body string, wantStatus int) []byte {
+		t.Helper()
+		req, _ := http.NewRequest(method, hs.URL+path, strings.NewReader(body))
+		req.Header.Set("Authorization", "Bearer t3-op-token")
+		req.Header.Set("Content-Type", "application/json")
+		resp, err := hs.Client().Do(req)
+		if err != nil {
+			t.Fatal(err)
+		}
+		defer resp.Body.Close()
+		data, _ := io.ReadAll(resp.Body)
+		if resp.StatusCode != wantStatus {
+			t.Fatalf("%s %s: status=%d want=%d body=%s", method, path, resp.StatusCode, wantStatus, data)
+		}
+		return data
+	}
+	acctCall := func(method, path, body string, cookie *http.Cookie, wantStatus int) (*http.Response, []byte) {
+		t.Helper()
+		req, _ := http.NewRequest(method, hs.URL+path, strings.NewReader(body))
+		req.Header.Set("Content-Type", "application/json")
+		if cookie != nil {
+			req.AddCookie(cookie)
+		}
+		resp, err := hs.Client().Do(req)
+		if err != nil {
+			t.Fatal(err)
+		}
+		defer resp.Body.Close()
+		data, _ := io.ReadAll(resp.Body)
+		if resp.StatusCode != wantStatus {
+			t.Fatalf("%s %s: status=%d want=%d body=%s", method, path, resp.StatusCode, wantStatus, data)
+		}
+		return resp, data
+	}
+	sessionCookieFrom := func(r *http.Response) *http.Cookie {
+		for _, c := range r.Cookies() {
+			if c.Name == "pibase_session" {
+				return c
+			}
+		}
+		return nil
+	}
+
+	// Create a project as operator for operator-auth tests.
+	var opProj map[string]any
+	json.Unmarshal(opCall("POST", "/_pibase/projects", `{"name":"t3 op project"}`, 201), &opProj)
+	opProjID := opProj["id"].(string)
+	opAnonKey := opProj["anon_key"].(string)
+	opSvcKey := opProj["service_key"].(string)
+	defer control.DeleteProject(ctx, adminURL, opProjID)
+
+	// Sign up two accounts.
+	emailA := "t3a" + sfx + "@t3.test"
+	emailB := "t3b" + sfx + "@t3.test"
+	loginBody := func(email, pw string) string {
+		b, _ := json.Marshal(map[string]string{"email": email, "password": pw})
+		return string(b)
+	}
+	respA, _ := acctCall("POST", "/_pibase/auth/signup", loginBody(emailA, "password-t3a"), nil, 201)
+	cookieA := sessionCookieFrom(respA)
+	respB, _ := acctCall("POST", "/_pibase/auth/signup", loginBody(emailB, "password-t3b"), nil, 201)
+	cookieB := sessionCookieFrom(respB)
+
+	// Create a project owned by account A.
+	_, projData := acctCall("POST", "/_pibase/projects", `{"name":"t3 acct project"}`, cookieA, 201)
+	var acctProj map[string]any
+	json.Unmarshal(projData, &acctProj)
+	acctProjID := acctProj["id"].(string)
+	acctAnonKey := acctProj["anon_key"].(string)
+	acctSvcKey := acctProj["service_key"].(string)
+	defer control.DeleteProject(ctx, adminURL, acctProjID)
+
+	// K1: operator rotate returns anon_key and service_key.
+	t.Run("K1_operator_rotate_returns_keys", func(t *testing.T) {
+		data := opCall("POST", "/_pibase/projects/"+opProjID+"/keys/rotate", "", 200)
+		var resp map[string]string
+		if err := json.Unmarshal(data, &resp); err != nil {
+			t.Fatalf("unmarshal: %v", err)
+		}
+		if resp["anon_key"] == "" || resp["service_key"] == "" {
+			t.Fatalf("rotate did not return keys: %s", data)
+		}
+	})
+
+	// K2: after rotate, new keys differ from original keys.
+	t.Run("K2_rotated_keys_differ_from_originals", func(t *testing.T) {
+		data := opCall("POST", "/_pibase/projects/"+opProjID+"/keys/rotate", "", 200)
+		var resp map[string]string
+		json.Unmarshal(data, &resp)
+		if resp["anon_key"] == opAnonKey {
+			t.Error("anon_key should have changed after rotation")
+		}
+		if resp["service_key"] == opSvcKey {
+			t.Error("service_key should have changed after rotation")
+		}
+	})
+
+	// K3: two successive rotations produce different keys each time.
+	t.Run("K3_successive_rotations_differ", func(t *testing.T) {
+		d1 := opCall("POST", "/_pibase/projects/"+opProjID+"/keys/rotate", "", 200)
+		d2 := opCall("POST", "/_pibase/projects/"+opProjID+"/keys/rotate", "", 200)
+		var r1, r2 map[string]string
+		json.Unmarshal(d1, &r1)
+		json.Unmarshal(d2, &r2)
+		if r1["anon_key"] == r2["anon_key"] {
+			t.Error("successive rotations produced identical anon_key")
+		}
+	})
+
+	// K4: account B cannot rotate keys for account A's project.
+	t.Run("K4_non_owner_rotate_forbidden", func(t *testing.T) {
+		acctCall("POST", "/_pibase/projects/"+acctProjID+"/keys/rotate", "", cookieB, 403)
+	})
+
+	// K4b: account A can rotate their own project.
+	t.Run("K4b_owner_rotate_allowed", func(t *testing.T) {
+		_, data := acctCall("POST", "/_pibase/projects/"+acctProjID+"/keys/rotate", "", cookieA, 200)
+		var resp map[string]string
+		json.Unmarshal(data, &resp)
+		if resp["anon_key"] == acctAnonKey {
+			t.Error("owner rotation should produce new anon key")
+		}
+		if resp["service_key"] == acctSvcKey {
+			t.Error("owner rotation should produce new service key")
+		}
+	})
+
+	// K5: rename project succeeds and the new name appears in the project list.
+	t.Run("K5_rename_succeeds", func(t *testing.T) {
+		rb, _ := json.Marshal(map[string]string{"name": "t3 renamed"})
+		opCall("PATCH", "/_pibase/projects/"+opProjID, string(rb), 204)
+		listData := opCall("GET", "/_pibase/projects", "", 200)
+		if !strings.Contains(string(listData), "t3 renamed") {
+			t.Fatalf("renamed project not in list: %s", listData)
+		}
+	})
+
+	// K6: rename with empty name returns 400.
+	t.Run("K6_rename_empty_name_rejected", func(t *testing.T) {
+		rb, _ := json.Marshal(map[string]string{"name": ""})
+		opCall("PATCH", "/_pibase/projects/"+opProjID, string(rb), 400)
+	})
+
+	// K6b: account B cannot rename account A's project.
+	t.Run("K6b_non_owner_rename_forbidden", func(t *testing.T) {
+		rb, _ := json.Marshal(map[string]string{"name": "sneaky rename"})
+		acctCall("PATCH", "/_pibase/projects/"+acctProjID, string(rb), cookieB, 403)
+	})
+}

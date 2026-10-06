@@ -89,6 +89,8 @@ func (s *Server) Handler() http.Handler {
 	mux.HandleFunc("POST /_pibase/projects/{id}/sql", s.sql)
 	mux.HandleFunc("POST /_pibase/projects/{id}/migrations", s.migration)
 	mux.HandleFunc("POST /_pibase/projects/{id}/extensions/{extension}", s.extension)
+	mux.HandleFunc("POST /_pibase/projects/{id}/keys/rotate", s.rotateKeys)
+	mux.HandleFunc("PATCH /_pibase/projects/{id}", s.renameProject)
 	mux.HandleFunc("POST /_pibase/projects/{id}/backup", s.backup)
 	mux.HandleFunc("GET /_pibase/projects/{id}/backups", s.backups)
 	mux.HandleFunc("GET /_pibase/projects/{id}/tables", s.tables)
@@ -648,6 +650,45 @@ func (s *Server) deleteProject(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	w.WriteHeader(204)
+}
+
+func (s *Server) rotateKeys(w http.ResponseWriter, r *http.Request) {
+	projectID := r.PathValue("id")
+	if !s.checkOwner(w, r, projectID) {
+		return
+	}
+	anon, svc, err := control.RotateKeys(r.Context(), s.AdminURL, projectID, s.MasterKey)
+	if err != nil {
+		if errors.Is(err, control.ErrNotFound) {
+			http.NotFound(w, r)
+			return
+		}
+		fail(w, err)
+		return
+	}
+	writeJSON(w, 200, map[string]string{"anon_key": anon, "service_key": svc})
+}
+
+func (s *Server) renameProject(w http.ResponseWriter, r *http.Request) {
+	projectID := r.PathValue("id")
+	if !s.checkOwner(w, r, projectID) {
+		return
+	}
+	var b struct {
+		Name string `json:"name"`
+	}
+	if !jsonBody(w, r, &b) {
+		return
+	}
+	if err := control.RenameProject(r.Context(), s.AdminURL, projectID, b.Name); err != nil {
+		if errors.Is(err, control.ErrNotFound) {
+			http.NotFound(w, r)
+			return
+		}
+		http.Error(w, err.Error(), http.StatusBadRequest)
+		return
+	}
+	w.WriteHeader(http.StatusNoContent)
 }
 
 func (s *Server) sql(w http.ResponseWriter, r *http.Request) {

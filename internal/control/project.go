@@ -440,6 +440,76 @@ GRANT EXECUTE ON FUNCTION cron.enqueue_webhook() TO ` + pgx.Identifier{admin}.Sa
 
 func JSON(project Project) ([]byte, error) { return json.MarshalIndent(project, "", "  ") }
 
+// RotateKeys replaces the project's JWT signing secret with a fresh random one,
+// then signs new anon and service_role keys with it. The old secret, and
+// therefore all previously issued API keys and user auth tokens, are
+// immediately invalidated. The caller must show the returned plaintext keys to
+// the end user exactly once; they are never stored in plaintext.
+func RotateKeys(ctx context.Context, adminURL, projectID string, masterKey []byte) (anonKey, serviceKey string, err error) {
+	conn, err := controlDBConn(ctx, adminURL)
+	if err != nil {
+		return "", "", err
+	}
+	defer conn.Close(ctx)
+	// Verify project exists before generating new material.
+	var exists bool
+	err = conn.QueryRow(ctx, `SELECT EXISTS(SELECT 1 FROM control.projects WHERE id=$1)`, projectID).Scan(&exists)
+	if err != nil {
+		return "", "", err
+	}
+	if !exists {
+		return "", "", ErrNotFound
+	}
+	jwtSecret := make([]byte, 32)
+	if _, err = rand.Read(jwtSecret); err != nil {
+		return "", "", err
+	}
+	anonKey, err = keys.JWT(jwtSecret, "anon")
+	if err != nil {
+		return "", "", err
+	}
+	serviceKey, err = keys.JWT(jwtSecret, "service_role")
+	if err != nil {
+		return "", "", err
+	}
+	encrypted, err := secretbox.Encrypt(masterKey, jwtSecret)
+	if err != nil {
+		return "", "", fmt.Errorf("encrypt jwt secret: %w", err)
+	}
+	tag, err := conn.Exec(ctx,
+		`UPDATE control.projects SET jwt_secret_encrypted=$1, anon_key_hash=$2, service_key_hash=$3 WHERE id=$4`,
+		encrypted, keys.Hash(anonKey), keys.Hash(serviceKey), projectID,
+	)
+	if err != nil {
+		return "", "", err
+	}
+	if tag.RowsAffected() == 0 {
+		return "", "", ErrNotFound
+	}
+	return anonKey, serviceKey, nil
+}
+
+// RenameProject updates the display name of an existing project.
+func RenameProject(ctx context.Context, adminURL, projectID, newName string) error {
+	newName = strings.TrimSpace(newName)
+	if newName == "" {
+		return fmt.Errorf("name is required")
+	}
+	conn, err := controlDBConn(ctx, adminURL)
+	if err != nil {
+		return err
+	}
+	defer conn.Close(ctx)
+	tag, err := conn.Exec(ctx, `UPDATE control.projects SET name=$1 WHERE id=$2`, newName, projectID)
+	if err != nil {
+		return err
+	}
+	if tag.RowsAffected() == 0 {
+		return ErrNotFound
+	}
+	return nil
+}
+
 // EnablePGVector is deliberately an operator-plane action. Customer requests
 // never receive a database-superuser connection or an extension allowlist.
 func EnablePGVector(ctx context.Context, adminURL, id string) error {
