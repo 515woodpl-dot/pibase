@@ -8,6 +8,7 @@ import (
 	"fmt"
 	"net/url"
 	"strings"
+	"sync/atomic"
 	"time"
 
 	"github.com/jackc/pgx/v5"
@@ -16,7 +17,11 @@ import (
 type project struct {
 	database string
 	role     string
+	anonRole string
 }
+
+// projectConnections counts connections opened to project databases.
+var projectConnections atomic.Int64
 
 type Result struct {
 	Columns []string         `json:"columns,omitempty"`
@@ -145,48 +150,80 @@ name text PRIMARY KEY, checksum text NOT NULL, applied_at timestamptz NOT NULL D
 	return tx.Commit(ctx)
 }
 
-func validateOwnerSQL(statement string) error {
+var errForbidden = fmt.Errorf("owner SQL contains a forbidden privilege-changing construct")
+
+// validateOwnerSQL is a guard rail for the SQL tab, not the security boundary:
+// owner SQL runs as the project admin role, and ApplyMigration does not use
+// this filter. It rejects role and privilege changes, DO blocks, and routine
+// bodies that build dynamic SQL.
+func validateOwnerSQL(statement string) error { return validateOwnerSQLDepth(statement, 0) }
+
+func validateOwnerSQLDepth(statement string, depth int) error {
+	if depth > 4 {
+		return errForbidden
+	}
 	if err := validateNoExtensionDDL(statement); err != nil {
 		return err
 	}
 	tokens := sqlTokens(statement)
-	for i, token := range tokens {
-		token = sqlToken(token)
+	hasUpdate, routine := false, false
+	for _, raw := range tokens {
+		switch raw {
+		case "update":
+			hasUpdate = true
+		case "function", "procedure":
+			routine = true
+		}
+	}
+	for i, raw := range tokens {
+		if raw == unicodeIdentifier {
+			return fmt.Errorf(`owner SQL may not use U&"..." identifiers`)
+		}
+		token, quoted := sqlToken(raw), strings.HasPrefix(raw, "\x00")
 		next := ""
 		if i+1 < len(tokens) {
 			next = sqlToken(tokens[i+1])
 		}
-		if token == "grant" || token == "revoke" || token == "copy" || token == "program" || token == "set_config" {
-			if strings.HasPrefix(tokens[i], "\x00") {
-				continue
-			}
-			return fmt.Errorf("owner SQL contains a forbidden privilege-changing construct")
+		switch {
+		case token == "set_config" || token == "standard_conforming_strings" || token == "backslash_quote":
+			return errForbidden
+		case token == "pg_settings" && hasUpdate:
+			return errForbidden
+		case !quoted && (token == "grant" || token == "revoke" || token == "copy" || token == "program"):
+			return errForbidden
+		case !quoted && token == "do" && next != "nothing" && next != "update":
+			return fmt.Errorf("DO blocks are not allowed in the SQL tab; apply them as a migration")
+		case !quoted && token == "reset" && (next == "" || next == "all" || next == "role" || next == "session_authorization" || (next == "session" && i+2 < len(tokens) && sqlToken(tokens[i+2]) == "authorization")):
+			return errForbidden
+		case !quoted && (token == "create" || token == "alter" || token == "drop") && (next == "role" || next == "user" || next == "group"):
+			return errForbidden
 		}
-		if token == "reset" && (i+1 >= len(tokens) || next == "all" || next == "role" || next == "session_authorization" || (next == "session" && i+2 < len(tokens) && sqlToken(tokens[i+2]) == "authorization")) {
-			return fmt.Errorf("owner SQL contains a forbidden privilege-changing construct")
-		}
-		if token == "set" {
+		if !quoted && token == "set" {
 			j := i + 1
-			// Skip optional LOCAL modifier only; SESSION must be checked
-			// as both a modifier (SET SESSION x) and as the start of
-			// SESSION AUTHORIZATION.
 			for j < len(tokens) && sqlToken(tokens[j]) == "local" {
 				j++
 			}
-			// Now j may point to SESSION — check if it starts SESSION AUTHORIZATION
 			if j < len(tokens) && sqlToken(tokens[j]) == "session" {
 				if j+1 < len(tokens) && sqlToken(tokens[j+1]) == "authorization" {
-					return fmt.Errorf("owner SQL contains a forbidden privilege-changing construct")
+					return errForbidden
 				}
-				// SESSION as a modifier: skip it and check the next token
 				j++
 			}
 			if j < len(tokens) && (sqlToken(tokens[j]) == "role" || sqlToken(tokens[j]) == "session_authorization") {
-				return fmt.Errorf("owner SQL contains a forbidden privilege-changing construct")
+				return errForbidden
 			}
 		}
-		if i+1 < len(tokens) && (token == "create" || token == "alter" || token == "drop") && (tokens[i+1] == "role" || tokens[i+1] == "user") {
-			return fmt.Errorf("owner SQL contains a forbidden privilege-changing construct")
+	}
+	if routine {
+		for _, body := range sqlBodies(statement) {
+			for _, t := range sqlTokens(body) {
+				if t == "execute" {
+					return fmt.Errorf("routine bodies may not use dynamic EXECUTE in the SQL tab; apply them as a migration")
+				}
+			}
+			if err := validateOwnerSQLDepth(body, depth+1); err != nil {
+				return err
+			}
 		}
 	}
 	return nil
@@ -200,9 +237,18 @@ func displayValue(v any) any {
 		return h[0:8] + "-" + h[8:12] + "-" + h[12:16] + "-" + h[16:20] + "-" + h[20:]
 	case []byte:
 		return `\x` + hex.EncodeToString(x)
+	case []any:
+		out := make([]any, len(x))
+		for i, e := range x {
+			out[i] = displayValue(e)
+		}
+		return out
 	}
 	return v
 }
+
+// unicodeIdentifier marks a U&"..." identifier, whose escapes could spell any keyword.
+const unicodeIdentifier = "\x01"
 
 func sqlToken(token string) string { return strings.TrimPrefix(token, "\x00") }
 
@@ -216,81 +262,126 @@ func validateNoExtensionDDL(statement string) error {
 	return nil
 }
 
-// sqlTokens returns unquoted identifier tokens. It skips PostgreSQL line and
-// nested block comments plus quoted and dollar-quoted strings, preventing a
-// comment such as CREATE/**/EXTENSION from bypassing the operator boundary.
+// sqlTokens returns identifier tokens; quoted identifiers are prefixed with
+// \x00. It skips line and nested block comments, string literals (including
+// E” strings with backslash escapes) and dollar-quoted bodies, so a comment
+// such as CREATE/**/EXTENSION cannot bypass the operator boundary.
 func sqlTokens(statement string) []string {
-	var tokens []string
-	for i := 0; i < len(statement); {
+	tokens, _ := lexSQL(statement)
+	return tokens
+}
+
+// sqlBodies returns the contents of string literals and dollar-quoted bodies.
+func sqlBodies(statement string) []string {
+	_, bodies := lexSQL(statement)
+	return bodies
+}
+
+func identStart(c byte) bool { return c == '_' || c >= 'a' && c <= 'z' || c >= 'A' && c <= 'Z' }
+func identPart(c byte) bool  { return identStart(c) || c >= '0' && c <= '9' || c == '$' }
+
+func lexSQL(statement string) (tokens, bodies []string) {
+	n := len(statement)
+	readString := func(i int, backslash bool) (int, string) {
+		var b strings.Builder
+		for i < n {
+			c := statement[i]
+			if backslash && c == '\\' && i+1 < n {
+				b.WriteByte(statement[i+1])
+				i += 2
+				continue
+			}
+			if c == '\'' {
+				if i+1 < n && statement[i+1] == '\'' {
+					b.WriteByte('\'')
+					i += 2
+					continue
+				}
+				return i + 1, b.String()
+			}
+			b.WriteByte(c)
+			i++
+		}
+		return i, b.String()
+	}
+	readQuoted := func(i int) (int, string) {
+		var b strings.Builder
+		for i < n {
+			if statement[i] != '"' {
+				b.WriteByte(statement[i])
+				i++
+				continue
+			}
+			if i+1 < n && statement[i+1] == '"' {
+				b.WriteByte('"')
+				i += 2
+				continue
+			}
+			return i + 1, b.String()
+		}
+		return i, b.String()
+	}
+	for i := 0; i < n; {
+		c := statement[i]
 		switch {
-		case i+1 < len(statement) && statement[i:i+2] == "--":
-			i += 2
-			for i < len(statement) && statement[i] != '\n' {
+		case i+1 < n && statement[i:i+2] == "--":
+			for i < n && statement[i] != '\n' {
 				i++
 			}
-		case i+1 < len(statement) && statement[i:i+2] == "/*":
+		case i+1 < n && statement[i:i+2] == "/*":
 			i += 2
 			depth := 1
-			for i < len(statement) && depth > 0 {
-				if i+1 < len(statement) && statement[i:i+2] == "/*" {
+			for i < n && depth > 0 {
+				if i+1 < n && statement[i:i+2] == "/*" {
 					depth++
 					i += 2
-				} else if i+1 < len(statement) && statement[i:i+2] == "*/" {
+				} else if i+1 < n && statement[i:i+2] == "*/" {
 					depth--
 					i += 2
 				} else {
 					i++
 				}
 			}
-		case statement[i] == '\'':
-			i++
-			for i < len(statement) {
-				if statement[i] != '\'' {
-					i++
-					continue
-				}
-				if i+1 < len(statement) && statement[i+1] == '\'' {
-					i += 2
-					continue
-				}
-				i++
-				break
-			}
-		case statement[i] == '"':
-			i++
-			var quoted strings.Builder
-			for i < len(statement) {
-				if statement[i] != '"' {
-					quoted.WriteByte(statement[i])
-					i++
-					continue
-				}
-				if i+1 < len(statement) && statement[i+1] == '"' {
-					quoted.WriteByte('"')
-					i += 2
-					continue
-				}
-				i++
-				break
-			}
-			tokens = append(tokens, "\x00"+strings.ToLower(quoted.String()))
-		case statement[i] == '$':
+		case (c == 'u' || c == 'U') && i+2 < n && statement[i+1] == '&' && statement[i+2] == '"':
+			i, _ = readQuoted(i + 3)
+			tokens = append(tokens, unicodeIdentifier)
+		case (c == 'u' || c == 'U') && i+2 < n && statement[i+1] == '&' && statement[i+2] == '\'':
+			var body string
+			i, body = readString(i+3, false)
+			bodies = append(bodies, body)
+		case (c == 'e' || c == 'E') && i+1 < n && statement[i+1] == '\'':
+			var body string
+			i, body = readString(i+2, true)
+			bodies = append(bodies, body)
+		case c == '\'':
+			var body string
+			i, body = readString(i+1, false)
+			bodies = append(bodies, body)
+		case c == '"':
+			var q string
+			i, q = readQuoted(i + 1)
+			tokens = append(tokens, "\x00"+strings.ToLower(q))
+		case c == '$' && i+1 < n && (statement[i+1] == '$' || identStart(statement[i+1])):
 			end := i + 1
-			for end < len(statement) && (statement[end] == '_' || statement[end] >= 'a' && statement[end] <= 'z' || statement[end] >= 'A' && statement[end] <= 'Z' || statement[end] >= '0' && statement[end] <= '9') {
+			for end < n && statement[end] != '$' && (identPart(statement[end])) {
 				end++
 			}
-			if end < len(statement) && statement[end] == '$' {
+			if end < n && statement[end] == '$' {
 				delimiter := statement[i : end+1]
 				i = end + 1
 				if close := strings.Index(statement[i:], delimiter); close >= 0 {
+					bodies = append(bodies, statement[i:i+close])
 					i += close + len(delimiter)
+				} else {
+					bodies = append(bodies, statement[i:])
+					i = n
 				}
 			} else {
 				i++
 			}
-		case statement[i] == '_' || statement[i] >= 'a' && statement[i] <= 'z' || statement[i] >= 'A' && statement[i] <= 'Z':
+		case identStart(c):
 			start := i
-			for i < len(statement) && (statement[i] == '_' || statement[i] >= 'a' && statement[i] <= 'z' || statement[i] >= 'A' && statement[i] <= 'Z' || statement[i] >= '0' && statement[i] <= '9' || statement[i] == '$') {
+			for i < n && identPart(statement[i]) {
 				i++
 			}
 			tokens = append(tokens, strings.ToLower(statement[start:i]))
@@ -298,65 +389,75 @@ func sqlTokens(statement string) []string {
 			i++
 		}
 	}
-	return tokens
+	return tokens, bodies
 }
 
-// TableEntry describes a table for the TableMeta helper.
-type TableEntry struct {
-	Name string
-	RLS  bool
+// Table describes a public table for the operator dashboard.
+type Table struct {
+	Name         string   `json:"name"`
+	Count        int64    `json:"count"`
+	RLS          bool     `json:"rls"`
+	AnonReadable bool     `json:"anon_readable"`
+	PrimaryKey   []string `json:"primary_key"`
+	Columns      []string `json:"columns"`
 }
 
-// TableMeta returns anon-readability and row counts for a list of tables using
-// a single database connection. anon_readable is true when the project's anon
-// role has SELECT on the table AND (RLS is off OR a SELECT/ALL policy applies
-// to that role or PUBLIC).
-func TableMeta(ctx context.Context, adminURL, projectID string, tables []TableEntry) (anon []bool, counts []int64, err error) {
+// ListTables returns every public table (except pibase_migrations) with its
+// row count and whether the project's anon role can read it, using one
+// project connection. anon_readable means: the anon role has SELECT on the
+// table or on any of its columns, and RLS is off or a permissive SELECT/ALL
+// policy applies to anon or PUBLIC and no restrictive policy for them is
+// literally false. Policy expressions are not evaluated beyond that.
+func ListTables(ctx context.Context, adminURL, projectID string) ([]Table, error) {
 	p, err := lookupProject(ctx, adminURL, projectID)
 	if err != nil {
-		return nil, nil, err
+		return nil, err
 	}
 	conn, err := connectProject(ctx, adminURL, p.database)
 	if err != nil {
-		return nil, nil, err
+		return nil, err
 	}
 	defer conn.Close(ctx)
 	tx, err := conn.Begin(ctx)
 	if err != nil {
-		return nil, nil, err
+		return nil, err
 	}
 	defer func() { _ = tx.Rollback(context.Background()) }()
 	if _, err := tx.Exec(ctx, `SET LOCAL ROLE `+pgx.Identifier{p.role}.Sanitize()+`; SET LOCAL statement_timeout='30s'`); err != nil {
-		return nil, nil, err
+		return nil, err
 	}
-	anonRole := strings.Replace(p.role, "_admin", "_anon", 1)
-	anon = make([]bool, len(tables))
-	counts = make([]int64, len(tables))
-	for i, t := range tables {
-		var c int64
-		if err := tx.QueryRow(ctx, "SELECT count(*) FROM public."+pgx.Identifier{t.Name}.Sanitize()).Scan(&c); err != nil {
-			return nil, nil, err
-		}
-		counts[i] = c
-		var granted bool
-		if err := tx.QueryRow(ctx, `SELECT has_table_privilege($1, c.oid, 'SELECT') FROM pg_class c JOIN pg_namespace n ON n.oid=c.relnamespace WHERE n.nspname='public' AND c.relname=$2`, anonRole, t.Name).Scan(&granted); err != nil {
-			return nil, nil, err
-		}
-		if !granted {
-			continue
-		}
-		if !t.RLS {
-			anon[i] = true
-			continue
-		}
-		var hasPolicy bool
-		if err := tx.QueryRow(ctx, `SELECT EXISTS(SELECT 1 FROM pg_policies WHERE schemaname='public' AND tablename=$1 AND cmd IN ('SELECT','ALL') AND (roles @> ARRAY[$2]::name[] OR roles @> ARRAY['public']::name[]))`, t.Name, anonRole).Scan(&hasPolicy); err != nil {
-			return nil, nil, err
-		}
-		anon[i] = hasPolicy
+	rows, err := tx.Query(ctx, `
+SELECT c.relname, c.relrowsecurity,
+ COALESCE((SELECT array_agg(a.attname::text ORDER BY k.ord) FROM pg_index i JOIN unnest(i.indkey) WITH ORDINALITY k(attnum,ord) ON true JOIN pg_attribute a ON a.attrelid=c.oid AND a.attnum=k.attnum WHERE i.indrelid=c.oid AND i.indisprimary), ARRAY[]::text[]),
+ COALESCE((SELECT array_agg(a.attname::text ORDER BY a.attnum) FROM pg_attribute a WHERE a.attrelid=c.oid AND a.attnum>0 AND NOT a.attisdropped), ARRAY[]::text[]),
+ (has_table_privilege($1::text, c.oid, 'SELECT') OR has_any_column_privilege($1::text, c.oid, 'SELECT'))
+ AND (NOT c.relrowsecurity OR (
+   EXISTS (SELECT 1 FROM pg_policies pp WHERE pp.schemaname='public' AND pp.tablename=c.relname AND pp.permissive='PERMISSIVE' AND pp.cmd IN ('SELECT','ALL') AND (pp.roles @> ARRAY[$1::name] OR pp.roles @> ARRAY['public'::name]) AND COALESCE(pp.qual,'true') <> 'false')
+   AND NOT EXISTS (SELECT 1 FROM pg_policies pp WHERE pp.schemaname='public' AND pp.tablename=c.relname AND pp.permissive='RESTRICTIVE' AND pp.cmd IN ('SELECT','ALL') AND (pp.roles @> ARRAY[$1::name] OR pp.roles @> ARRAY['public'::name]) AND pp.qual = 'false')))
+FROM pg_class c JOIN pg_namespace n ON n.oid=c.relnamespace
+WHERE n.nspname='public' AND c.relkind IN ('r','p') AND c.relname <> 'pibase_migrations'
+ORDER BY c.relname`, p.anonRole)
+	if err != nil {
+		return nil, err
 	}
-	_ = tx.Commit(ctx)
-	return anon, counts, nil
+	tables := []Table{}
+	for rows.Next() {
+		var t Table
+		if err := rows.Scan(&t.Name, &t.RLS, &t.PrimaryKey, &t.Columns, &t.AnonReadable); err != nil {
+			rows.Close()
+			return nil, err
+		}
+		tables = append(tables, t)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	for i := range tables {
+		if err := tx.QueryRow(ctx, "SELECT count(*) FROM public."+pgx.Identifier{tables[i].Name}.Sanitize()).Scan(&tables[i].Count); err != nil {
+			return nil, err
+		}
+	}
+	return tables, tx.Commit(ctx)
 }
 
 // BrowseRows returns rows from a table with every column cast to text so that
@@ -379,6 +480,9 @@ func BrowseRows(ctx context.Context, adminURL, projectID, table string, columns,
 	defer func() { _ = tx.Rollback(context.Background()) }()
 	if _, err := tx.Exec(ctx, `SET LOCAL ROLE `+pgx.Identifier{p.role}.Sanitize()+`; SET LOCAL statement_timeout='30s'`); err != nil {
 		return nil, err
+	}
+	if len(columns) == 0 {
+		return map[string]any{"columns": []string{}, "primary_key": pk, "rows": []map[string]any{}, "offset": offset, "has_more": false}, nil
 	}
 	var selects []string
 	for _, c := range columns {
@@ -437,7 +541,7 @@ func lookupProject(ctx context.Context, adminURL, id string) (project, error) {
 	}
 	defer conn.Close(ctx)
 	var p project
-	if err := conn.QueryRow(ctx, `SELECT database_name,admin_role FROM control.project_catalog WHERE id=$1`, id).Scan(&p.database, &p.role); err != nil {
+	if err := conn.QueryRow(ctx, `SELECT database_name,admin_role,anon_role FROM control.project_catalog WHERE id=$1`, id).Scan(&p.database, &p.role, &p.anonRole); err != nil {
 		if err == pgx.ErrNoRows {
 			return project{}, fmt.Errorf("project %q not found", id)
 		}
@@ -463,6 +567,7 @@ func connectProject(ctx context.Context, adminURL, database string) (*pgx.Conn, 
 		return nil, fmt.Errorf("owner SQL requires a PIBASE_DATABASE_URL for the authenticator role")
 	}
 	config.ConnectTimeout = 5 * time.Second
+	projectConnections.Add(1)
 	return pgx.ConnectConfig(ctx, config)
 }
 

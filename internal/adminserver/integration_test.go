@@ -363,7 +363,27 @@ func TestAnonReadable(t *testing.T) {
 	GRANT SELECT ON public.granted_rls_policy TO ` + anonRole + `;
 	ALTER TABLE public.granted_rls_policy ENABLE ROW LEVEL SECURITY;
 	CREATE POLICY anon_read ON public.granted_rls_policy FOR SELECT TO PUBLIC USING (true);
-	CREATE TABLE public.ungranted (id int PRIMARY KEY);`
+	CREATE TABLE public.ungranted (id int PRIMARY KEY);
+	CREATE TABLE public.restrictive_false (id int PRIMARY KEY);
+	GRANT SELECT ON public.restrictive_false TO ` + anonRole + `;
+	ALTER TABLE public.restrictive_false ENABLE ROW LEVEL SECURITY;
+	CREATE POLICY open_read ON public.restrictive_false FOR SELECT TO PUBLIC USING (true);
+	CREATE POLICY shut ON public.restrictive_false AS RESTRICTIVE FOR SELECT TO PUBLIC USING (false);
+	CREATE TABLE public.restrictive_only (id int PRIMARY KEY);
+	GRANT SELECT ON public.restrictive_only TO ` + anonRole + `;
+	ALTER TABLE public.restrictive_only ENABLE ROW LEVEL SECURITY;
+	CREATE POLICY only_r ON public.restrictive_only AS RESTRICTIVE FOR SELECT TO PUBLIC USING (true);
+	CREATE TABLE public.using_false (id int PRIMARY KEY);
+	GRANT SELECT ON public.using_false TO ` + anonRole + `;
+	ALTER TABLE public.using_false ENABLE ROW LEVEL SECURITY;
+	CREATE POLICY never ON public.using_false FOR SELECT TO PUBLIC USING (false);
+	CREATE TABLE public.other_role_policy (id int PRIMARY KEY);
+	GRANT SELECT ON public.other_role_policy TO ` + anonRole + `;
+	ALTER TABLE public.other_role_policy ENABLE ROW LEVEL SECURITY;
+	CREATE POLICY auth_only ON public.other_role_policy FOR SELECT TO ` + strings.TrimSuffix(anonRole, "_anon") + `_authenticated USING (true);
+	CREATE TABLE public.column_grant (id int PRIMARY KEY, name text);
+	ALTER TABLE public.column_grant DISABLE ROW LEVEL SECURITY;
+	GRANT SELECT (name) ON public.column_grant TO ` + anonRole + `;`
 	migBody, _ := json.Marshal(map[string]string{"name": "anon_test", "sql": sql})
 	call("POST", project+"/migrations", string(migBody), 204)
 
@@ -387,6 +407,11 @@ func TestAnonReadable(t *testing.T) {
 	}
 	if m["ungranted"] {
 		t.Error("ungranted should NOT be anon readable")
+	}
+	for name, want := range map[string]bool{"restrictive_false": false, "restrictive_only": false, "using_false": false, "other_role_policy": false, "column_grant": true} {
+		if got, ok := m[name]; !ok || got != want {
+			t.Errorf("%s: anon_readable=%v (listed=%v), want %v", name, got, ok, want)
+		}
 	}
 }
 
@@ -471,4 +496,17 @@ func TestOwnerSQLRoleIsolation(t *testing.T) {
 	// RESET ALL — blocked
 	qb, _ = json.Marshal(map[string]string{"sql": "RESET ALL"})
 	call("POST", pathA+"/sql", string(qb), 400)
+
+	// Spellings found by the independent review are refused at the endpoint.
+	for _, bypass := range []string{
+		`SELECT "set_config"('role','` + adminRoleB + `',true)`,
+		`SET U&"role" TO ` + adminRoleB,
+		`DO $x$ BEGIN EXECUTE 'RESET ROLE'; END $x$`,
+		`UPDATE pg_settings SET setting='x' WHERE name='role'`,
+		`CREATE GROUP g`,
+		`SELECT E'\' ', set_config('role','x',true) --'`,
+	} {
+		qb, _ = json.Marshal(map[string]string{"sql": bypass})
+		call("POST", pathA+"/sql", string(qb), 400)
+	}
 }

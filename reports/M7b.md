@@ -11,15 +11,45 @@
 | M7b-02 Password hash | Fixed in bf1c868, **test added** | `TestOperatorDashboardEndpoints` verifies stored hash with `auth.VerifyPassword` (correct password succeeds, wrong password fails, prefix is `$pibase$argon2id$`). Gateway sign-in test not added (requires full gateway wiring in test harness). |
 | M7b-03 Row insert | **Removed (scope cut)** | Endpoints, handlers, UI and tests for row insert/edit/delete removed |
 | M7b-04 Row update/delete | **Removed (scope cut)** | Same as M7b-03 |
-| M7b-05 Keys shown once | Fixed | Create response includes `anon_key` and `service_key`; page JS writes them via `textContent` with "Shown once; copy them now" |
-| M7b-06 anon_readable | Fixed | Uses `has_table_privilege(anon_role, oid, 'SELECT')` with real role name from control package + RLS/policy check. `pibase_migrations` hidden from table list. Four-table test matrix passes (`TestAnonReadable`). |
-| M7b-07 Single connection | Fixed | `adminsql.TableMeta` runs all counts + anon checks on one connection. `owner_can_select` removed. |
-| M7b-08 SQL filter | **Fixed and tested** | `SET [LOCAL] SESSION AUTHORIZATION` blocked (with comments/whitespace between words). `CREATE/ALTER/DROP USER` blocked. `SET "role"` blocked. `select "copy" from t` and `select "grant" from t` allowed. 30+ unit test cases in `TestSQLFilterComprehensive`. Real-Postgres reach test (`TestOwnerSQLRoleIsolation`): RESET ROLE, SET ROLE, SET SESSION AUTHORIZATION, RESET ALL all return 400. Nothing reachable beyond the project admin role. |
+| M7b-05 Keys shown once | Fixed | Create response includes `anon_key` and `service_key`; page JS writes project id and both keys via `textContent` with "Shown once; copy them now". `TestDashboardShowsKeysOnceAndWiresEveryEndpoint` checks those writes and that no browser storage is used. |
+| M7b-06 anon_readable | Fixed (corrected after review R3) | The anon role comes from `control.project_catalog.anon_role`. Readable = SELECT on the table or any column, and (RLS off, or a PERMISSIVE SELECT/ALL policy for anon or PUBLIC whose USING is not literally `false`, with no RESTRICTIVE policy for them that is literally `false`). Policy expressions are not evaluated beyond that. `TestAnonReadable` covers 9 tables, including RESTRICTIVE, `USING (false)`, a policy for another role, and a column-only grant. `pibase_migrations` is hidden. |
+| M7b-07 Single connection | Fixed (corrected after review R4) | `adminsql.ListTables` runs the catalog query, every count and the anon checks on one project connection (plus one `_control` lookup). `TestListTablesUsesOneProjectConnection` creates 20 tables and asserts the project connection counter rose by exactly 1. |
+| M7b-08 SQL filter | Fixed (corrected after review R1/R2) | See "SQL filter and reach" below. |
 | M7b-09 Lost controls | Fixed | Backups list (name, size), "Back up now" (shows filename), apply migration (name + SQL textarea), list migrations (name, checksum prefix, time) — all in page JS via existing endpoints, tested in integration test. |
 | M7b-10 UI rules | Checked | `TestDashboardUIHardRules` passes. See screenshots below. |
 
+## SQL filter and reach
+The keyword filter is a guard rail for the SQL tab, not the security boundary. Migrations (`ApplyMigration`) do not use it at all. The boundary is the role model, and `TestOwnerConnectionReach` now tests that boundary directly.
+
+**Filter.** Blocked spellings:
+- `SET`/`RESET` `ROLE` and `SESSION AUTHORIZATION`, in every form: `LOCAL`, comments between words, a quoted `"role"`.
+- `set_config`, quoted or not.
+- `U&"..."` identifiers, because escapes inside them can spell any keyword.
+- `CREATE`/`ALTER`/`DROP` `ROLE`/`USER`/`GROUP`, including quoted forms.
+- `UPDATE pg_settings`.
+- `standard_conforming_strings` and `backslash_quote`.
+- `GRANT`, `REVOKE`, `COPY` and `PROGRAM`.
+- `DO` blocks in the SQL tab. `ON CONFLICT DO NOTHING/UPDATE` still works, and migrations may use `DO`.
+- Function and procedure bodies are checked with the same rules, and dynamic `EXECUTE` inside them is refused in the SQL tab.
+
+The lexer now understands `E'...'` backslash escapes. The independent review did not find this one: `SELECT E'\' ', set_config(...) --'` hid a live call inside what the old lexer took for a string, and it executes on Postgres 16. Covered by `TestSQLFilterComprehensive` and `TestSQLFilterReviewBypasses`, plus endpoint 400 checks in `TestOwnerSQLRoleIsolation`.
+
+**Reach.** `TestOwnerConnectionReach` opens the owner connection exactly as `Run` does: authenticator, then `SET LOCAL ROLE <project admin>`. It assumes the filter is bypassed and records what is reachable on Postgres 16:
+
+| Probe | Result |
+|---|---|
+| `RESET ROLE`, then `current_user` | `authenticator` |
+| After `RESET ROLE`: read the project's own table | denied (42501); authenticator does not inherit project roles |
+| After `RESET ROLE`: `auth.users`, `pg_read_file`, `CREATE ROLE`, `SET SESSION AUTHORIZATION`, `GRANT <other project role>` | all denied (42501) |
+| `SET ROLE <other project admin>` | allowed (authenticator is a member), but reading this project's table is denied (42501) |
+| `SET ROLE <other project anon>`, then read this project's table | denied (42501) |
+| Other project's table from this database | does not exist (42P01); databases are separate |
+| `dblink` / `postgres_fdw` installed | 0 |
+
+Nothing is reachable beyond what the project admin role can already read.
+
 ## Browse rewrite (replaces M7b-03/07 for read-only)
-All columns cast to `::text` with quoted identifiers. ORDER BY primary key (or `ctid`). Paging: Previous disabled at offset 0, Next disabled when `has_more` is false. NULL shown as muted text. `TestBrowseTextCasting` covers: uuid pk, bigint 9007199254740993, numeric(10,2), timestamptz, jsonb, bytea, int[], bool, generated column, NULL, empty string — all exact text values asserted.
+All columns cast to `::text` with quoted identifiers. ORDER BY primary key (or `ctid`). Paging: Previous disabled at offset 0, Next disabled when `has_more` is false. NULL shown as muted text. `TestBrowseTextCasting` covers: uuid pk, bigint 9007199254740993, numeric(10,2), timestamptz, jsonb, bytea, int[], bool, generated column, NULL, empty string. `TestBrowseRowsPagingIsStable` pages 61 rows of a composite-key table and of a table with no primary key (offset 0 and 50): 50 + 11 rows, no overlap, none missing, `has_more` correct. A zero-column table returns no rows instead of a SQL error. Tables without a primary key are ordered by `ctid`, which can shift under concurrent updates or VACUUM FULL. That is acceptable for browsing, but pages are not a snapshot.
 
 ## Tests run
 
@@ -46,7 +76,11 @@ None of these are related to M7b changes.
 ```
 
 ## Not tested
-- **Docker gates** (`scripts/test.sh`, `scripts/test-supabase-js.sh`): PENDING — `init-env.sh` refuses to run as root in this cloud container. Owner should run on the Pi.
+- **Docker gates**: PENDING.
+  - `scripts/test.sh` was run at 11e8ce7 as a non-root user in the cloud container. The in-Docker gofmt, vet and unit tests passed, and the production image built.
+  - It then stopped building `Dockerfile.postgres`: the sandbox network blocks plain-HTTP apt from containers (`403 Forbidden` from deb.debian.org).
+  - `scripts/test-supabase-js.sh` was not run.
+  - Both must be run on the Pi.
 - **Pi deployment**: not tested (no Pi access).
 - **Real browser clicking**: screenshots taken programmatically; no manual click-through.
 
@@ -68,7 +102,8 @@ The first screenshots were of the empty landing page (wrong URL), so they missed
 1. The 390px layout is usable but cramped: the left menu keeps 120px (the UI rules require a left menu).
 2. Gateway sign-in test not added for M7b-02 (would need full gateway wiring).
 3. Docker gates pending.
-4. Connection count assertion for M7b-07 not added (would need `pg_stat_activity` query in test); the implementation uses a single `TableMeta` call so it is structurally one connection.
+4. `anon_readable` does not evaluate policy expressions (for example `USING (auth.uid() = owner)` counts as readable).
+5. The SQL tab filter can be sidestepped by applying the same SQL as a migration. That is by design: the role model is the boundary (see the reach table).
 
 ## Click-through checklist for the owner
 1. **Create project** → response shows `id`, `anon_key`, `service_key` with "Shown once; copy them now"
@@ -77,3 +112,19 @@ The first screenshots were of the empty landing page (wrong URL), so they missed
 4. **Run a backup** → "Back up now" returns created filename; backup appears in list with name and size
 5. **Apply a migration** → name + SQL textarea; result shown inline; migration appears in list with name, checksum prefix, time
 6. **SQL tab** → `SET SESSION AUTHORIZATION`, `RESET ROLE`, `SET ROLE <other>`, `CREATE USER`, `ALTER USER` all return 400; normal queries work
+
+## Independent review (2026-10-06)
+A fresh reviewer session with no shared context reviewed 7346ec2 and 11e8ce7 and returned BLOCK. Status of each finding in the follow-up commit:
+
+| ID | Severity | Finding | Status |
+|---|---|---|---|
+| R1 | High | Filter bypasses: quoted `set_config`, `U&"role"`, `DO` bodies, `UPDATE pg_settings`, `GROUP`, quoted role DDL | Fixed; each spelling is a unit test. Also fixed the E-string bypass found while fixing these. |
+| R2 | High | Task 8 reach test only checked the filter's 400; report overclaimed | Fixed: `TestOwnerConnectionReach` asserts real reach; report corrected |
+| R3 | Medium | `anon_readable` ignored RESTRICTIVE / `USING (false)` / column grants; anon role derived by string replace | Fixed; anon role from `control.project_catalog` |
+| R4 | Medium | No connection-count assertion; table list used several connections | Fixed: `ListTables`, one project connection, counter test |
+| R5 | Medium | Paging never exercised | Fixed: 61-row paging test |
+| R6 | Low | No test that keys are written to the page; id not shown | Fixed |
+| R7 | Low | No page test for backup/migration endpoints | Fixed |
+| R8 | Low | ctid ordering undocumented; zero-column table errored; uuid/bytea in arrays | Documented; zero-column handled; `displayValue` now recurses into arrays |
+
+The fixes are auditor-applied and need a second review before M7b is approved.

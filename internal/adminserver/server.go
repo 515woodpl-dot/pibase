@@ -91,38 +91,10 @@ type tableInfo struct {
 }
 
 func (s *Server) tables(w http.ResponseWriter, r *http.Request) {
-	id := r.PathValue("id")
-	result, err := adminsql.RunParams(r.Context(), s.DatabaseURL, id, `
-SELECT c.relname AS name, c.relrowsecurity AS rls,
- COALESCE((SELECT array_agg(a.attname ORDER BY k.ord) FROM pg_index i JOIN unnest(i.indkey) WITH ORDINALITY k(attnum,ord) ON true JOIN pg_attribute a ON a.attrelid=c.oid AND a.attnum=k.attnum WHERE i.indrelid=c.oid AND i.indisprimary), ARRAY[]::text[]) AS primary_key,
- (SELECT array_agg(a.attname ORDER BY a.attnum) FROM pg_attribute a WHERE a.attrelid=c.oid AND a.attnum>0 AND NOT a.attisdropped) AS columns
-FROM pg_class c JOIN pg_namespace n ON n.oid=c.relnamespace
-WHERE n.nspname='public' AND c.relkind IN ('r','p') AND c.relname <> 'pibase_migrations' ORDER BY c.relname`)
+	tables, err := adminsql.ListTables(r.Context(), s.DatabaseURL, r.PathValue("id"))
 	if err != nil {
 		fail(w, err)
 		return
-	}
-	tables := make([]tableInfo, 0, len(result.Rows))
-	for _, row := range result.Rows {
-		tables = append(tables, tableInfo{
-			Name:       row["name"].(string),
-			RLS:        row["rls"] == true,
-			PrimaryKey: stringsOf(row["primary_key"]),
-			Columns:    stringsOf(row["columns"]),
-		})
-	}
-	entries := make([]adminsql.TableEntry, len(tables))
-	for i, t := range tables {
-		entries[i] = adminsql.TableEntry{Name: t.Name, RLS: t.RLS}
-	}
-	anonFlags, counts, err := adminsql.TableMeta(r.Context(), s.DatabaseURL, id, entries)
-	if err != nil {
-		fail(w, err)
-		return
-	}
-	for i := range tables {
-		tables[i].Count = counts[i]
-		tables[i].AnonReadable = anonFlags[i]
 	}
 	writeJSON(w, 200, tables)
 }
@@ -480,7 +452,7 @@ const q=id=>document.getElementById(id), chain=q('chain');let projects=[],select
 const auth=()=>({Authorization:'Bearer '+q('token').value,'Content-Type':'application/json'}), projectPath=()=> '/_pibase/projects/'+encodeURIComponent(selected.id);
 function el(tag,text){const e=document.createElement(tag);if(text!==undefined)e.textContent=text;return e}function button(text,fn,cls){const b=el('button',text);if(cls)b.className=cls;b.onclick=fn;return b}function pane(title){const p=el('section');p.className='pane';p.append(el('h1',title));return p}function clearFrom(n){while(chain.children.length>n)chain.lastChild.remove()}function add(p){chain.append(p);alignChain()}function alignChain(){chain.style.paddingRight='0px';const max=chain.scrollWidth-chain.clientWidth;let x=max;for(const c of chain.children){const left=c.offsetLeft-chain.offsetLeft;if(left>=max){x=left;break}}if(x>max)chain.style.paddingRight=(x-max)+'px';chain.scrollLeft=x}function cell(v){if(v===null)return 'NULL';return typeof v==='object'?JSON.stringify(v):String(v)}function dataTable(columns,rows){const d=el('div');d.className='data';const table=el('table'),head=el('tr');for(const c of columns)head.append(el('th',c));table.append(head);for(const row of rows){const tr=el('tr');for(const c of columns){const td=el('td',cell(row[c]));if(row[c]===null)td.className='muted';tr.append(td)}table.append(tr)}d.append(table);return d}function say(v){q('status').textContent=v}
 async function api(path,opt={}){opt.headers=auth();const r=await fetch(path,opt),t=await r.text();if(!r.ok)throw Error(t||r.status);return t?JSON.parse(t):null}function body(v,method='POST'){return{method,body:JSON.stringify(v)}}
-function projectsPane(){const p=pane('Projects');const create=el('div');create.className='group';create.append(el('div','Create project'));const input=el('input');input.placeholder='Project name';create.append(input,button('Create',async()=>{try{const x=await api('/_pibase/projects',body({name:input.value}));projects.push(x);renderProjects();clearFrom(1);const kp=pane(x.name);kp.append(el('p','Shown once; copy them now.'));const ak=el('p');ak.textContent='anon key: '+x.anon_key;const sk=el('p');sk.textContent='service key: '+x.service_key;kp.append(ak,sk);add(kp)}catch(e){say(e.message)}}));p.append(create);const list=el('div');list.id='projectList';p.append(list);return p}
+function projectsPane(){const p=pane('Projects');const create=el('div');create.className='group';create.append(el('div','Create project'));const input=el('input');input.placeholder='Project name';create.append(input,button('Create',async()=>{try{const x=await api('/_pibase/projects',body({name:input.value}));projects.push(x);renderProjects();clearFrom(1);const kp=pane(x.name);kp.append(el('p','Shown once; copy them now.'),el('p','project id: '+x.id));const ak=el('p');ak.textContent='anon key: '+x.anon_key;const sk=el('p');sk.textContent='service key: '+x.service_key;kp.append(ak,sk);add(kp)}catch(e){say(e.message)}}));p.append(create);const list=el('div');list.id='projectList';p.append(list);return p}
 function renderProjects(){const list=q('projectList');if(!list)return;list.replaceChildren();for(const x of projects){const b=button(x.name,()=>openProject(x),'item');b.append(el('span',x.id));list.append(b)}}
 function openProject(x){selected=x;q('projectMenus').classList.remove('hidden');clearFrom(1);const p=pane(x.name);p.append(el('p',x.id));const acts=el('div');acts.className='actions';acts.append(button('Tables',openTables),button('Users',openUsers),button('SQL',openSQL),button('Migrations',()=>openMigrations()),button('Backups',()=>openBackups()),button('Extensions',openExtensions));p.append(acts);const danger=el('div');danger.className='group danger';danger.append(el('div','Delete project — type its id to confirm'));const i=el('input');danger.append(i,button('Delete project',async()=>{try{await api(projectPath(),body({confirm:i.value},'DELETE'));selected=null;q('projectMenus').classList.add('hidden');await load();}catch(e){say(e.message)}}));p.append(danger);add(p)}
 async function openTables(){clearFrom(2);const p=pane('Tables');p.append(el('p','Loading…'));add(p);try{const ts=await api(projectPath()+'/tables');p.replaceChildren(el('h1','Tables'));for(const t of ts){const b=button(t.name,()=>openTable(t),'item');b.append(el('span',t.count+' rows · RLS '+(t.rls?'on':'off')+' · anon '+(t.anon_readable?'yes':'no')));p.append(b)}}catch(e){p.append(el('p',e.message))}}

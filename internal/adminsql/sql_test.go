@@ -113,7 +113,6 @@ func TestSQLFilterComprehensive(t *testing.T) {
 		`SELECT "copy" FROM public.t`,
 		`SELECT "grant" FROM public.t`,
 		`SELECT "role" FROM public.t`,
-		`SELECT "set_config" FROM public.t`,
 		`SELECT "revoke" FROM public.t`,
 		// column named grant_date, copyright
 		`SELECT grant_date, copyright FROM public.programs`,
@@ -152,5 +151,59 @@ func TestDisplayValueMakesUUIDAndByteaReadable(t *testing.T) {
 	}
 	if got := displayValue("text"); got != "text" {
 		t.Fatalf("text = %v", got)
+	}
+}
+
+func TestSQLFilterReviewBypasses(t *testing.T) {
+	blocked := []string{
+		`SELECT "set_config"('role','p_x_admin',true)`,
+		`SELECT pg_catalog."set_config"('role','x',true)`,
+		`SET U&"role" TO x`,
+		`SET U&"\0072ole" TO x`,
+		`SELECT U&"d\0061t\+000061" FROM t`,
+		`DO $x$ BEGIN EXECUTE 'RESET ROLE'; END $x$`,
+		`do 'begin null; end'`,
+		`DO LANGUAGE plpgsql $$ BEGIN NULL; END $$`,
+		`UPDATE pg_settings SET setting='x' WHERE name='role'`,
+		`update pg_catalog."pg_settings" set setting='x' where name='role'`,
+		`CREATE GROUP g`,
+		`ALTER GROUP g ADD USER u`,
+		`DROP GROUP g`,
+		`create "role" x`,
+		`ALTER "user" x PASSWORD 'y'`,
+		`SET standard_conforming_strings = off`,
+		// E-string backslash escape used to hide set_config inside a fake string.
+		`SELECT E'\' ', set_config('role','x',true) --'`,
+		`SELECT e'\\' , 1, E'\' ', set_config('role','x',true) --'`,
+		// Routine bodies are checked, and dynamic SQL in them is refused.
+		`CREATE FUNCTION f() RETURNS void LANGUAGE plpgsql AS $$ BEGIN EXECUTE 'RESET ROLE'; END $$`,
+		`CREATE FUNCTION f() RETURNS void LANGUAGE plpgsql AS $$ BEGIN EXECUTE format('%s','x'); END $$`,
+		`CREATE FUNCTION f() RETURNS text LANGUAGE sql AS 'select set_config(''role'',''x'',true)'`,
+		`CREATE OR REPLACE PROCEDURE p() LANGUAGE sql AS $b$ GRANT SELECT ON t TO PUBLIC $b$`,
+		`CREATE FUNCTION f() RETURNS void LANGUAGE plpgsql AS $$ BEGIN RESET ROLE; END $$`,
+		`CREATE FUNCTION f() RETURNS void LANGUAGE sql SET role = x AS 'select 1'`,
+		`ALTER FUNCTION f() SET role TO x`,
+	}
+	for _, stmt := range blocked {
+		if err := validateOwnerSQL(stmt); err == nil {
+			t.Errorf("should block: %s", stmt)
+		}
+	}
+	allowed := []string{
+		`INSERT INTO t(id) VALUES (1) ON CONFLICT (id) DO NOTHING`,
+		`INSERT INTO t(id,n) VALUES (1,2) ON CONFLICT (id) DO UPDATE SET n = excluded.n`,
+		`SELECT name, setting FROM pg_settings`,
+		`SELECT E'it\'s fine', 'grant'`,
+		`SELECT U&'caf\00e9'`,
+		`SELECT $1::text`,
+		`CREATE FUNCTION add(a int, b int) RETURNS int LANGUAGE sql AS $$ SELECT a + b $$`,
+		`CREATE FUNCTION touch() RETURNS trigger LANGUAGE plpgsql AS $$ BEGIN NEW.updated_at := now(); RETURN NEW; END $$`,
+		`DROP FUNCTION add(int, int)`,
+		`SELECT "do" FROM t`,
+	}
+	for _, stmt := range allowed {
+		if err := validateOwnerSQL(stmt); err != nil {
+			t.Errorf("should allow: %s — got: %v", stmt, err)
+		}
 	}
 }
