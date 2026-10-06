@@ -1,0 +1,2 @@
+Docker gate: scripts/test-supabase-js.sh — PENDING
+Reason: same as test.sh — init-env.sh refuses to run as root.

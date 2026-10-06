@@ -1,0 +1,8 @@
+Docker gate: scripts/test.sh — PENDING
+Reason: init-env.sh refuses to run as root (this cloud container runs as root).
+The owner should run these on the Pi or in a non-root environment.
+
+Exit output:
+setup-pi regression checks passed
+run init-env.sh as the non-root pibase operator
+EXIT: 1
