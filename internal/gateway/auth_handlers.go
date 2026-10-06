@@ -3,6 +3,7 @@ package gateway
 import (
 	"context"
 	"crypto/sha256"
+	"encoding/hex"
 	"encoding/json"
 	"net/http"
 	"strings"
@@ -213,16 +214,23 @@ func (s *Server) authToken(w http.ResponseWriter, r *http.Request) {
 		writeAPIError(w, err)
 		return
 	}
-	if err := s.enforceAuthRate(p, r, req.Email); err != nil {
-		writeAPIError(w, err)
+	refresh := r.URL.Query().Get("grant_type") == "refresh_token" || req.RefreshToken != ""
+	var rateErr error
+	if refresh {
+		rateErr = s.enforceRefreshRate(p, hex.EncodeToString(tokenHash(req.RefreshToken)))
+	} else {
+		rateErr = s.enforceAuthRate(p, r, req.Email)
+	}
+	if rateErr != nil {
+		writeAPIError(w, rateErr)
 		return
 	}
 	s.recordRequest(r.Context(), p.id)
-	grant := r.URL.Query().Get("grant_type")
 	var out map[string]any
+	var replayed bool
 	err = s.adminTx(r.Context(), p, func(tx pgx.Tx) error {
-		if grant == "refresh_token" || req.RefreshToken != "" {
-			return s.refreshTx(r.Context(), p, tx, req.RefreshToken, &out)
+		if refresh {
+			return s.refreshTx(r.Context(), p, tx, req.RefreshToken, &out, &replayed)
 		}
 		var id, email, hash string
 		var confirmed *time.Time
@@ -252,21 +260,30 @@ func (s *Server) authToken(w http.ResponseWriter, r *http.Request) {
 		writeAPIError(w, err)
 		return
 	}
+	if replayed {
+		writeAPIError(w, httpError(400, "invalid refresh token"))
+		return
+	}
 	writeJSON(w, 200, out)
 }
 
-func (s *Server) refreshTx(ctx context.Context, p project, tx pgx.Tx, raw string, out *map[string]any) error {
+func (s *Server) refreshTx(ctx context.Context, p project, tx pgx.Tx, raw string, out *map[string]any, replayed *bool) error {
 	var id, user, aal string
 	var expires time.Time
 	var revoked *time.Time
 	var email string
-	err := tx.QueryRow(ctx, `SELECT id,user_id,expires_at,revoked_at,aal FROM auth.refresh_tokens WHERE token_hash=$1`, tokenHash(raw)).Scan(&id, &user, &expires, &revoked, &aal)
+	err := tx.QueryRow(ctx, `SELECT id,user_id,expires_at,revoked_at,aal FROM auth.refresh_tokens WHERE token_hash=$1 FOR UPDATE`, tokenHash(raw)).Scan(&id, &user, &expires, &revoked, &aal)
 	if err != nil || expires.Before(time.Now()) {
 		return httpError(400, "invalid refresh token")
 	}
 	if revoked != nil {
-		_, _ = tx.Exec(ctx, `UPDATE auth.refresh_tokens SET revoked_at=COALESCE(revoked_at,now()) WHERE user_id=$1`, user)
-		return httpError(400, "invalid refresh token")
+		// Commit the family revocation before reporting a replay to the caller.
+		_, err = tx.Exec(ctx, `UPDATE auth.refresh_tokens SET revoked_at=COALESCE(revoked_at,now()) WHERE user_id=$1`, user)
+		if err != nil {
+			return err
+		}
+		*replayed = true
+		return nil
 	}
 	if err = tx.QueryRow(ctx, `SELECT email FROM auth.users WHERE id=$1`, user).Scan(&email); err != nil {
 		return err

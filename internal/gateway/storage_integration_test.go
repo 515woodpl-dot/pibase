@@ -10,6 +10,7 @@ import (
 	"os"
 	"path/filepath"
 	"strings"
+	"sync"
 	"testing"
 	"time"
 
@@ -58,8 +59,43 @@ func TestM3StorageRLSAndSignedURLs(t *testing.T) {
 	if !bytes.Contains(upload, []byte(`"FullPath":"public-files/hello.txt"`)) {
 		t.Fatalf("upload response: %s", upload)
 	}
+	upsertRequest, err := http.NewRequest(http.MethodPost, httpServer.URL+"/storage/v1/object/public-files/hello.txt", strings.NewReader("updated storage"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	upsertRequest.Header.Set("apikey", p.AnonKey)
+	upsertRequest.Header.Set("Authorization", "Bearer "+userToken)
+	upsertRequest.Header.Set("x-upsert", "true")
+	upsertResponse, err := httpServer.Client().Do(upsertRequest)
+	if err != nil {
+		t.Fatal(err)
+	}
+	_ = upsertResponse.Body.Close()
+	if upsertResponse.StatusCode != http.StatusOK {
+		t.Fatalf("upsert status: %d", upsertResponse.StatusCode)
+	}
+	otherToken, err := keys.SignJWT(secret, map[string]any{"iss": "pibase", "aud": "authenticated", "role": "authenticated", "sub": "22222222-2222-4222-8222-222222222222", "iat": time.Now().Unix(), "exp": time.Now().Add(time.Hour).Unix()})
+	if err != nil {
+		t.Fatal(err)
+	}
+	otherUpsert, err := http.NewRequest(http.MethodPost, httpServer.URL+"/storage/v1/object/public-files/hello.txt", strings.NewReader("unauthorized replacement"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	otherUpsert.Header.Set("apikey", p.AnonKey)
+	otherUpsert.Header.Set("Authorization", "Bearer "+otherToken)
+	otherUpsert.Header.Set("x-upsert", "true")
+	otherResponse, err := httpServer.Client().Do(otherUpsert)
+	if err != nil {
+		t.Fatal(err)
+	}
+	_ = otherResponse.Body.Close()
+	if otherResponse.StatusCode != http.StatusForbidden {
+		t.Fatalf("cross-user upsert status: got %d, want 403", otherResponse.StatusCode)
+	}
+	requestStorage(t, httpServer.Client(), http.MethodDelete, httpServer.URL+"/storage/v1/object/public-files", p.AnonKey, otherToken, []byte(`{"prefixes":["hello.txt"]}`), "application/json", http.StatusNotFound)
 	response := requestStorage(t, httpServer.Client(), http.MethodGet, httpServer.URL+"/storage/v1/object/public/public-files/hello.txt", "", "", nil, "", http.StatusOK)
-	if string(response) != "hello storage" {
+	if string(response) != "updated storage" {
 		t.Fatalf("public download: %q", response)
 	}
 	listed := requestAuthJSON(t, httpServer.Client(), http.MethodPost, httpServer.URL+"/storage/v1/object/list/public-files", p.AnonKey, `{"limit":10}`, http.StatusOK)
@@ -89,6 +125,51 @@ func TestM3StorageRLSAndSignedURLs(t *testing.T) {
 	requestAuthJSON(t, httpServer.Client(), http.MethodDelete, httpServer.URL+"/storage/v1/object/public-files", p.ServiceKey, `{"prefixes":["hello.txt"]}`, http.StatusOK)
 	if _, err := os.Stat(filepath.Join(root, p.ID, "public-files", "hello.txt")); !os.IsNotExist(err) {
 		t.Fatalf("object file was not removed: %v", err)
+	}
+	start := make(chan struct{})
+	var uploads sync.WaitGroup
+	statuses := make([]int, 2)
+	errors := make([]error, 2)
+	for i := range statuses {
+		uploads.Add(1)
+		go func(i int) {
+			defer uploads.Done()
+			<-start
+			req, requestErr := http.NewRequest(http.MethodPost, httpServer.URL+"/storage/v1/object/stream-files/concurrent-"+string(rune('a'+i))+".bin", bytes.NewReader(large))
+			if requestErr != nil {
+				errors[i] = requestErr
+				return
+			}
+			req.Header.Set("apikey", p.AnonKey)
+			req.Header.Set("Authorization", "Bearer "+userToken)
+			resp, requestErr := httpServer.Client().Do(req)
+			if requestErr != nil {
+				errors[i] = requestErr
+				return
+			}
+			defer resp.Body.Close()
+			_, _ = io.Copy(io.Discard, resp.Body)
+			statuses[i] = resp.StatusCode
+		}(i)
+	}
+	close(start)
+	uploads.Wait()
+	for _, uploadErr := range errors {
+		if uploadErr != nil {
+			t.Fatal(uploadErr)
+		}
+	}
+	if !((statuses[0] == http.StatusOK && statuses[1] == http.StatusInsufficientStorage) || (statuses[1] == http.StatusOK && statuses[0] == http.StatusInsufficientStorage)) {
+		t.Fatalf("concurrent upload statuses: %v", statuses)
+	}
+	usage, err := storageUsage(root, p.ID)
+	if err != nil || usage > server.storageQuotaBytes {
+		t.Fatalf("storage quota exceeded: usage=%d limit=%d err=%v", usage, server.storageQuotaBytes, err)
+	}
+	requestStorage(t, httpServer.Client(), http.MethodPost, httpServer.URL+"/storage/v1/object/stream-files/folder/item.txt", p.AnonKey, userToken, []byte("nested"), "text/plain", http.StatusOK)
+	requestStorage(t, httpServer.Client(), http.MethodPost, httpServer.URL+"/storage/v1/object/stream-files/folder", p.AnonKey, userToken, []byte("replacement"), "text/plain", http.StatusConflict)
+	if content, readErr := os.ReadFile(filepath.Join(root, p.ID, "stream-files", "folder", "item.txt")); readErr != nil || string(content) != "nested" {
+		t.Fatalf("nested object was changed after path conflict: content=%q err=%v", content, readErr)
 	}
 }
 
