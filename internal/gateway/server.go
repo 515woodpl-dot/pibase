@@ -36,6 +36,7 @@ type Server struct {
 	realtime          *realtimeHub
 	schedulerStop     context.CancelFunc
 	schedulerWG       sync.WaitGroup
+	smtp              smtpConfig
 }
 
 func New(ctx context.Context, databaseURL string, masterKey []byte, activeProjects int, lightLoad bool) (*Server, error) {
@@ -100,6 +101,7 @@ func New(ctx context.Context, databaseURL string, masterKey []byte, activeProjec
 		storageRoot:       storageRoot,
 		storageQuotaBytes: storageQuotaBytes,
 		startedAt:         time.Now(),
+		smtp:              smtpFromEnv(),
 	}
 	if s.realtime, err = newRealtimeHub(s); err != nil {
 		s.Close()

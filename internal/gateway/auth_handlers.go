@@ -188,6 +188,7 @@ func (s *Server) authSignup(w http.ResponseWriter, r *http.Request) {
 	if s.exposeAuthTokens {
 		result["confirmation_token"] = confirmation
 	}
+	s.sendConfirmationEmail(strings.ToLower(strings.TrimSpace(req.Email)), confirmation)
 	writeJSON(w, http.StatusOK, result)
 }
 
@@ -371,6 +372,7 @@ func (s *Server) authRecover(w http.ResponseWriter, r *http.Request) {
 	if s.exposeAuthTokens {
 		out["reset_token"] = raw
 	}
+	s.sendRecoveryEmail(strings.ToLower(strings.TrimSpace(req.Email)), raw)
 	writeJSON(w, 200, out)
 }
 
