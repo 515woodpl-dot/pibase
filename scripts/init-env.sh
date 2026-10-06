@@ -2,6 +2,7 @@
 set -eu
 
 cd "$(dirname "$0")/.."
+if [ "$(id -u)" -eq 0 ]; then echo "run init-env.sh as the non-root pibase operator" >&2; exit 1; fi
 if [ -e .env ]; then
   umask 077
   if ! grep -q '^PIBASE_BACKUP_KEY=' .env; then
@@ -10,7 +11,7 @@ if [ -e .env ]; then
   if ! grep -q '^PIBASE_OPERATOR_TOKEN=' .env; then
     printf 'PIBASE_OPERATOR_TOKEN=%s\n' "$(head -c 32 /dev/urandom | base64 | tr -d '\n')" >> .env
   fi
-	if ! grep -q '^PIBASE_UID=' .env; then printf 'PIBASE_UID=%s\nPIBASE_GID=%s\n' "$(id -u)" "$(id -g)" >> .env; fi
+  if ! grep -q '^PIBASE_UID=' .env; then printf 'PIBASE_UID=%s\nPIBASE_GID=%s\n' "$(id -u)" "$(id -g)" >> .env; fi
   exit 0
 fi
 

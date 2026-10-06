@@ -94,7 +94,7 @@ func TestOperatorDashboardEndpoints(t *testing.T) {
 		t.Fatal("project list exposes API keys")
 	}
 
-	migration, _ := json.Marshal(map[string]string{"name": "0001_m7a", "sql": `CREATE TABLE public."odd ""name"(id integer PRIMARY KEY, note text); INSERT INTO public."odd ""name" VALUES (1,'<script>alert(1)</script>');`})
+	migration, _ := json.Marshal(map[string]string{"name": "0001_m7a", "sql": `CREATE TABLE public."odd ""name"(id integer PRIMARY KEY, note text); INSERT INTO public."odd ""name" VALUES (1,'<script>alert(1)</script>'); CREATE TABLE public.programs ("program id" integer PRIMARY KEY, "copy " text, "grant_date" text); INSERT INTO public.programs VALUES (1,'first','today');`})
 	call(http.MethodPost, project+"/migrations", string(migration), http.StatusNoContent)
 	query, _ := json.Marshal(map[string]string{"sql": `SELECT note FROM public."odd ""name"`})
 	result := call(http.MethodPost, project+"/sql", string(query), http.StatusOK)
@@ -104,6 +104,27 @@ func TestOperatorDashboardEndpoints(t *testing.T) {
 	if err := json.Unmarshal(result, &rows); err != nil || len(rows.Rows) != 1 || rows.Rows[0]["note"] != "<script>alert(1)</script>" {
 		t.Fatalf("sql result: %s err=%v", result, err)
 	}
+	// M7b catalog and row endpoints cover the required programs fixture and
+	// deliberately awkward quoted names. Values remain JSON-bound parameters.
+	tables := call(http.MethodGet, project+"/tables", "", http.StatusOK)
+	if !bytes.Contains(tables, []byte(`"programs"`)) || !bytes.Contains(tables, []byte(`"program id"`)) {
+		t.Fatalf("table catalog: %s", tables)
+	}
+	browse := call(http.MethodGet, project+"/tables/programs/rows", "", http.StatusOK)
+	if !bytes.Contains(browse, []byte(`"copy "`)) || !bytes.Contains(browse, []byte(`"first"`)) {
+		t.Fatalf("row browse: %s", browse)
+	}
+	call(http.MethodPut, project+"/tables/programs/rows", `{"key":{"program id":1},"values":{"copy ":"changed","grant_date":"tomorrow"}}`, http.StatusOK)
+	call(http.MethodDelete, project+"/tables/programs/rows", `{"key":{"program id":1},"confirm":"wrong"}`, http.StatusBadRequest)
+	call(http.MethodDelete, project+"/tables/programs/rows", `{"key":{"program id":1},"confirm":"1"}`, http.StatusOK)
+	createdUser := call(http.MethodPost, project+"/users", `{"email":"m7b@example.test","password":"a sufficiently long password","email_confirm":true}`, http.StatusCreated)
+	var user map[string]string
+	if err := json.Unmarshal(createdUser, &user); err != nil || user["id"] == "" {
+		t.Fatalf("user create: %s", createdUser)
+	}
+	call(http.MethodGet, project+"/users", "", http.StatusOK)
+	call(http.MethodDelete, project+"/users/"+user["id"], `{"confirm":"wrong"}`, http.StatusBadRequest)
+	call(http.MethodDelete, project+"/users/"+user["id"], `{"confirm":"`+user["id"]+`"}`, http.StatusNoContent)
 	applied, _ := json.Marshal(map[string]string{"sql": `SELECT name FROM public.pibase_migrations`})
 	if listed := call(http.MethodPost, project+"/sql", string(applied), http.StatusOK); !bytes.Contains(listed, []byte("0001_m7a")) {
 		t.Fatalf("applied migration not listed: %s", listed)

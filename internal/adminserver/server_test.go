@@ -39,3 +39,16 @@ func TestDashboardPageLoadsWithoutTokenAndHoldsNoSecrets(t *testing.T) {
 		}
 	}
 }
+
+func TestDashboardUIHardRules(t *testing.T) {
+	for _, forbidden := range []string{"alert(", "confirm(", "prompt(", "<dialog", "transition", "animation", "scroll-behavior: smooth", "innerHTML"} {
+		if strings.Contains(page, forbidden) {
+			t.Fatalf("dashboard contains forbidden %q", forbidden)
+		}
+	}
+	for _, required := range []string{"--ink:#333", "-webkit-tap-highlight-color:transparent", ":focus-visible", "chain.scrollLeft=chain.scrollWidth", "textContent"} {
+		if !strings.Contains(page, required) {
+			t.Fatalf("dashboard misses %q", required)
+		}
+	}
+}

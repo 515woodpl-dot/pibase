@@ -37,3 +37,20 @@ SELECT 1`,
 		}
 	}
 }
+
+func TestOwnerSQLMatchesKeywordsNotIdentifierSubstrings(t *testing.T) {
+	for _, statement := range []string{
+		`SELECT * FROM public.programs`,
+		`SELECT copyright, grant_date FROM public."programs"`,
+		`SELECT 'grant role' AS note`,
+	} {
+		if err := validateOwnerSQL(statement); err != nil {
+			t.Fatalf("rejected %q: %v", statement, err)
+		}
+	}
+	for _, statement := range []string{`GRANT SELECT ON public.programs TO PUBLIC`, `SET ROLE postgres`, `SET LOCAL ROLE x`, `SET SESSION ROLE x`, `SET session_authorization='x'`, `SET "role"='x'`, `SELECT set_config('role','x',false)`, `RESET ALL`} {
+		if err := validateOwnerSQL(statement); err == nil {
+			t.Fatalf("accepted %q", statement)
+		}
+	}
+}

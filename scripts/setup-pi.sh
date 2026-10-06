@@ -63,11 +63,12 @@ docker compose version
 sudo systemctl enable --now docker
 sudo usermod -aG docker "$(id -un)"
 
-# PostgreSQL manages its own bind mount during initialization. The application
-# containers deliberately run as the fixed unprivileged pibase UID/GID, so the
-# two application-writable bind mounts must use that numeric ownership instead
-# of the host operator's account.
+# PostgreSQL manages its own bind mount during initialization. Application
+# services run as this host operator under Compose, so bind mounts remain
+# operator-owned; repair old fixed-UID objects recursively on this one-time
+# setup/upgrade path.
 sudo install -d -m 0750 -o "$(id -un)" -g "$(id -gn)" "$data_root" "$data_root/postgres" "$data_root/files" "$data_root/backups"
+sudo chown -R "$(id -un):$(id -gn)" "$data_root/files" "$data_root/backups"
 
 filesystem="$(findmnt -n -o FSTYPE --target "$data_root")"
 case "$filesystem" in ext4|xfs|btrfs) ;; *) echo "warning: $data_root uses $filesystem; ext4 on a USB3 SSD is recommended" >&2;; esac

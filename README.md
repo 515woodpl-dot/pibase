@@ -90,6 +90,8 @@ printf 'select current_user, now()' | docker compose run --rm -T \
 ```
 
 Migration names are idempotent and checksum-protected. Owner SQL has a
+token-based guard against privilege-changing statements; it is not a security
+boundary—the constrained authenticator connection and PostgreSQL roles are.
 30-second statement timeout and is not exposed through the public HTTP API.
 
 ## Verify

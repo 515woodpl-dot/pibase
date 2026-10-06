@@ -38,7 +38,7 @@ services:
     restart: "no"
 
   gateway:
-	user: "${PIBASE_UID:?set PIBASE_UID}:${PIBASE_GID:?set PIBASE_GID}"
+    user: "${PIBASE_UID:-65532}:${PIBASE_GID:-65532}"
     build:
       context: .
       target: gateway
@@ -61,7 +61,7 @@ services:
       - backup-data:/data/backups
 
   admin:
-	user: "${PIBASE_UID:?set PIBASE_UID}:${PIBASE_GID:?set PIBASE_GID}"
+    user: "${PIBASE_UID:-65532}:${PIBASE_GID:-65532}"
     build:
       context: .
       target: ops
@@ -89,7 +89,7 @@ services:
       - backup-data:/data/backups
 
   ops:
-	user: "${PIBASE_UID:?set PIBASE_UID}:${PIBASE_GID:?set PIBASE_GID}"
+    user: "${PIBASE_UID:-65532}:${PIBASE_GID:-65532}"
     profiles: ["tools"]
     build:
       context: .

@@ -15,10 +15,12 @@ curl --fail http://127.0.0.1:18080/healthz
 curl --fail http://127.0.0.1:18080/metrics
 ```
 
-The setup script assigns the mounted `files` and `backups` directories to the
-non-root container account (UID 65532/GID 998), which is required for storage
-uploads and encrypted backups. For an installation created before this rule,
-rerun `setup-pi.sh` with the same `PIBASE_DATA_ROOT` before starting the stack.
+The application services run as the non-root host operator's UID and GID under
+Compose. `init-env.sh` writes those IDs into `.env`, so the mounted `files` and
+`backups` directories remain operator-owned: uploads and encrypted backups work
+and the operator can list or copy `.pib` files without `sudo`. For an older
+installation with fixed-container-owned files, rerun `setup-pi.sh` with the same
+`PIBASE_DATA_ROOT` before starting the stack.
 
 The one-shot `bootstrap` service also applies idempotent gateway-owned auth
 schema upgrades to existing initialized projects before the gateway starts.

@@ -39,7 +39,9 @@ func run(ctx context.Context, adminURL, projectID, statement string, validate bo
 		return Result{}, fmt.Errorf("SQL statement is required")
 	}
 	if validate {
-		if err := validateOwnerSQL(statement); err != nil { return Result{}, err }
+		if err := validateOwnerSQL(statement); err != nil {
+			return Result{}, err
+		}
 	}
 	p, err := lookupProject(ctx, adminURL, projectID)
 	if err != nil {
@@ -149,9 +151,22 @@ func validateOwnerSQL(statement string) error {
 	}
 	tokens := sqlTokens(statement)
 	for i, token := range tokens {
-		if token == "grant" || token == "revoke" || token == "copy" || token == "program" ||
-			(i+1 < len(tokens) && ((token == "reset" || token == "set") && (tokens[i+1] == "role" || (i+2 < len(tokens) && tokens[i+1] == "session" && tokens[i+2] == "authorization"))) ||
-			(i+1 < len(tokens) && (token == "create" || token == "alter" || token == "drop") && tokens[i+1] == "role") {
+		if token == "grant" || token == "revoke" || token == "copy" || token == "program" || token == "set_config" {
+			return fmt.Errorf("owner SQL contains a forbidden privilege-changing construct")
+		}
+		if token == "reset" && (i+1 >= len(tokens) || tokens[i+1] == "all" || tokens[i+1] == "role" || tokens[i+1] == "session_authorization") {
+			return fmt.Errorf("owner SQL contains a forbidden privilege-changing construct")
+		}
+		if token == "set" {
+			j := i + 1
+			for j < len(tokens) && (tokens[j] == "local" || tokens[j] == "session") {
+				j++
+			}
+			if j < len(tokens) && (tokens[j] == "role" || tokens[j] == "session_authorization") {
+				return fmt.Errorf("owner SQL contains a forbidden privilege-changing construct")
+			}
+		}
+		if i+1 < len(tokens) && (token == "create" || token == "alter" || token == "drop") && tokens[i+1] == "role" {
 			return fmt.Errorf("owner SQL contains a forbidden privilege-changing construct")
 		}
 	}
@@ -194,21 +209,38 @@ func sqlTokens(statement string) []string {
 					i++
 				}
 			}
-		case statement[i] == '\'' || statement[i] == '"':
-			quote := statement[i]
+		case statement[i] == '\'':
 			i++
 			for i < len(statement) {
-				if statement[i] != quote {
+				if statement[i] != '\'' {
 					i++
 					continue
 				}
-				if i+1 < len(statement) && statement[i+1] == quote {
+				if i+1 < len(statement) && statement[i+1] == '\'' {
 					i += 2
 					continue
 				}
 				i++
 				break
 			}
+		case statement[i] == '"':
+			i++
+			var quoted strings.Builder
+			for i < len(statement) {
+				if statement[i] != '"' {
+					quoted.WriteByte(statement[i])
+					i++
+					continue
+				}
+				if i+1 < len(statement) && statement[i+1] == '"' {
+					quoted.WriteByte('"')
+					i += 2
+					continue
+				}
+				i++
+				break
+			}
+			tokens = append(tokens, strings.ToLower(quoted.String()))
 		case statement[i] == '$':
 			end := i + 1
 			for end < len(statement) && (statement[end] == '_' || statement[end] >= 'a' && statement[end] <= 'z' || statement[end] >= 'A' && statement[end] <= 'Z' || statement[end] >= '0' && statement[end] <= '9') {
