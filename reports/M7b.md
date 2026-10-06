@@ -128,3 +128,14 @@ A fresh reviewer session with no shared context reviewed 7346ec2 and 11e8ce7 and
 | R8 | Low | ctid ordering undocumented; zero-column table errored; uuid/bytea in arrays | Documented; zero-column handled; `displayValue` now recurses into arrays |
 
 The fixes are auditor-applied and need a second review before M7b is approved.
+
+## Second independent review (2026-10-06, at 6b2d12e)
+A second fresh reviewer verified R2-R8 as fixed and reopened R1:
+
+| ID | Severity | Finding | Status |
+|---|---|---|---|
+| N1 | High | The lexer treated non-ASCII bytes as non-identifier, so `SELECT 1 AS é$a$, set_config('role',...) -- $a$` hid a live call (verified on PG16) | Fixed: bytes >= 0x80 are identifier characters, as in PostgreSQL's scanner. Unit-tested (`TestSQLFilterSecondReview`). |
+| N2 | Low | `UPDATE t SET role = ...` and `ON CONFLICT DO UPDATE SET role = ...` were refused | Fixed: `SET ROLE` is not flagged after `UPDATE` in the same statement. The lexer now emits `;`, so a later `SET ROLE` in a routine body is still caught. |
+| N3 | Info | DO message clear; migrations unaffected | No change needed |
+
+Both reviewers noted that a keyword filter can never fully match PostgreSQL's grammar. The role model is the boundary (`TestOwnerConnectionReach`). If the filter must be airtight, the next step is a real parser such as pg_query_go.

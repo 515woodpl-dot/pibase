@@ -175,7 +175,15 @@ func validateOwnerSQLDepth(statement string, depth int) error {
 			routine = true
 		}
 	}
+	updateInStatement := false
 	for i, raw := range tokens {
+		if raw == ";" {
+			updateInStatement = false
+			continue
+		}
+		if raw == "update" {
+			updateInStatement = true
+		}
 		if raw == unicodeIdentifier {
 			return fmt.Errorf(`owner SQL may not use U&"..." identifiers`)
 		}
@@ -198,7 +206,8 @@ func validateOwnerSQLDepth(statement string, depth int) error {
 		case !quoted && (token == "create" || token == "alter" || token == "drop") && (next == "role" || next == "user" || next == "group"):
 			return errForbidden
 		}
-		if !quoted && token == "set" {
+		// SET inside UPDATE ... SET or ON CONFLICT DO UPDATE SET assigns columns.
+		if !quoted && token == "set" && !updateInStatement {
 			j := i + 1
 			for j < len(tokens) && sqlToken(tokens[j]) == "local" {
 				j++
@@ -277,8 +286,12 @@ func sqlBodies(statement string) []string {
 	return bodies
 }
 
-func identStart(c byte) bool { return c == '_' || c >= 'a' && c <= 'z' || c >= 'A' && c <= 'Z' }
-func identPart(c byte) bool  { return identStart(c) || c >= '0' && c <= '9' || c == '$' }
+// identStart matches PostgreSQL's scanner, which treats every byte >= 0x80
+// as an identifier character.
+func identStart(c byte) bool {
+	return c == '_' || c >= 'a' && c <= 'z' || c >= 'A' && c <= 'Z' || c >= 0x80
+}
+func identPart(c byte) bool { return identStart(c) || c >= '0' && c <= '9' || c == '$' }
 
 func lexSQL(statement string) (tokens, bodies []string) {
 	n := len(statement)
@@ -385,6 +398,9 @@ func lexSQL(statement string) (tokens, bodies []string) {
 				i++
 			}
 			tokens = append(tokens, strings.ToLower(statement[start:i]))
+		case c == ';':
+			tokens = append(tokens, ";")
+			i++
 		default:
 			i++
 		}

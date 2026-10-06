@@ -207,3 +207,28 @@ func TestSQLFilterReviewBypasses(t *testing.T) {
 		}
 	}
 }
+
+func TestSQLFilterSecondReview(t *testing.T) {
+	blocked := []string{
+		`SELECT 1 AS é$a$, set_config('role','postgres',true) -- $a$`,
+		`SELECT 1 AS éu&"x", set_config('role','x',true)`,
+		`CREATE FUNCTION f() RETURNS void LANGUAGE sql AS $$ UPDATE t SET n = 1; SET ROLE x $$`,
+		`ALTER FUNCTION f() SET role TO x`,
+	}
+	for _, stmt := range blocked {
+		if err := validateOwnerSQL(stmt); err == nil {
+			t.Errorf("should block: %s", stmt)
+		}
+	}
+	allowed := []string{
+		`UPDATE members SET role = 'admin' WHERE id = 1`,
+		`INSERT INTO members(id, role) VALUES (1, 'x') ON CONFLICT (id) DO UPDATE SET role = excluded.role`,
+		`WITH x AS (SELECT 1) UPDATE members SET role = 'a'`,
+		`SELECT 1 AS café, 'naïve'`,
+	}
+	for _, stmt := range allowed {
+		if err := validateOwnerSQL(stmt); err != nil {
+			t.Errorf("should allow: %s — got: %v", stmt, err)
+		}
+	}
+}
