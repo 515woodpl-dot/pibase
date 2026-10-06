@@ -139,3 +139,37 @@ A second fresh reviewer verified R2-R8 as fixed and reopened R1:
 | N3 | Info | DO message clear; migrations unaffected | No change needed |
 
 Both reviewers noted that a keyword filter can never fully match PostgreSQL's grammar. The role model is the boundary (`TestOwnerConnectionReach`). If the filter must be airtight, the next step is a real parser such as pg_query_go.
+
+## Full test run in the cloud sandbox (2026-10-06, at 25dab9c plus the control test fix)
+The cloud container now has PostGIS 3 and pgvector installed for Postgres 16, plus `npm ci` for supabase-js.
+
+**Go suite.** `PIBASE_TEST_ADMIN_DATABASE_URL=... go test -p 1 -count=1 ./...` passes in all 9 packages:
+```
+ok  cmd/pibase   ok  internal/adminserver   ok  internal/adminsql   ok  internal/auth   ok  internal/backup
+ok  internal/control   ok  internal/gateway   ok  internal/keys   ok  internal/secretbox
+```
+- The first full run found one regression from this work. `control/TestExtensionGuardRejectsDynamicCustomerDDL` sent a `DO` block through the SQL tab and expected the database extension guard's error, but the SQL tab now refuses `DO` first.
+- The test now checks that the SQL tab refuses it, and runs the same `DO` block as a migration, where the database guard must still refuse it. So the guard stays covered.
+
+**supabase-js acceptance.** A native run of `scripts/test-supabase-js.sh`'s steps, using the same binary commands (`bootstrap`, `serve`, `project-create`, `migration-apply`) against a fresh password-auth cluster instead of containers:
+```
+supabase-js M6a acceptance passed
+supabase-js M5b realtime acceptance passed
+```
+
+**Click-through checklist.** Run with `admin-serve` (loopback :18081) and the gateway (:18080) sharing one master key, driven in headless Chromium:
+```
+public gateway /dashboard status: 404
+admin /_pibase without token: 401
+PASS  1 create project → keys shown once (keys not in project list)
+PASS  5 apply migration → listed (name, checksum prefix and time shown)
+PASS  2 create user in dashboard → sign in via gateway with supabase-js (wrong password refused)
+PASS  2b signed-in user reads through RLS (55 own rows, other user's row hidden)
+PASS  3 browse uuid table (uuid text, bigint exact, NULL shown, paging 50 + 6)
+PASS  4 back up now → listed
+PASS  6 SQL tab refuses role/privilege changes (7 statements refused; SELECT works)
+```
+
+**Still not run.**
+- The two Docker scripts as written, which build the Docker images. The sandbox network blocks apt inside containers, and the workaround (relaying the proxy into containers) was refused by the sandbox's safety controls.
+- Anything on the Pi itself: arm64 runtime, its Postgres image and memory limits.

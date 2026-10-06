@@ -316,8 +316,13 @@ func TestExtensionGuardRejectsDynamicCustomerDDL(t *testing.T) {
 	}
 	defer cleanupProject(t, adminURL, p)
 	authURL := authenticatorTestURL(t, adminURL, password)
-	if _, err := adminsql.Run(ctx, authURL, p.ID, `DO $$ BEGIN EXECUTE 'CREATE EXTENSION hstore'; END $$`); err == nil || !strings.Contains(err.Error(), "extensions can only be managed by the operator") {
-		t.Fatalf("dynamic owner extension DDL error = %v", err)
+	dynamicSQL := `DO $$ BEGIN EXECUTE 'CREATE EXTENSION hstore'; END $$`
+	if _, err := adminsql.Run(ctx, authURL, p.ID, dynamicSQL); err == nil {
+		t.Fatal("SQL tab accepted dynamic extension DDL")
+	}
+	// Migrations skip the SQL-tab filter, so this reaches the database guard.
+	if err := adminsql.ApplyMigration(ctx, authURL, p.ID, "extension-dynamic", dynamicSQL); err == nil || !strings.Contains(err.Error(), "extensions can only be managed by the operator") {
+		t.Fatalf("dynamic migration extension DDL error = %v", err)
 	}
 	escapeSQL := `SELECT E'\''; CREATE EXTENSION citext; --'`
 	if err := adminsql.ApplyMigration(ctx, authURL, p.ID, "extension-escape", escapeSQL); err == nil || !strings.Contains(err.Error(), "extensions can only be managed by the operator") {
