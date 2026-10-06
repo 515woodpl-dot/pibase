@@ -25,11 +25,15 @@ Status: **fixed, tests green against real PostgreSQL 16**
 | R8 | Low | Expired sessions were never removed. | Purged on each `IssueSession`. |
 | R9 | Low | Signup accepted any non-empty string as email. | Requires `local@domain`, no whitespace, ≤ 254 chars. Test H3. |
 
-## Known limits, not changed
-- Behind a reverse proxy that reaches the admin container from the Docker bridge (not loopback), `X-Forwarded-For` is ignored and all clients share one rate-limit bucket. This is the strict side; a trusted-proxy setting would be needed to refine it.
-- The project cap is checked before creation, not under a lock; two simultaneous creates can exceed it by one.
-- No per-email login lockout (would let anyone lock a user out); limits stay per IP.
-- `DeleteAccount` is not atomic across projects; a failure midway leaves the account with fewer projects, and retrying finishes the job.
+## Follow-up: former known limits, now fixed (`580d56c` on `pibase/m7`)
+| # | Was | Fix | Test |
+|---|-----|-----|------|
+| L1 | Behind a proxy on the Docker bridge, `X-Forwarded-For` was ignored, so every client shared one rate-limit bucket. | `PIBASE_TRUSTED_PROXIES` (IPs/CIDRs, in `compose.yaml` and `.env.example`). From a trusted peer the chain is walked right to left; the first untrusted, valid address is the client. Junk values fail startup. | `TestClientIPIgnoresSpoofedForwardedFor`, `TestParseTrustedProxiesRejectsJunk` |
+| L2 | Cap checked without a lock. The earlier note said parallel creates "exceed it by one"; that was wrong: 4 parallel creates made 4 projects. | One server lock covers count + create + set owner, and account deletion. | H4: 4 parallel creates → exactly 2 (confirmed failing with the lock removed) |
+| L3 | No per-email lockout. | 10 failed sign-ins for an email in 15 min → 429, even with the right password; success clears the count. Kept short because anyone who knows an email can trigger it. | H5, `TestLoginFailureCounter` |
+| L4 | A partly failed account/project delete could not always be retried (e.g. database already dropped → retry errored; row deleted before roles → roles leaked). | `DeleteProject` uses `IF EXISTS` drops and removes the control row last; account delete keeps running if the client disconnects. | H4 (account delete removes all projects), H6 (retry after database already dropped) |
+
+Remaining by design: the lock and the lockout counters are in memory, so they assume one admin process (as deployed) and reset on restart.
 
 ## Correction to earlier gate reports
 `T3-gate.md` and `T5-gate.md` said their integration tests passed. When those were written, `PIBASE_TEST_ADMIN_DATABASE_URL` was unset, so every integration test **skipped**; only unit tests ran. They have now been run for real (local PostgreSQL 16) and pass: K1–K6b, U1–U3, L1–L4.
