@@ -13,7 +13,9 @@ import (
 	"strings"
 	"testing"
 
+	"github.com/515woodpl-dot/pibase/internal/auth"
 	"github.com/515woodpl-dot/pibase/internal/control"
+	"github.com/jackc/pgx/v5"
 )
 
 // TestOperatorDashboardEndpoints drives every M7a endpoint against a real
@@ -110,17 +112,44 @@ func TestOperatorDashboardEndpoints(t *testing.T) {
 	if !bytes.Contains(tables, []byte(`"programs"`)) || !bytes.Contains(tables, []byte(`"program id"`)) {
 		t.Fatalf("table catalog: %s", tables)
 	}
+	if bytes.Contains(tables, []byte(`pibase_migrations`)) {
+		t.Fatal("pibase_migrations must be hidden from the table list")
+	}
 	browse := call(http.MethodGet, project+"/tables/programs/rows", "", http.StatusOK)
 	if !bytes.Contains(browse, []byte(`"copy "`)) || !bytes.Contains(browse, []byte(`"first"`)) {
 		t.Fatalf("row browse: %s", browse)
 	}
-	call(http.MethodPut, project+"/tables/programs/rows", `{"key":{"program id":1},"values":{"copy ":"changed","grant_date":"tomorrow"}}`, http.StatusOK)
-	call(http.MethodDelete, project+"/tables/programs/rows", `{"key":{"program id":1},"confirm":"wrong"}`, http.StatusBadRequest)
-	call(http.MethodDelete, project+"/tables/programs/rows", `{"key":{"program id":1},"confirm":"1"}`, http.StatusOK)
 	createdUser := call(http.MethodPost, project+"/users", `{"email":"m7b@example.test","password":"a sufficiently long password","email_confirm":true}`, http.StatusCreated)
 	var user map[string]string
 	if err := json.Unmarshal(createdUser, &user); err != nil || user["id"] == "" {
 		t.Fatalf("user create: %s", createdUser)
+	}
+	// M7b-02: verify the stored hash is argon2id and VerifyPassword accepts it.
+	{
+		dbURL, err := url.Parse(adminURL)
+		if err != nil {
+			t.Fatal(err)
+		}
+		dbURL.Path = "/" + fields["database"].(string)
+		conn, err := pgx.Connect(ctx, dbURL.String())
+		if err != nil {
+			t.Fatal(err)
+		}
+		var storedHash string
+		if err := conn.QueryRow(ctx, `SELECT password_hash FROM auth.users WHERE id=$1`, user["id"]).Scan(&storedHash); err != nil {
+			conn.Close(ctx)
+			t.Fatalf("read password hash: %v", err)
+		}
+		conn.Close(ctx)
+		if !strings.HasPrefix(storedHash, "$pibase$argon2id$") {
+			t.Fatalf("password hash is not argon2id: %s", storedHash[:min(len(storedHash), 20)])
+		}
+		if !auth.VerifyPassword("a sufficiently long password", storedHash) {
+			t.Fatal("VerifyPassword rejects the dashboard-created hash")
+		}
+		if auth.VerifyPassword("wrong password", storedHash) {
+			t.Fatal("VerifyPassword accepts wrong password")
+		}
 	}
 	call(http.MethodGet, project+"/users", "", http.StatusOK)
 	call(http.MethodDelete, project+"/users/"+user["id"], `{"confirm":"wrong"}`, http.StatusBadRequest)
@@ -128,6 +157,11 @@ func TestOperatorDashboardEndpoints(t *testing.T) {
 	applied, _ := json.Marshal(map[string]string{"sql": `SELECT name FROM public.pibase_migrations`})
 	if listed := call(http.MethodPost, project+"/sql", string(applied), http.StatusOK); !bytes.Contains(listed, []byte("0001_m7a")) {
 		t.Fatalf("applied migration not listed: %s", listed)
+	}
+	// M7b-09: migrations list endpoint returns applied migrations.
+	migList := call(http.MethodGet, project+"/migrations", "", http.StatusOK)
+	if !bytes.Contains(migList, []byte("0001_m7a")) || !bytes.Contains(migList, []byte("checksum")) {
+		t.Fatalf("migrations list: %s", migList)
 	}
 	call(http.MethodPost, project+"/extensions/unknown", "", http.StatusNotFound)
 
@@ -154,4 +188,287 @@ func TestOperatorDashboardEndpoints(t *testing.T) {
 	if after := call(http.MethodGet, "/_pibase/projects", "", http.StatusOK); bytes.Contains(after, []byte(`"`+created.ID+`"`)) {
 		t.Fatalf("project still listed after delete: %s", after)
 	}
+}
+
+// TestBrowseTextCasting verifies that browse returns every column as text,
+// NULL as JSON null, and paging is stable across two pages.
+func TestBrowseTextCasting(t *testing.T) {
+	adminURL := os.Getenv("PIBASE_TEST_ADMIN_DATABASE_URL")
+	if adminURL == "" {
+		t.Skip("PIBASE_TEST_ADMIN_DATABASE_URL is not set")
+	}
+	ctx := context.Background()
+	const password = "m7b-browse-pw"
+	if err := control.Bootstrap(ctx, adminURL, password); err != nil {
+		t.Fatal(err)
+	}
+	parsed, _ := url.Parse(adminURL)
+	parsed.User = url.UserPassword("authenticator", password)
+	parsed.Path = "/_control"
+	root := t.TempDir()
+	s, _ := New(Config{
+		AdminURL: adminURL, DatabaseURL: parsed.String(), Token: "tok",
+		StorageRoot: filepath.Join(root, "f"), BackupRoot: filepath.Join(root, "b"),
+		MasterKey: bytes.Repeat([]byte{7}, 32), BackupKey: bytes.Repeat([]byte{9}, 32),
+	})
+	hs := httptest.NewServer(s.Handler())
+	defer hs.Close()
+	call := func(method, path, body string, want int) []byte {
+		t.Helper()
+		req, _ := http.NewRequest(method, hs.URL+path, strings.NewReader(body))
+		req.Header.Set("Authorization", "Bearer tok")
+		resp, err := hs.Client().Do(req)
+		if err != nil {
+			t.Fatal(err)
+		}
+		defer resp.Body.Close()
+		data, _ := io.ReadAll(resp.Body)
+		if resp.StatusCode != want {
+			t.Fatalf("%s %s: status=%d want=%d body=%s", method, path, resp.StatusCode, want, data)
+		}
+		return data
+	}
+	var proj map[string]any
+	json.Unmarshal(call("POST", "/_pibase/projects", `{"name":"browse test"}`, 201), &proj)
+	id := proj["id"].(string)
+	defer control.DeleteProject(ctx, adminURL, id)
+	project := "/_pibase/projects/" + id
+
+	mig := `CREATE TABLE public.types_test (
+	  id uuid PRIMARY KEY DEFAULT gen_random_uuid(),
+	  big bigint NOT NULL DEFAULT 0,
+	  num numeric(10,2),
+	  ts timestamptz,
+	  j jsonb,
+	  b bytea,
+	  arr int[],
+	  flag bool,
+	  gen integer GENERATED ALWAYS AS (1+1) STORED,
+	  nullable text
+	);
+	INSERT INTO public.types_test (id,big,num,ts,j,b,arr,flag,nullable)
+	VALUES ('4d81ca00-0000-4000-8000-000000000001', 9007199254740993, 12345.67,
+	  '2026-01-15 12:00:00+00', '{"key":"val"}', '\xdeadbeef', ARRAY[1,2,3], true, NULL);
+	INSERT INTO public.types_test (id,big,num,ts,j,b,arr,flag,nullable)
+	VALUES ('4d81ca00-0000-4000-8000-000000000002', 0, 0.00, NULL, NULL, NULL, NULL, false, '');`
+	migBody, _ := json.Marshal(map[string]string{"name": "types", "sql": mig})
+	call("POST", project+"/migrations", string(migBody), 204)
+
+	data := call("GET", project+"/tables/types_test/rows", "", 200)
+	var browse struct {
+		Columns []string             `json:"columns"`
+		Rows    []map[string]*string `json:"rows"`
+		HasMore bool                 `json:"has_more"`
+		Offset  int                  `json:"offset"`
+	}
+	if err := json.Unmarshal(data, &browse); err != nil {
+		t.Fatalf("parse browse: %v\n%s", err, data)
+	}
+	if len(browse.Rows) != 2 {
+		t.Fatalf("expected 2 rows, got %d", len(browse.Rows))
+	}
+	r := browse.Rows[0]
+	expect := map[string]string{
+		"id":   "4d81ca00-0000-4000-8000-000000000001",
+		"big":  "9007199254740993",
+		"num":  "12345.67",
+		"j":    `{"key": "val"}`,
+		"b":    `\xdeadbeef`,
+		"arr":  "{1,2,3}",
+		"flag": "true",
+		"gen":  "2",
+	}
+	for col, want := range expect {
+		got := r[col]
+		if got == nil {
+			t.Errorf("column %q is null, want %q", col, want)
+		} else if *got != want {
+			t.Errorf("column %q = %q, want %q", col, *got, want)
+		}
+	}
+	if r["nullable"] != nil {
+		t.Errorf("nullable should be null, got %q", *r["nullable"])
+	}
+	if r["ts"] == nil || !strings.Contains(*r["ts"], "2026") {
+		t.Errorf("ts = %v, want a timestamp string", r["ts"])
+	}
+	// Row 2: empty string vs null
+	r2 := browse.Rows[1]
+	if r2["nullable"] == nil || *r2["nullable"] != "" {
+		t.Errorf("empty string should be empty, got %v", r2["nullable"])
+	}
+	if r2["j"] != nil {
+		t.Errorf("null jsonb should be null, got %q", *r2["j"])
+	}
+	if browse.HasMore {
+		t.Error("has_more should be false with 2 rows")
+	}
+}
+
+// TestAnonReadable verifies the four-table matrix for anon_readable.
+func TestAnonReadable(t *testing.T) {
+	adminURL := os.Getenv("PIBASE_TEST_ADMIN_DATABASE_URL")
+	if adminURL == "" {
+		t.Skip("PIBASE_TEST_ADMIN_DATABASE_URL is not set")
+	}
+	ctx := context.Background()
+	const password = "m7b-anon-pw"
+	if err := control.Bootstrap(ctx, adminURL, password); err != nil {
+		t.Fatal(err)
+	}
+	parsed, _ := url.Parse(adminURL)
+	parsed.User = url.UserPassword("authenticator", password)
+	parsed.Path = "/_control"
+	root := t.TempDir()
+	s, _ := New(Config{
+		AdminURL: adminURL, DatabaseURL: parsed.String(), Token: "tok",
+		StorageRoot: filepath.Join(root, "f"), BackupRoot: filepath.Join(root, "b"),
+		MasterKey: bytes.Repeat([]byte{7}, 32), BackupKey: bytes.Repeat([]byte{9}, 32),
+	})
+	hs := httptest.NewServer(s.Handler())
+	defer hs.Close()
+	call := func(method, path, bd string, want int) []byte {
+		t.Helper()
+		req, _ := http.NewRequest(method, hs.URL+path, strings.NewReader(bd))
+		req.Header.Set("Authorization", "Bearer tok")
+		resp, err := hs.Client().Do(req)
+		if err != nil {
+			t.Fatal(err)
+		}
+		defer resp.Body.Close()
+		data, _ := io.ReadAll(resp.Body)
+		if resp.StatusCode != want {
+			t.Fatalf("%s %s: status=%d want=%d body=%s", method, path, resp.StatusCode, want, data)
+		}
+		return data
+	}
+	var proj map[string]any
+	json.Unmarshal(call("POST", "/_pibase/projects", `{"name":"anon test"}`, 201), &proj)
+	id := proj["id"].(string)
+	defer control.DeleteProject(ctx, adminURL, id)
+	project := "/_pibase/projects/" + id
+
+	// Find the actual anon role name
+	database := proj["database"].(string)
+	anonRole := strings.Replace(database, "p_", "p_", 1) + "_anon"
+
+	sql := `
+	CREATE TABLE public.granted_no_rls (id int PRIMARY KEY);
+	ALTER TABLE public.granted_no_rls DISABLE ROW LEVEL SECURITY;
+	GRANT SELECT ON public.granted_no_rls TO ` + anonRole + `;
+	CREATE TABLE public.granted_rls_no_policy (id int PRIMARY KEY);
+	GRANT SELECT ON public.granted_rls_no_policy TO ` + anonRole + `;
+	ALTER TABLE public.granted_rls_no_policy ENABLE ROW LEVEL SECURITY;
+	CREATE TABLE public.granted_rls_policy (id int PRIMARY KEY);
+	GRANT SELECT ON public.granted_rls_policy TO ` + anonRole + `;
+	ALTER TABLE public.granted_rls_policy ENABLE ROW LEVEL SECURITY;
+	CREATE POLICY anon_read ON public.granted_rls_policy FOR SELECT TO PUBLIC USING (true);
+	CREATE TABLE public.ungranted (id int PRIMARY KEY);`
+	migBody, _ := json.Marshal(map[string]string{"name": "anon_test", "sql": sql})
+	call("POST", project+"/migrations", string(migBody), 204)
+
+	var tables []struct {
+		Name         string `json:"name"`
+		AnonReadable bool   `json:"anon_readable"`
+	}
+	json.Unmarshal(call("GET", project+"/tables", "", 200), &tables)
+	m := map[string]bool{}
+	for _, tbl := range tables {
+		m[tbl.Name] = tbl.AnonReadable
+	}
+	if !m["granted_no_rls"] {
+		t.Error("granted_no_rls should be anon readable")
+	}
+	if m["granted_rls_no_policy"] {
+		t.Error("granted_rls_no_policy should NOT be anon readable")
+	}
+	if !m["granted_rls_policy"] {
+		t.Error("granted_rls_policy should be anon readable")
+	}
+	if m["ungranted"] {
+		t.Error("ungranted should NOT be anon readable")
+	}
+}
+
+// TestOwnerSQLRoleIsolation verifies that the authenticator connection used by
+// owner SQL cannot escape into another project's data via RESET ROLE or SET ROLE.
+func TestOwnerSQLRoleIsolation(t *testing.T) {
+	adminURL := os.Getenv("PIBASE_TEST_ADMIN_DATABASE_URL")
+	if adminURL == "" {
+		t.Skip("PIBASE_TEST_ADMIN_DATABASE_URL is not set")
+	}
+	ctx := context.Background()
+	const password = "isolation-test"
+	if err := control.Bootstrap(ctx, adminURL, password); err != nil {
+		t.Fatal(err)
+	}
+	parsed, _ := url.Parse(adminURL)
+	parsed.User = url.UserPassword("authenticator", password)
+	parsed.Path = "/_control"
+	root := t.TempDir()
+	s, err := New(Config{
+		AdminURL: adminURL, DatabaseURL: parsed.String(), Token: "tok",
+		StorageRoot: filepath.Join(root, "files"), BackupRoot: filepath.Join(root, "backups"),
+		MasterKey: bytes.Repeat([]byte{7}, 32), BackupKey: bytes.Repeat([]byte{9}, 32),
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	hs := httptest.NewServer(s.Handler())
+	defer hs.Close()
+	call := func(method, path, bd string, want int) []byte {
+		t.Helper()
+		req, _ := http.NewRequest(method, hs.URL+path, strings.NewReader(bd))
+		req.Header.Set("Authorization", "Bearer tok")
+		resp, err := hs.Client().Do(req)
+		if err != nil {
+			t.Fatal(err)
+		}
+		defer resp.Body.Close()
+		data, _ := io.ReadAll(resp.Body)
+		if resp.StatusCode != want {
+			t.Fatalf("%s %s: status=%d want=%d body=%s", method, path, resp.StatusCode, want, data)
+		}
+		return data
+	}
+
+	// Create two projects
+	var projA, projB map[string]any
+	json.Unmarshal(call("POST", "/_pibase/projects", `{"name":"iso A"}`, 201), &projA)
+	json.Unmarshal(call("POST", "/_pibase/projects", `{"name":"iso B"}`, 201), &projB)
+	idA := projA["id"].(string)
+	idB := projB["id"].(string)
+	defer control.DeleteProject(ctx, adminURL, idA)
+	defer control.DeleteProject(ctx, adminURL, idB)
+	pathA := "/_pibase/projects/" + idA
+
+	// Create a table with data in project A
+	migSQL := `CREATE TABLE public.secrets (id int PRIMARY KEY, val text); INSERT INTO public.secrets VALUES (1,'classified');`
+	mb, _ := json.Marshal(map[string]string{"name": "seed", "sql": migSQL})
+	call("POST", pathA+"/migrations", string(mb), 204)
+
+	// Normal query works
+	qb, _ := json.Marshal(map[string]string{"sql": "SELECT val FROM public.secrets"})
+	data := call("POST", pathA+"/sql", string(qb), 200)
+	if !strings.Contains(string(data), "classified") {
+		t.Fatalf("normal query should see data: %s", data)
+	}
+
+	// RESET ROLE — blocked by SQL filter
+	qb, _ = json.Marshal(map[string]string{"sql": "RESET ROLE"})
+	call("POST", pathA+"/sql", string(qb), 400)
+
+	// SET ROLE to another project's admin — blocked by SQL filter
+	dbB := projB["database"].(string)
+	adminRoleB := strings.Replace(dbB, "p_", "p_", 1) + "_admin"
+	qb, _ = json.Marshal(map[string]string{"sql": "SET ROLE " + adminRoleB})
+	call("POST", pathA+"/sql", string(qb), 400)
+
+	// SET SESSION AUTHORIZATION — blocked
+	qb, _ = json.Marshal(map[string]string{"sql": "SET SESSION AUTHORIZATION 'postgres'"})
+	call("POST", pathA+"/sql", string(qb), 400)
+
+	// RESET ALL — blocked
+	qb, _ = json.Marshal(map[string]string{"sql": "RESET ALL"})
+	call("POST", pathA+"/sql", string(qb), 400)
 }

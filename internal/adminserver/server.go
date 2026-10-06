@@ -14,7 +14,6 @@ import (
 	"net/url"
 	"os"
 	"path/filepath"
-	"sort"
 	"strings"
 	"time"
 
@@ -59,9 +58,7 @@ func (s *Server) Handler() http.Handler {
 	mux.HandleFunc("GET /_pibase/projects/{id}/backups", s.backups)
 	mux.HandleFunc("GET /_pibase/projects/{id}/tables", s.tables)
 	mux.HandleFunc("GET /_pibase/projects/{id}/tables/{table}/rows", s.rows)
-	mux.HandleFunc("POST /_pibase/projects/{id}/tables/{table}/rows", s.insertRow)
-	mux.HandleFunc("PUT /_pibase/projects/{id}/tables/{table}/rows", s.updateRow)
-	mux.HandleFunc("DELETE /_pibase/projects/{id}/tables/{table}/rows", s.deleteRow)
+	mux.HandleFunc("GET /_pibase/projects/{id}/migrations", s.migrations)
 	mux.HandleFunc("GET /_pibase/projects/{id}/users", s.users)
 	mux.HandleFunc("POST /_pibase/projects/{id}/users", s.createUser)
 	mux.HandleFunc("DELETE /_pibase/projects/{id}/users/{user}", s.deleteUser)
@@ -94,29 +91,40 @@ type tableInfo struct {
 }
 
 func (s *Server) tables(w http.ResponseWriter, r *http.Request) {
-	result, err := adminsql.RunParams(r.Context(), s.DatabaseURL, r.PathValue("id"), `
+	id := r.PathValue("id")
+	result, err := adminsql.RunParams(r.Context(), s.DatabaseURL, id, `
 SELECT c.relname AS name, c.relrowsecurity AS rls,
- has_table_privilege(current_setting('role'), c.oid, 'SELECT') AS owner_can_select,
- EXISTS (SELECT 1 FROM information_schema.role_table_grants g WHERE g.table_schema='public' AND g.table_name=c.relname AND g.grantee LIKE 'p_%_anon' AND g.privilege_type='SELECT') AS anon_readable,
  COALESCE((SELECT array_agg(a.attname ORDER BY k.ord) FROM pg_index i JOIN unnest(i.indkey) WITH ORDINALITY k(attnum,ord) ON true JOIN pg_attribute a ON a.attrelid=c.oid AND a.attnum=k.attnum WHERE i.indrelid=c.oid AND i.indisprimary), ARRAY[]::text[]) AS primary_key,
  (SELECT array_agg(a.attname ORDER BY a.attnum) FROM pg_attribute a WHERE a.attrelid=c.oid AND a.attnum>0 AND NOT a.attisdropped) AS columns
 FROM pg_class c JOIN pg_namespace n ON n.oid=c.relnamespace
-WHERE n.nspname='public' AND c.relkind IN ('r','p') ORDER BY c.relname`)
+WHERE n.nspname='public' AND c.relkind IN ('r','p') AND c.relname <> 'pibase_migrations' ORDER BY c.relname`)
 	if err != nil {
 		fail(w, err)
 		return
 	}
-	out := make([]tableInfo, 0, len(result.Rows))
+	tables := make([]tableInfo, 0, len(result.Rows))
 	for _, row := range result.Rows {
-		name, _ := row["name"].(string)
-		count, err := adminsql.RunParams(r.Context(), s.DatabaseURL, r.PathValue("id"), "SELECT count(*) AS count FROM public."+quoteIdent(name))
-		if err != nil {
-			fail(w, err)
-			return
-		}
-		out = append(out, tableInfo{Name: name, Count: number(count.Rows[0]["count"]), RLS: row["rls"] == true, AnonReadable: row["anon_readable"] == true, PrimaryKey: stringsOf(row["primary_key"]), Columns: stringsOf(row["columns"])})
+		tables = append(tables, tableInfo{
+			Name:       row["name"].(string),
+			RLS:        row["rls"] == true,
+			PrimaryKey: stringsOf(row["primary_key"]),
+			Columns:    stringsOf(row["columns"]),
+		})
 	}
-	writeJSON(w, 200, out)
+	entries := make([]adminsql.TableEntry, len(tables))
+	for i, t := range tables {
+		entries[i] = adminsql.TableEntry{Name: t.Name, RLS: t.RLS}
+	}
+	anonFlags, counts, err := adminsql.TableMeta(r.Context(), s.DatabaseURL, id, entries)
+	if err != nil {
+		fail(w, err)
+		return
+	}
+	for i := range tables {
+		tables[i].Count = counts[i]
+		tables[i].AnonReadable = anonFlags[i]
+	}
+	writeJSON(w, 200, tables)
 }
 
 func (s *Server) rows(w http.ResponseWriter, r *http.Request) {
@@ -130,91 +138,7 @@ func (s *Server) rows(w http.ResponseWriter, r *http.Request) {
 	if offset < 0 {
 		offset = 0
 	}
-	x, err := adminsql.RunParams(r.Context(), s.DatabaseURL, r.PathValue("id"), "SELECT * FROM public."+quoteIdent(t.Name)+" LIMIT 50 OFFSET $1", offset)
-	if err != nil {
-		fail(w, err)
-		return
-	}
-	writeJSON(w, 200, map[string]any{"columns": t.Columns, "primary_key": t.PrimaryKey, "rows": x.Rows, "offset": offset})
-}
-
-func (s *Server) insertRow(w http.ResponseWriter, r *http.Request) {
-	t, err := s.table(r)
-	if err != nil {
-		fail(w, err)
-		return
-	}
-	var b struct {
-		Values map[string]any `json:"values"`
-	}
-	if !jsonBody(w, r, &b) {
-		return
-	}
-	if len(t.PrimaryKey) == 0 {
-		fail(w, fmt.Errorf("table has no primary key"))
-		return
-	}
-	sql, args, err := rowInsert(t, b.Values)
-	if err != nil {
-		fail(w, err)
-		return
-	}
-	x, err := adminsql.RunParams(r.Context(), s.DatabaseURL, r.PathValue("id"), sql, args...)
-	if err != nil {
-		fail(w, err)
-		return
-	}
-	writeJSON(w, 201, x)
-}
-func (s *Server) updateRow(w http.ResponseWriter, r *http.Request) {
-	t, err := s.table(r)
-	if err != nil {
-		fail(w, err)
-		return
-	}
-	var b struct {
-		Values map[string]any `json:"values"`
-		Key    map[string]any `json:"key"`
-	}
-	if !jsonBody(w, r, &b) {
-		return
-	}
-	sql, args, err := rowUpdate(t, b.Values, b.Key)
-	if err != nil {
-		fail(w, err)
-		return
-	}
-	x, err := adminsql.RunParams(r.Context(), s.DatabaseURL, r.PathValue("id"), sql, args...)
-	if err != nil {
-		fail(w, err)
-		return
-	}
-	writeJSON(w, 200, x)
-}
-func (s *Server) deleteRow(w http.ResponseWriter, r *http.Request) {
-	t, err := s.table(r)
-	if err != nil {
-		fail(w, err)
-		return
-	}
-	var b struct {
-		Key     map[string]any `json:"key"`
-		Confirm string         `json:"confirm"`
-	}
-	if !jsonBody(w, r, &b) {
-		return
-	}
-	want := keyText(t.PrimaryKey, b.Key)
-	if want == "" || b.Confirm != want {
-		fail(w, fmt.Errorf("type the row id to delete"))
-		return
-	}
-	sql, args, err := rowDelete(t, b.Key)
-	if err != nil {
-		fail(w, err)
-		return
-	}
-	x, err := adminsql.RunParams(r.Context(), s.DatabaseURL, r.PathValue("id"), sql, args...)
+	x, err := adminsql.BrowseRows(r.Context(), s.DatabaseURL, r.PathValue("id"), t.Name, t.Columns, t.PrimaryKey, offset)
 	if err != nil {
 		fail(w, err)
 		return
@@ -260,97 +184,6 @@ func number(v any) int64 {
 		return int64(n)
 	}
 	return 0
-}
-func allowed(t tableInfo, values map[string]any) ([]string, error) {
-	cols := make([]string, 0, len(values))
-	for c := range values {
-		found := false
-		for _, known := range t.Columns {
-			if c == known {
-				found = true
-				break
-			}
-		}
-		if !found {
-			return nil, fmt.Errorf("unknown column %q", c)
-		}
-		cols = append(cols, c)
-	}
-	sort.Strings(cols)
-	if len(cols) == 0 {
-		return nil, fmt.Errorf("row values are required")
-	}
-	return cols, nil
-}
-func rowInsert(t tableInfo, values map[string]any) (string, []any, error) {
-	cols, e := allowed(t, values)
-	if e != nil {
-		return "", nil, e
-	}
-	names := make([]string, len(cols))
-	slots := make([]string, len(cols))
-	args := make([]any, len(cols))
-	for i, c := range cols {
-		names[i] = quoteIdent(c)
-		slots[i] = fmt.Sprintf("$%d", i+1)
-		args[i] = values[c]
-	}
-	return "INSERT INTO public." + quoteIdent(t.Name) + " (" + strings.Join(names, ",") + ") VALUES (" + strings.Join(slots, ",") + ") RETURNING *", args, nil
-}
-func rowUpdate(t tableInfo, values, key map[string]any) (string, []any, error) {
-	if len(t.PrimaryKey) == 0 {
-		return "", nil, fmt.Errorf("table has no primary key")
-	}
-	cols, e := allowed(t, values)
-	if e != nil {
-		return "", nil, e
-	}
-	sets := make([]string, len(cols))
-	args := make([]any, 0, len(cols)+len(t.PrimaryKey))
-	for i, c := range cols {
-		sets[i] = quoteIdent(c) + fmt.Sprintf("=$%d", i+1)
-		args = append(args, values[c])
-	}
-	where := make([]string, len(t.PrimaryKey))
-	for i, c := range t.PrimaryKey {
-		v, ok := key[c]
-		if !ok {
-			return "", nil, fmt.Errorf("primary key %q is required", c)
-		}
-		where[i] = quoteIdent(c) + fmt.Sprintf("=$%d", len(args)+1)
-		args = append(args, v)
-	}
-	return "UPDATE public." + quoteIdent(t.Name) + " SET " + strings.Join(sets, ",") + " WHERE " + strings.Join(where, " AND ") + " RETURNING *", args, nil
-}
-func rowDelete(t tableInfo, key map[string]any) (string, []any, error) {
-	if len(t.PrimaryKey) == 0 {
-		return "", nil, fmt.Errorf("table has no primary key")
-	}
-	where := make([]string, len(t.PrimaryKey))
-	args := make([]any, len(t.PrimaryKey))
-	for i, c := range t.PrimaryKey {
-		v, ok := key[c]
-		if !ok {
-			return "", nil, fmt.Errorf("primary key %q is required", c)
-		}
-		where[i] = quoteIdent(c) + fmt.Sprintf("=$%d", i+1)
-		args[i] = v
-	}
-	return "DELETE FROM public." + quoteIdent(t.Name) + " WHERE " + strings.Join(where, " AND ") + " RETURNING *", args, nil
-}
-func keyText(pk []string, key map[string]any) string {
-	if len(pk) == 0 {
-		return ""
-	}
-	p := make([]string, len(pk))
-	for i, c := range pk {
-		v, ok := key[c]
-		if !ok {
-			return ""
-		}
-		p[i] = fmt.Sprint(v)
-	}
-	return strings.Join(p, ":")
 }
 
 // User management deliberately uses the administrator connection, because the
@@ -580,6 +413,15 @@ func (s *Server) migration(w http.ResponseWriter, r *http.Request) {
 	}
 	w.WriteHeader(204)
 }
+func (s *Server) migrations(w http.ResponseWriter, r *http.Request) {
+	x, err := adminsql.RunParams(r.Context(), s.DatabaseURL, r.PathValue("id"), `SELECT name, left(checksum,8) AS checksum, applied_at FROM public.pibase_migrations ORDER BY applied_at`)
+	if err != nil {
+		writeJSON(w, 200, []any{})
+		return
+	}
+	writeJSON(w, 200, x.Rows)
+}
+
 func (s *Server) extension(w http.ResponseWriter, r *http.Request) {
 	var err error
 	switch r.PathValue("extension") {
@@ -638,14 +480,13 @@ const q=id=>document.getElementById(id), chain=q('chain');let projects=[],select
 const auth=()=>({Authorization:'Bearer '+q('token').value,'Content-Type':'application/json'}), projectPath=()=> '/_pibase/projects/'+encodeURIComponent(selected.id);
 function el(tag,text){const e=document.createElement(tag);if(text!==undefined)e.textContent=text;return e}function button(text,fn,cls){const b=el('button',text);if(cls)b.className=cls;b.onclick=fn;return b}function pane(title){const p=el('section');p.className='pane';p.append(el('h1',title));return p}function clearFrom(n){while(chain.children.length>n)chain.lastChild.remove()}function add(p){chain.append(p);chain.scrollLeft=chain.scrollWidth}function say(v){q('status').textContent=v}
 async function api(path,opt={}){opt.headers=auth();const r=await fetch(path,opt),t=await r.text();if(!r.ok)throw Error(t||r.status);return t?JSON.parse(t):null}function body(v,method='POST'){return{method,body:JSON.stringify(v)}}
-function projectsPane(){const p=pane('Projects');const create=el('div');create.className='group';create.append(el('div','Create project'));const input=el('input');input.placeholder='Project name';create.append(input,button('Create',async()=>{try{const x=await api('/_pibase/projects',body({name:input.value}));say('Project created. Save the keys returned below.');projects.push(x);renderProjects()}catch(e){say(e.message)}}));p.append(create);const list=el('div');list.id='projectList';p.append(list);return p}
+function projectsPane(){const p=pane('Projects');const create=el('div');create.className='group';create.append(el('div','Create project'));const input=el('input');input.placeholder='Project name';create.append(input,button('Create',async()=>{try{const x=await api('/_pibase/projects',body({name:input.value}));projects.push(x);renderProjects();clearFrom(1);const kp=pane(x.name);kp.append(el('p','Shown once; copy them now.'));const ak=el('p');ak.textContent='anon key: '+x.anon_key;const sk=el('p');sk.textContent='service key: '+x.service_key;kp.append(ak,sk);add(kp)}catch(e){say(e.message)}}));p.append(create);const list=el('div');list.id='projectList';p.append(list);return p}
 function renderProjects(){const list=q('projectList');if(!list)return;list.replaceChildren();for(const x of projects){const b=button(x.name,()=>openProject(x),'item');b.append(el('span',x.id));list.append(b)}}
 function openProject(x){selected=x;q('projectMenus').classList.remove('hidden');clearFrom(1);const p=pane(x.name);p.append(el('p',x.id));p.append(button('Tables',openTables),button('Users',openUsers),button('SQL',openSQL),button('Migrations',openMigrations),button('Backups',openBackups),button('Extensions',openExtensions));const danger=el('div');danger.className='group danger';danger.append(el('div','Delete project — type its id to confirm'));const i=el('input');danger.append(i,button('Delete project',async()=>{try{await api(projectPath(),body({confirm:i.value},'DELETE'));selected=null;q('projectMenus').classList.add('hidden');await load();}catch(e){say(e.message)}}));p.append(danger);add(p)}
 async function openTables(){clearFrom(2);const p=pane('Tables');p.append(el('p','Loading…'));add(p);try{const ts=await api(projectPath()+'/tables');p.replaceChildren(el('h1','Tables'));for(const t of ts){const b=button(t.name,()=>openTable(t),'item');b.append(el('span',t.count+' rows · RLS '+(t.rls?'on':'off')+' · anon '+(t.anon_readable?'yes':'no')));p.append(b)}}catch(e){p.append(el('p',e.message))}}
-function openTable(t){clearFrom(3);const p=pane(t.name);p.append(el('p',t.count+' rows · RLS '+(t.rls?'on':'off')+' · anon readable '+(t.anon_readable?'yes':'no')));p.append(button('Browse rows',()=>openRows(t)));if(t.primary_key.length){p.append(button('Insert row',()=>openRowEditor(t,null)));}else p.append(el('p','Row changes are unavailable: this table has no primary key.'));add(p)}
-async function openRows(t,offset=0){clearFrom(4);const p=pane(t.name+' rows');p.append(el('p','Loading…'));add(p);try{const data=await api(projectPath()+'/tables/'+encodeURIComponent(t.name)+'/rows?offset='+offset);p.replaceChildren(el('h1',t.name+' rows'));const d=el('div');d.className='data';const table=el('table'),head=el('tr');for(const c of data.columns)head.append(el('th',c));if(data.primary_key.length)head.append(el('th',''));table.append(head);for(const row of data.rows){const tr=el('tr');for(const c of data.columns)tr.append(el('td',String(row[c]??'')));if(data.primary_key.length){const td=el('td');td.append(button('Edit',()=>openRowEditor(t,row)));tr.append(td)}table.append(tr)}d.append(table);p.append(d);const nav=el('div');nav.className='row group';nav.append(button('Previous',()=>openRows(t,Math.max(0,offset-50))),button('Next',()=>openRows(t,offset+50)),el('span','Rows '+(offset+1)+'–'+(offset+data.rows.length)));p.append(nav)}catch(e){p.append(el('p',e.message))}}
-function openRowEditor(t,row){clearFrom(5);const p=pane(row?'Edit row':'Insert row');p.append(el('p',t.name));const fields={};for(const c of t.columns){const input=el('input');input.value=row&&row[c]!==null?String(row[c]):'';fields[c]=input;const g=el('div');g.className='group';g.append(el('div',c),input);p.append(g)}p.append(button(row?'Save row':'Insert row',async()=>{const values={};for(const c of t.columns)if(fields[c].value!=='')values[c]=fields[c].value;try{if(row){const key={};for(const c of t.primary_key)key[c]=row[c];await api(projectPath()+'/tables/'+encodeURIComponent(t.name)+'/rows',body({values,key},'PUT'))}else await api(projectPath()+'/tables/'+encodeURIComponent(t.name)+'/rows',body({values}));say('Saved.');openRows(t)}catch(e){say(e.message)}}));if(row){const key={};for(const c of t.primary_key)key[c]=row[c];const confirm=el('input');confirm.placeholder='Type '+t.primary_key.map(c=>row[c]).join(':')+' to confirm';p.append(el('div','Delete row'),confirm,button('Delete row',async()=>{try{await api(projectPath()+'/tables/'+encodeURIComponent(t.name)+'/rows',body({key,confirm:confirm.value},'DELETE'));openRows(t)}catch(e){say(e.message)}},'danger'))}add(p)}
+function openTable(t){clearFrom(3);const p=pane(t.name);p.append(el('p',t.count+' rows · RLS '+(t.rls?'on':'off')+' · anon readable '+(t.anon_readable?'yes':'no')));p.append(button('Browse rows',()=>openRows(t)));add(p)}
+async function openRows(t,offset=0){clearFrom(4);const p=pane(t.name+' rows');p.append(el('p','Loading…'));add(p);try{const data=await api(projectPath()+'/tables/'+encodeURIComponent(t.name)+'/rows?offset='+offset);p.replaceChildren(el('h1',t.name+' rows'));const d=el('div');d.className='data';const table=el('table'),head=el('tr');for(const c of data.columns)head.append(el('th',c));table.append(head);for(const row of data.rows){const tr=el('tr');for(const c of data.columns){const td=el('td');if(row[c]===null){td.textContent='NULL';td.style.color='var(--muted)'}else{td.textContent=row[c]}tr.append(td)}table.append(tr)}d.append(table);p.append(d);const nav=el('div');nav.className='row group';const prev=button('Previous',()=>openRows(t,Math.max(0,offset-50)));if(offset===0)prev.disabled=true;const next=button('Next',()=>openRows(t,offset+50));if(!data.has_more)next.disabled=true;nav.append(prev,next,el('span','Rows '+(offset+1)+'–'+(offset+data.rows.length)));p.append(nav)}catch(e){p.append(el('p',e.message))}}
 async function openUsers(){clearFrom(2);const p=pane('Users');p.append(el('p','Loading…'));add(p);try{const users=await api(projectPath()+'/users');p.replaceChildren(el('h1','Users'));const email=el('input');email.placeholder='Email';const pass=el('input');pass.type='password';pass.placeholder='Password (8+ characters)';p.append(email,pass,button('Create user',async()=>{try{await api(projectPath()+'/users',body({email:email.value,password:pass.value,email_confirm:true}));openUsers()}catch(e){say(e.message)}}));for(const u of users){const g=el('div');g.className='group';g.append(el('div',u.email),el('div',u.id));const c=el('input');c.placeholder='Type id to confirm';g.append(c,button('Delete user',async()=>{try{await api(projectPath()+'/users/'+encodeURIComponent(u.id),body({confirm:c.value},'DELETE'));openUsers()}catch(e){say(e.message)}},'danger'));p.append(g)}}catch(e){p.append(el('p',e.message))}}
-function simple(title,content){clearFrom(2);const p=pane(title);p.append(content);add(p)}function openSQL(){const a=el('textarea');const out=el('pre');const box=el('div');box.append(a,button('Run SQL',async()=>{try{out.textContent=JSON.stringify(await api(projectPath()+'/sql',body({sql:a.value})),null,2)}catch(e){out.textContent=e.message}}),out);simple('SQL',box)}function openMigrations(){simple('Migrations',el('p','Use SQL to inspect public.pibase_migrations.'))}function openBackups(){simple('Backups',button('Back up now',async()=>{try{say(JSON.stringify(await api(projectPath()+'/backup',{method:'POST'})))}catch(e){say(e.message)}}))}function openExtensions(){const x=el('div');x.append(button('Enable PostGIS',()=>api(projectPath()+'/extensions/postgis',{method:'POST'}).then(()=>say('PostGIS enabled')).catch(e=>say(e.message))),button('Enable pgvector',()=>api(projectPath()+'/extensions/pgvector',{method:'POST'}).then(()=>say('pgvector enabled')).catch(e=>say(e.message))));simple('Extensions',x)}
+function simple(title,content){clearFrom(2);const p=pane(title);p.append(content);add(p)}function openSQL(){const a=el('textarea');const out=el('pre');const box=el('div');box.append(a,button('Run SQL',async()=>{try{out.textContent=JSON.stringify(await api(projectPath()+'/sql',body({sql:a.value})),null,2)}catch(e){out.textContent=e.message}}),out);simple('SQL',box)}async function openMigrations(){clearFrom(2);const p=pane('Migrations');const nameIn=el('input');nameIn.placeholder='Migration name';const sqlIn=el('textarea');sqlIn.placeholder='SQL';const status=el('p');status.className='muted';const g=el('div');g.className='group';g.append(el('div','Apply migration'),nameIn,sqlIn,button('Apply',async()=>{try{await api(projectPath()+'/migrations',body({name:nameIn.value,sql:sqlIn.value}));status.textContent='Applied: '+nameIn.value;openMigrations()}catch(e){status.textContent=e.message}}),status);p.append(g);p.append(el('h1','Applied'));try{const ms=await api(projectPath()+'/migrations');for(const m of ms){const d=el('div');d.className='item';d.textContent=m.name;d.append(el('span',m.checksum+' · '+m.applied_at));p.append(d)}if(!ms.length)p.append(el('p','No migrations applied.'))}catch(e){p.append(el('p',e.message))}add(p)}async function openBackups(){clearFrom(2);const p=pane('Backups');const status=el('p');status.className='muted';p.append(button('Back up now',async()=>{try{const r=await api(projectPath()+'/backup',{method:'POST'});status.textContent='Created: '+r.file;openBackups()}catch(e){status.textContent=e.message}}),status);try{const bs=await api(projectPath()+'/backups');for(const b of bs){const d=el('div');d.className='item';d.textContent=b.name;d.append(el('span',Math.round(b.size/1024)+' KB'));p.append(d)}if(!bs.length)p.append(el('p','No backups yet.'))}catch(e){p.append(el('p',e.message))}add(p)}function openExtensions(){const x=el('div');x.append(button('Enable PostGIS',()=>api(projectPath()+'/extensions/postgis',{method:'POST'}).then(()=>say('PostGIS enabled')).catch(e=>say(e.message))),button('Enable pgvector',()=>api(projectPath()+'/extensions/pgvector',{method:'POST'}).then(()=>say('pgvector enabled')).catch(e=>say(e.message))));simple('Extensions',x)}
 async function load(){try{projects=await api('/_pibase/projects');selected=null;q('projectMenus').classList.add('hidden');clearFrom(0);add(projectsPane());renderProjects();say(projects.length+' projects loaded')}catch(e){say(e.message)}}q('load').onclick=load;document.querySelectorAll('[data-menu]').forEach(b=>b.onclick=()=>{if(b.dataset.menu==='projects')load();else if(selected)({tables:openTables,users:openUsers,sql:openSQL,migrations:openMigrations,backups:openBackups,extensions:openExtensions}[b.dataset.menu])()});add(projectsPane());
 </script></body></html>`

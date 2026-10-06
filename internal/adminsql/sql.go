@@ -167,14 +167,25 @@ func validateOwnerSQL(statement string) error {
 		}
 		if token == "set" {
 			j := i + 1
-			for j < len(tokens) && (sqlToken(tokens[j]) == "local" || sqlToken(tokens[j]) == "session") {
+			// Skip optional LOCAL modifier only; SESSION must be checked
+			// as both a modifier (SET SESSION x) and as the start of
+			// SESSION AUTHORIZATION.
+			for j < len(tokens) && sqlToken(tokens[j]) == "local" {
 				j++
 			}
-			if j < len(tokens) && (sqlToken(tokens[j]) == "role" || sqlToken(tokens[j]) == "session_authorization" || (sqlToken(tokens[j]) == "session" && j+1 < len(tokens) && sqlToken(tokens[j+1]) == "authorization")) {
+			// Now j may point to SESSION — check if it starts SESSION AUTHORIZATION
+			if j < len(tokens) && sqlToken(tokens[j]) == "session" {
+				if j+1 < len(tokens) && sqlToken(tokens[j+1]) == "authorization" {
+					return fmt.Errorf("owner SQL contains a forbidden privilege-changing construct")
+				}
+				// SESSION as a modifier: skip it and check the next token
+				j++
+			}
+			if j < len(tokens) && (sqlToken(tokens[j]) == "role" || sqlToken(tokens[j]) == "session_authorization") {
 				return fmt.Errorf("owner SQL contains a forbidden privilege-changing construct")
 			}
 		}
-		if i+1 < len(tokens) && (token == "create" || token == "alter" || token == "drop") && tokens[i+1] == "role" {
+		if i+1 < len(tokens) && (token == "create" || token == "alter" || token == "drop") && (tokens[i+1] == "role" || tokens[i+1] == "user") {
 			return fmt.Errorf("owner SQL contains a forbidden privilege-changing construct")
 		}
 	}
@@ -276,6 +287,127 @@ func sqlTokens(statement string) []string {
 		}
 	}
 	return tokens
+}
+
+// TableEntry describes a table for the TableMeta helper.
+type TableEntry struct {
+	Name string
+	RLS  bool
+}
+
+// TableMeta returns anon-readability and row counts for a list of tables using
+// a single database connection. anon_readable is true when the project's anon
+// role has SELECT on the table AND (RLS is off OR a SELECT/ALL policy applies
+// to that role or PUBLIC).
+func TableMeta(ctx context.Context, adminURL, projectID string, tables []TableEntry) (anon []bool, counts []int64, err error) {
+	p, err := lookupProject(ctx, adminURL, projectID)
+	if err != nil {
+		return nil, nil, err
+	}
+	conn, err := connectProject(ctx, adminURL, p.database)
+	if err != nil {
+		return nil, nil, err
+	}
+	defer conn.Close(ctx)
+	tx, err := conn.Begin(ctx)
+	if err != nil {
+		return nil, nil, err
+	}
+	defer func() { _ = tx.Rollback(context.Background()) }()
+	if _, err := tx.Exec(ctx, `SET LOCAL ROLE `+pgx.Identifier{p.role}.Sanitize()+`; SET LOCAL statement_timeout='30s'`); err != nil {
+		return nil, nil, err
+	}
+	anonRole := strings.Replace(p.role, "_admin", "_anon", 1)
+	anon = make([]bool, len(tables))
+	counts = make([]int64, len(tables))
+	for i, t := range tables {
+		var c int64
+		if err := tx.QueryRow(ctx, "SELECT count(*) FROM public."+pgx.Identifier{t.Name}.Sanitize()).Scan(&c); err != nil {
+			return nil, nil, err
+		}
+		counts[i] = c
+		var granted bool
+		if err := tx.QueryRow(ctx, `SELECT has_table_privilege($1, c.oid, 'SELECT') FROM pg_class c JOIN pg_namespace n ON n.oid=c.relnamespace WHERE n.nspname='public' AND c.relname=$2`, anonRole, t.Name).Scan(&granted); err != nil {
+			return nil, nil, err
+		}
+		if !granted {
+			continue
+		}
+		if !t.RLS {
+			anon[i] = true
+			continue
+		}
+		var hasPolicy bool
+		if err := tx.QueryRow(ctx, `SELECT EXISTS(SELECT 1 FROM pg_policies WHERE schemaname='public' AND tablename=$1 AND cmd IN ('SELECT','ALL') AND (roles @> ARRAY[$2]::name[] OR roles @> ARRAY['public']::name[]))`, t.Name, anonRole).Scan(&hasPolicy); err != nil {
+			return nil, nil, err
+		}
+		anon[i] = hasPolicy
+	}
+	_ = tx.Commit(ctx)
+	return anon, counts, nil
+}
+
+// BrowseRows returns rows from a table with every column cast to text so that
+// uuid, bigint, numeric, jsonb, bytea, arrays and timestamps display exactly.
+// NULL is returned as JSON null. Rows are ordered by primary key (or ctid).
+func BrowseRows(ctx context.Context, adminURL, projectID, table string, columns, pk []string, offset int) (map[string]any, error) {
+	p, err := lookupProject(ctx, adminURL, projectID)
+	if err != nil {
+		return nil, err
+	}
+	conn, err := connectProject(ctx, adminURL, p.database)
+	if err != nil {
+		return nil, err
+	}
+	defer conn.Close(ctx)
+	tx, err := conn.Begin(ctx)
+	if err != nil {
+		return nil, err
+	}
+	defer func() { _ = tx.Rollback(context.Background()) }()
+	if _, err := tx.Exec(ctx, `SET LOCAL ROLE `+pgx.Identifier{p.role}.Sanitize()+`; SET LOCAL statement_timeout='30s'`); err != nil {
+		return nil, err
+	}
+	var selects []string
+	for _, c := range columns {
+		selects = append(selects, pgx.Identifier{c}.Sanitize()+"::text")
+	}
+	orderBy := "ctid"
+	if len(pk) > 0 {
+		parts := make([]string, len(pk))
+		for i, c := range pk {
+			parts[i] = pgx.Identifier{c}.Sanitize()
+		}
+		orderBy = strings.Join(parts, ",")
+	}
+	q := "SELECT " + strings.Join(selects, ",") + " FROM public." + pgx.Identifier{table}.Sanitize() +
+		" ORDER BY " + orderBy + " LIMIT 51 OFFSET $1"
+	rows, err := tx.Query(ctx, q, offset)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	out := make([]map[string]any, 0)
+	for rows.Next() {
+		vals, err := rows.Values()
+		if err != nil {
+			return nil, err
+		}
+		row := make(map[string]any, len(vals))
+		for i, v := range vals {
+			row[columns[i]] = v
+		}
+		out = append(out, row)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	_ = tx.Commit(ctx)
+	hasMore := len(out) > 50
+	if hasMore {
+		out = out[:50]
+	}
+	return map[string]any{"columns": columns, "primary_key": pk, "rows": out, "offset": offset, "has_more": hasMore}, nil
 }
 
 func MarshalResult(result Result) ([]byte, error) {
