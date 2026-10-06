@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"context"
 	"encoding/json"
+	"fmt"
 	"io"
 	"net/http"
 	"net/http/httptest"
@@ -12,6 +13,7 @@ import (
 	"path/filepath"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/515woodpl-dot/pibase/internal/auth"
 	"github.com/515woodpl-dot/pibase/internal/control"
@@ -413,6 +415,548 @@ func TestAnonReadable(t *testing.T) {
 			t.Errorf("%s: anon_readable=%v (listed=%v), want %v", name, got, ok, want)
 		}
 	}
+}
+
+// TestAccountAuth covers U1–U10: signup, login, logout, and /auth/me.
+func TestAccountAuth(t *testing.T) {
+	adminURL := os.Getenv("PIBASE_TEST_ADMIN_DATABASE_URL")
+	if adminURL == "" {
+		t.Skip("PIBASE_TEST_ADMIN_DATABASE_URL is not set")
+	}
+	ctx := context.Background()
+	const password = "t2a-auth-pw"
+	if err := control.Bootstrap(ctx, adminURL, password); err != nil {
+		t.Fatal(err)
+	}
+	parsed, _ := url.Parse(adminURL)
+	parsed.User = url.UserPassword("authenticator", password)
+	parsed.Path = "/_control"
+	root := t.TempDir()
+	s, err := New(Config{
+		AdminURL:    adminURL,
+		DatabaseURL: parsed.String(),
+		Token:       "op-token",
+		StorageRoot: filepath.Join(root, "f"),
+		BackupRoot:  filepath.Join(root, "b"),
+		MasterKey:   bytes.Repeat([]byte{7}, 32),
+		BackupKey:   bytes.Repeat([]byte{9}, 32),
+		Env:         "test",
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	hs := httptest.NewServer(s.Handler())
+	defer hs.Close()
+
+	sfx := fmt.Sprintf("%d", time.Now().UnixNano())
+
+	do := func(method, path, body string, cookie *http.Cookie) *http.Response {
+		t.Helper()
+		req, _ := http.NewRequest(method, hs.URL+path, strings.NewReader(body))
+		req.Header.Set("Content-Type", "application/json")
+		if cookie != nil {
+			req.AddCookie(cookie)
+		}
+		resp, err := hs.Client().Do(req)
+		if err != nil {
+			t.Fatal(err)
+		}
+		return resp
+	}
+	readBody := func(r *http.Response) []byte {
+		defer r.Body.Close()
+		data, _ := io.ReadAll(r.Body)
+		return data
+	}
+	sessionCookie := func(r *http.Response) *http.Cookie {
+		for _, c := range r.Cookies() {
+			if c.Name == "pibase_session" {
+				return c
+			}
+		}
+		return nil
+	}
+
+	// U1: Signup valid → 201 + cookie
+	t.Run("U1_signup_valid", func(t *testing.T) {
+		resp := do("POST", "/_pibase/auth/signup", `{"email":"u1`+sfx+`@t2a.test","password":"longpassword"}`, nil)
+		readBody(resp)
+		if resp.StatusCode != 201 {
+			t.Fatalf("want 201 got %d", resp.StatusCode)
+		}
+		if sessionCookie(resp) == nil {
+			t.Fatal("want session cookie")
+		}
+	})
+
+	// U2: Signup duplicate email → 409
+	t.Run("U2_signup_duplicate", func(t *testing.T) {
+		resp := do("POST", "/_pibase/auth/signup", `{"email":"u2`+sfx+`@t2a.test","password":"longpassword"}`, nil)
+		readBody(resp)
+		if resp.StatusCode != 201 {
+			t.Fatalf("setup: want 201 got %d", resp.StatusCode)
+		}
+		resp2 := do("POST", "/_pibase/auth/signup", `{"email":"u2`+sfx+`@t2a.test","password":"anotherpassword"}`, nil)
+		readBody(resp2)
+		if resp2.StatusCode != 409 {
+			t.Fatalf("want 409 got %d", resp2.StatusCode)
+		}
+	})
+
+	// U3: Signup password < 8 chars → 400
+	t.Run("U3_signup_short_password", func(t *testing.T) {
+		resp := do("POST", "/_pibase/auth/signup", `{"email":"u3`+sfx+`@t2a.test","password":"short"}`, nil)
+		readBody(resp)
+		if resp.StatusCode != 400 {
+			t.Fatalf("want 400 got %d", resp.StatusCode)
+		}
+	})
+
+	// U4: Login correct → 200 + cookie
+	t.Run("U4_login_correct", func(t *testing.T) {
+		resp := do("POST", "/_pibase/auth/signup", `{"email":"u4`+sfx+`@t2a.test","password":"correctpassword"}`, nil)
+		readBody(resp)
+		if resp.StatusCode != 201 {
+			t.Fatalf("setup: want 201 got %d", resp.StatusCode)
+		}
+		resp2 := do("POST", "/_pibase/auth/login", `{"email":"u4`+sfx+`@t2a.test","password":"correctpassword"}`, nil)
+		readBody(resp2)
+		if resp2.StatusCode != 200 {
+			t.Fatalf("want 200 got %d", resp2.StatusCode)
+		}
+		if sessionCookie(resp2) == nil {
+			t.Fatal("want session cookie")
+		}
+	})
+
+	// U5: Login wrong password → 401
+	t.Run("U5_login_wrong_password", func(t *testing.T) {
+		resp := do("POST", "/_pibase/auth/signup", `{"email":"u5`+sfx+`@t2a.test","password":"correctpassword"}`, nil)
+		readBody(resp)
+		if resp.StatusCode != 201 {
+			t.Fatalf("setup: want 201 got %d", resp.StatusCode)
+		}
+		resp2 := do("POST", "/_pibase/auth/login", `{"email":"u5`+sfx+`@t2a.test","password":"wrongpassword"}`, nil)
+		readBody(resp2)
+		if resp2.StatusCode != 401 {
+			t.Fatalf("want 401 got %d", resp2.StatusCode)
+		}
+	})
+
+	// U6: Login absent email → 401 (same shape as wrong password)
+	t.Run("U6_login_absent_email", func(t *testing.T) {
+		resp := do("POST", "/_pibase/auth/login", `{"email":"nobody@t2a.test","password":"anypassword"}`, nil)
+		readBody(resp)
+		if resp.StatusCode != 401 {
+			t.Fatalf("want 401 got %d", resp.StatusCode)
+		}
+	})
+
+	// U7: Logout valid session → 200, cookie cleared (Max-Age <= 0)
+	t.Run("U7_logout_valid", func(t *testing.T) {
+		resp := do("POST", "/_pibase/auth/signup", `{"email":"u7`+sfx+`@t2a.test","password":"longpassword"}`, nil)
+		readBody(resp)
+		cookie := sessionCookie(resp)
+		if cookie == nil {
+			t.Fatal("want session cookie from signup")
+		}
+		resp2 := do("POST", "/_pibase/auth/logout", "", cookie)
+		readBody(resp2)
+		if resp2.StatusCode != 200 {
+			t.Fatalf("want 200 got %d", resp2.StatusCode)
+		}
+		for _, c := range resp2.Cookies() {
+			if c.Name == "pibase_session" && c.MaxAge > 0 {
+				t.Fatalf("cookie Max-Age should be <=0, got %d", c.MaxAge)
+			}
+		}
+	})
+
+	// U8: Logout no cookie → 401
+	t.Run("U8_logout_no_cookie", func(t *testing.T) {
+		resp := do("POST", "/_pibase/auth/logout", "", nil)
+		readBody(resp)
+		if resp.StatusCode != 401 {
+			t.Fatalf("want 401 got %d", resp.StatusCode)
+		}
+	})
+
+	// U9: GET /auth/me valid → 200 with id/email/created_at
+	t.Run("U9_me_valid", func(t *testing.T) {
+		resp := do("POST", "/_pibase/auth/signup", `{"email":"u9`+sfx+`@t2a.test","password":"longpassword"}`, nil)
+		cookie := sessionCookie(resp)
+		readBody(resp)
+		if cookie == nil {
+			t.Fatal("want session cookie from signup")
+		}
+		resp2 := do("GET", "/_pibase/auth/me", "", cookie)
+		body := readBody(resp2)
+		if resp2.StatusCode != 200 {
+			t.Fatalf("want 200 got %d: %s", resp2.StatusCode, body)
+		}
+		var acc map[string]any
+		if err := json.Unmarshal(body, &acc); err != nil {
+			t.Fatalf("parse me response: %v", err)
+		}
+		if acc["id"] == "" || acc["email"] != "u9"+sfx+"@t2a.test" || acc["created_at"] == nil {
+			t.Fatalf("me response missing fields: %s", body)
+		}
+	})
+
+	// U10: GET /auth/me with invalid/expired token → 401
+	t.Run("U10_me_invalid_token", func(t *testing.T) {
+		fakeCookie := &http.Cookie{Name: "pibase_session", Value: "notarealtoken"}
+		resp := do("GET", "/_pibase/auth/me", "", fakeCookie)
+		readBody(resp)
+		if resp.StatusCode != 401 {
+			t.Fatalf("want 401 got %d", resp.StatusCode)
+		}
+	})
+}
+
+// TestAccountOwnership covers I1–I12: project ownership enforcement.
+func TestAccountOwnership(t *testing.T) {
+	adminURL := os.Getenv("PIBASE_TEST_ADMIN_DATABASE_URL")
+	if adminURL == "" {
+		t.Skip("PIBASE_TEST_ADMIN_DATABASE_URL is not set")
+	}
+	ctx := context.Background()
+	const password = "t2a-own-pw"
+	if err := control.Bootstrap(ctx, adminURL, password); err != nil {
+		t.Fatal(err)
+	}
+	parsed, _ := url.Parse(adminURL)
+	parsed.User = url.UserPassword("authenticator", password)
+	parsed.Path = "/_control"
+	root := t.TempDir()
+	s, err := New(Config{
+		AdminURL:    adminURL,
+		DatabaseURL: parsed.String(),
+		Token:       "op-token",
+		StorageRoot: filepath.Join(root, "f"),
+		BackupRoot:  filepath.Join(root, "b"),
+		MasterKey:   bytes.Repeat([]byte{7}, 32),
+		BackupKey:   bytes.Repeat([]byte{9}, 32),
+		Env:         "test",
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	hs := httptest.NewServer(s.Handler())
+	defer hs.Close()
+
+	sfx := fmt.Sprintf("%d", time.Now().UnixNano())
+
+	// Helper: signup and return session cookie.
+	signup := func(email, pw string) *http.Cookie {
+		t.Helper()
+		req, _ := http.NewRequest("POST", hs.URL+"/_pibase/auth/signup",
+			strings.NewReader(`{"email":"`+email+`","password":"`+pw+`"}`))
+		req.Header.Set("Content-Type", "application/json")
+		resp, err := hs.Client().Do(req)
+		if err != nil {
+			t.Fatal(err)
+		}
+		defer resp.Body.Close()
+		if resp.StatusCode != 201 {
+			t.Fatalf("signup %s: want 201 got %d", email, resp.StatusCode)
+		}
+		for _, c := range resp.Cookies() {
+			if c.Name == "pibase_session" {
+				return c
+			}
+		}
+		t.Fatalf("signup %s: no session cookie", email)
+		return nil
+	}
+
+	// Helper: make a request with cookie auth.
+	callAs := func(cookie *http.Cookie, method, path, body string) (int, []byte) {
+		t.Helper()
+		req, _ := http.NewRequest(method, hs.URL+path, strings.NewReader(body))
+		req.Header.Set("Content-Type", "application/json")
+		if cookie != nil {
+			req.AddCookie(cookie)
+		}
+		resp, err := hs.Client().Do(req)
+		if err != nil {
+			t.Fatal(err)
+		}
+		defer resp.Body.Close()
+		data, _ := io.ReadAll(resp.Body)
+		return resp.StatusCode, data
+	}
+
+	// Helper: make an operator request.
+	callOp := func(method, path, body string) (int, []byte) {
+		t.Helper()
+		req, _ := http.NewRequest(method, hs.URL+path, strings.NewReader(body))
+		req.Header.Set("Content-Type", "application/json")
+		req.Header.Set("Authorization", "Bearer op-token")
+		resp, err := hs.Client().Do(req)
+		if err != nil {
+			t.Fatal(err)
+		}
+		defer resp.Body.Close()
+		data, _ := io.ReadAll(resp.Body)
+		return resp.StatusCode, data
+	}
+
+	alice := signup("alice"+sfx+"@t2a.test", "alicepassword")
+	bob := signup("bob"+sfx+"@t2a.test", "bobpassword")
+
+	// I1: Account creates project, list returns only that project.
+	t.Run("I1_list_own_projects", func(t *testing.T) {
+		code, body := callAs(alice, "POST", "/_pibase/projects", `{"name":"alice project"}`)
+		if code != 201 {
+			t.Fatalf("want 201 got %d: %s", code, body)
+		}
+		var p map[string]any
+		json.Unmarshal(body, &p)
+		projID := p["id"].(string)
+		defer control.DeleteProject(ctx, adminURL, projID)
+
+		code2, list := callAs(alice, "GET", "/_pibase/projects", "")
+		if code2 != 200 {
+			t.Fatalf("list: want 200 got %d", code2)
+		}
+		if !bytes.Contains(list, []byte(projID)) {
+			t.Fatalf("alice project missing from list: %s", list)
+		}
+		// Bob should not see alice's project.
+		_, bobList := callAs(bob, "GET", "/_pibase/projects", "")
+		if bytes.Contains(bobList, []byte(projID)) {
+			t.Fatal("alice's project visible to bob")
+		}
+	})
+
+	// I2: Second account cannot access first account's project SQL endpoint → 403.
+	t.Run("I2_other_account_forbidden_sql", func(t *testing.T) {
+		code, body := callAs(alice, "POST", "/_pibase/projects", `{"name":"alice sql test"}`)
+		if code != 201 {
+			t.Fatalf("want 201 got %d", code)
+		}
+		var p map[string]any
+		json.Unmarshal(body, &p)
+		projID := p["id"].(string)
+		defer control.DeleteProject(ctx, adminURL, projID)
+
+		code2, _ := callAs(bob, "POST", "/_pibase/projects/"+projID+"/sql", `{"sql":"SELECT 1"}`)
+		if code2 != 403 {
+			t.Fatalf("want 403 got %d", code2)
+		}
+	})
+
+	// I3: Operator token accesses any project → 200.
+	t.Run("I3_operator_sees_all", func(t *testing.T) {
+		code, body := callAs(alice, "POST", "/_pibase/projects", `{"name":"alice op test"}`)
+		if code != 201 {
+			t.Fatalf("want 201 got %d", code)
+		}
+		var p map[string]any
+		json.Unmarshal(body, &p)
+		projID := p["id"].(string)
+		defer control.DeleteProject(ctx, adminURL, projID)
+
+		code2, _ := callOp("POST", "/_pibase/projects/"+projID+"/sql", `{"sql":"SELECT 1"}`)
+		if code2 != 200 {
+			t.Fatalf("operator: want 200 got %d", code2)
+		}
+	})
+
+	// I4: Account cannot access extensions endpoint → 403.
+	t.Run("I4_account_cannot_manage_extensions", func(t *testing.T) {
+		code, body := callAs(alice, "POST", "/_pibase/projects", `{"name":"alice ext test"}`)
+		if code != 201 {
+			t.Fatalf("want 201 got %d", code)
+		}
+		var p map[string]any
+		json.Unmarshal(body, &p)
+		projID := p["id"].(string)
+		defer control.DeleteProject(ctx, adminURL, projID)
+
+		code2, _ := callAs(alice, "POST", "/_pibase/projects/"+projID+"/extensions/pgvector", "")
+		if code2 != 403 {
+			t.Fatalf("want 403 got %d", code2)
+		}
+	})
+
+	// I5: Project created by account has owner_id = account.id in DB.
+	t.Run("I5_owner_id_set_in_db", func(t *testing.T) {
+		// Get alice's account ID first via /auth/me
+		req, _ := http.NewRequest("GET", hs.URL+"/_pibase/auth/me", nil)
+		req.AddCookie(alice)
+		resp, _ := hs.Client().Do(req)
+		var acc map[string]any
+		json.NewDecoder(resp.Body).Decode(&acc)
+		resp.Body.Close()
+		aliceID := acc["id"].(string)
+
+		code, body := callAs(alice, "POST", "/_pibase/projects", `{"name":"alice db check"}`)
+		if code != 201 {
+			t.Fatalf("want 201 got %d", code)
+		}
+		var p map[string]any
+		json.Unmarshal(body, &p)
+		projID := p["id"].(string)
+		defer control.DeleteProject(ctx, adminURL, projID)
+
+		dbURL, _ := url.Parse(adminURL)
+		dbURL.Path = "/_control"
+		conn, err := pgx.Connect(ctx, dbURL.String())
+		if err != nil {
+			t.Fatal(err)
+		}
+		defer conn.Close(ctx)
+		var ownerID *string
+		err = conn.QueryRow(ctx, `SELECT owner_id::text FROM control.projects WHERE id=$1`, projID).Scan(&ownerID)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if ownerID == nil || *ownerID != aliceID {
+			t.Fatalf("owner_id = %v, want %s", ownerID, aliceID)
+		}
+	})
+
+	// I6: Project created by operator has owner_id = NULL.
+	t.Run("I6_operator_project_no_owner", func(t *testing.T) {
+		code, body := callOp("POST", "/_pibase/projects", `{"name":"op owned"}`)
+		if code != 201 {
+			t.Fatalf("want 201 got %d", code)
+		}
+		var p map[string]any
+		json.Unmarshal(body, &p)
+		projID := p["id"].(string)
+		defer control.DeleteProject(ctx, adminURL, projID)
+
+		dbURL, _ := url.Parse(adminURL)
+		dbURL.Path = "/_control"
+		conn, err := pgx.Connect(ctx, dbURL.String())
+		if err != nil {
+			t.Fatal(err)
+		}
+		defer conn.Close(ctx)
+		var ownerID *string
+		err = conn.QueryRow(ctx, `SELECT owner_id::text FROM control.projects WHERE id=$1`, projID).Scan(&ownerID)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if ownerID != nil {
+			t.Fatalf("owner_id should be NULL, got %s", *ownerID)
+		}
+	})
+
+	// I7: No auth → /_pibase/projects/... → 401.
+	t.Run("I7_no_auth_401", func(t *testing.T) {
+		code, _ := callAs(nil, "GET", "/_pibase/projects", "")
+		if code != 401 {
+			t.Fatalf("want 401 got %d", code)
+		}
+		code2, _ := callAs(nil, "POST", "/_pibase/projects", `{"name":"x"}`)
+		if code2 != 401 {
+			t.Fatalf("POST projects: want 401 got %d", code2)
+		}
+	})
+
+	// I8: Invalid session cookie → 401.
+	t.Run("I8_invalid_session_401", func(t *testing.T) {
+		fakeCookie := &http.Cookie{Name: "pibase_session", Value: "invalidsessiontoken"}
+		code, _ := callAs(fakeCookie, "GET", "/_pibase/projects", "")
+		if code != 401 {
+			t.Fatalf("want 401 got %d", code)
+		}
+	})
+
+	// I9: Login then logout then reuse cookie → 401.
+	t.Run("I9_revoked_session_401", func(t *testing.T) {
+		cookie := signup("i9"+sfx+"@t2a.test", "longpassword9")
+		// Logout
+		req, _ := http.NewRequest("POST", hs.URL+"/_pibase/auth/logout", nil)
+		req.AddCookie(cookie)
+		resp, _ := hs.Client().Do(req)
+		resp.Body.Close()
+		if resp.StatusCode != 200 {
+			t.Fatalf("logout: want 200 got %d", resp.StatusCode)
+		}
+		// Reuse same cookie — should be 401 now
+		code, _ := callAs(cookie, "GET", "/_pibase/projects", "")
+		if code != 401 {
+			t.Fatalf("want 401 after logout got %d", code)
+		}
+	})
+
+	// I10: GET /projects with account session returns only owned projects.
+	t.Run("I10_account_list_filtered", func(t *testing.T) {
+		// Alice creates one, operator creates one
+		code, body := callAs(alice, "POST", "/_pibase/projects", `{"name":"alice filter test"}`)
+		if code != 201 {
+			t.Fatalf("want 201 got %d", code)
+		}
+		var aliceP map[string]any
+		json.Unmarshal(body, &aliceP)
+		aliceProjID := aliceP["id"].(string)
+		defer control.DeleteProject(ctx, adminURL, aliceProjID)
+
+		code2, body2 := callOp("POST", "/_pibase/projects", `{"name":"op filter test"}`)
+		if code2 != 201 {
+			t.Fatalf("want 201 got %d", code2)
+		}
+		var opP map[string]any
+		json.Unmarshal(body2, &opP)
+		opProjID := opP["id"].(string)
+		defer control.DeleteProject(ctx, adminURL, opProjID)
+
+		_, aliceList := callAs(alice, "GET", "/_pibase/projects", "")
+		if !bytes.Contains(aliceList, []byte(aliceProjID)) {
+			t.Fatal("alice list missing alice's project")
+		}
+		if bytes.Contains(aliceList, []byte(opProjID)) {
+			t.Fatal("alice list should not contain operator's project")
+		}
+	})
+
+	// I11: Account deletes own project, then GET → 404.
+	t.Run("I11_delete_own_then_404", func(t *testing.T) {
+		code, body := callAs(alice, "POST", "/_pibase/projects", `{"name":"alice delete me"}`)
+		if code != 201 {
+			t.Fatalf("want 201 got %d", code)
+		}
+		var p map[string]any
+		json.Unmarshal(body, &p)
+		projID := p["id"].(string)
+
+		code2, _ := callAs(alice, "DELETE", "/_pibase/projects/"+projID, `{"confirm":"`+projID+`"}`)
+		if code2 != 204 {
+			t.Fatalf("delete: want 204 got %d", code2)
+		}
+		// Subsequent access should 404 (project gone)
+		code3, _ := callAs(alice, "POST", "/_pibase/projects/"+projID+"/sql", `{"sql":"SELECT 1"}`)
+		if code3 != 404 {
+			t.Fatalf("want 404 after delete got %d", code3)
+		}
+	})
+
+	// I12: Account cannot delete another account's project → 403.
+	t.Run("I12_cannot_delete_others_project", func(t *testing.T) {
+		code, body := callAs(alice, "POST", "/_pibase/projects", `{"name":"alice keep"}`)
+		if code != 201 {
+			t.Fatalf("want 201 got %d", code)
+		}
+		var p map[string]any
+		json.Unmarshal(body, &p)
+		projID := p["id"].(string)
+		defer control.DeleteProject(ctx, adminURL, projID)
+
+		code2, _ := callAs(bob, "DELETE", "/_pibase/projects/"+projID, `{"confirm":"`+projID+`"}`)
+		if code2 != 403 {
+			t.Fatalf("want 403 got %d", code2)
+		}
+		// Project still exists
+		code3, _ := callAs(alice, "POST", "/_pibase/projects/"+projID+"/sql", `{"sql":"SELECT 1"}`)
+		if code3 != 200 {
+			t.Fatalf("alice project gone after bob delete attempt: %d", code3)
+		}
+	})
 }
 
 // TestOwnerSQLRoleIsolation verifies that the authenticator connection used by

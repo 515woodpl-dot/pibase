@@ -9,12 +9,14 @@ import (
 	"crypto/subtle"
 	"encoding/hex"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"net/http"
 	"net/url"
 	"os"
 	"path/filepath"
 	"strings"
+	"sync"
 	"time"
 
 	"github.com/515woodpl-dot/pibase/internal/adminsql"
@@ -27,9 +29,15 @@ import (
 type Config struct {
 	AdminURL, DatabaseURL, StorageRoot, BackupRoot, Token string
 	MasterKey, BackupKey                                  []byte
+	// Env is "test" in test environments; disables Secure cookie flag.
+	Env string
 }
 
-type Server struct{ Config }
+type Server struct {
+	Config
+	loginLimit  *rateLimiter
+	signupLimit *rateLimiter
+}
 
 func New(c Config) (*Server, error) {
 	if c.AdminURL == "" || c.DatabaseURL == "" || c.Token == "" || len(c.MasterKey) != 32 || len(c.BackupKey) != 32 {
@@ -41,13 +49,37 @@ func New(c Config) (*Server, error) {
 	if c.BackupRoot == "" {
 		c.BackupRoot = "/data/backups"
 	}
-	return &Server{Config: c}, nil
+	return &Server{Config: c, loginLimit: newRateLimiter(), signupLimit: newRateLimiter()}, nil
+}
+
+// identityKind distinguishes operator-token auth from account-session auth.
+type identityKind int
+
+const (
+	opKind      identityKind = iota // PIBASE_OPERATOR_TOKEN bearer
+	accountKind                     // pibase_session cookie
+)
+
+type identity struct {
+	kind      identityKind
+	accountID string
+	email     string
+}
+
+type contextKey int
+
+const identKey contextKey = 0
+
+func withIdentity(ctx context.Context, id identity) context.Context {
+	return context.WithValue(ctx, identKey, id)
+}
+func getIdentity(ctx context.Context) (identity, bool) {
+	id, ok := ctx.Value(identKey).(identity)
+	return id, ok
 }
 
 func (s *Server) Handler() http.Handler {
 	mux := http.NewServeMux()
-	mux.HandleFunc("GET /dashboard", s.dashboard)
-	mux.HandleFunc("GET /", s.dashboard)
 	mux.HandleFunc("GET /_pibase/projects", s.projects)
 	mux.HandleFunc("POST /_pibase/projects", s.createProject)
 	mux.HandleFunc("DELETE /_pibase/projects/{id}", s.deleteProject)
@@ -62,24 +94,194 @@ func (s *Server) Handler() http.Handler {
 	mux.HandleFunc("GET /_pibase/projects/{id}/users", s.users)
 	mux.HandleFunc("POST /_pibase/projects/{id}/users", s.createUser)
 	mux.HandleFunc("DELETE /_pibase/projects/{id}/users/{user}", s.deleteUser)
+	// Auth endpoints — no token required.
+	mux.HandleFunc("POST /_pibase/auth/signup", s.authSignup)
+	mux.HandleFunc("POST /_pibase/auth/login", s.authLogin)
+	mux.HandleFunc("POST /_pibase/auth/logout", s.authLogout)
+	mux.HandleFunc("GET /_pibase/auth/me", s.authMe)
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		// The page itself is static and holds no data or secrets. A browser
-		// cannot send the bearer token on navigation, so only the page is
-		// served without it; every /_pibase/ endpoint requires the token.
+		w.Header().Set("Cache-Control", "no-store")
+		// Page and auth endpoints need no operator credential.
 		if r.Method == http.MethodGet && (r.URL.Path == "/" || r.URL.Path == "/dashboard") {
-			w.Header().Set("Cache-Control", "no-store")
 			s.dashboard(w, r)
 			return
 		}
-		if !s.authorized(r) {
-			w.Header().Set("WWW-Authenticate", "Bearer")
-			http.Error(w, "operator authentication required", http.StatusUnauthorized)
+		if strings.HasPrefix(r.URL.Path, "/_pibase/auth/") {
+			mux.ServeHTTP(w, r)
 			return
 		}
-		w.Header().Set("Cache-Control", "no-store")
-		mux.ServeHTTP(w, r)
+		// All other endpoints require operator token or account session.
+		id, ok := s.authorizeRequest(r)
+		if !ok {
+			w.Header().Set("WWW-Authenticate", "Bearer")
+			http.Error(w, "authentication required", http.StatusUnauthorized)
+			return
+		}
+		mux.ServeHTTP(w, r.WithContext(withIdentity(r.Context(), id)))
 	})
 }
+
+// authorizeRequest returns the caller's identity from either a Bearer token
+// or a valid pibase_session cookie. Returns false when neither is present/valid.
+func (s *Server) authorizeRequest(r *http.Request) (identity, bool) {
+	if s.operatorAuthorized(r) {
+		return identity{kind: opKind}, true
+	}
+	c, err := r.Cookie("pibase_session")
+	if err != nil {
+		return identity{}, false
+	}
+	account, err := control.ResolveSession(r.Context(), s.AdminURL, c.Value)
+	if err != nil {
+		return identity{}, false
+	}
+	return identity{kind: accountKind, accountID: account.ID, email: account.Email}, true
+}
+
+func (s *Server) operatorAuthorized(r *http.Request) bool {
+	const p = "Bearer "
+	v := r.Header.Get("Authorization")
+	return strings.HasPrefix(v, p) && len(v[len(p):]) == len(s.Token) && subtle.ConstantTimeCompare([]byte(v[len(p):]), []byte(s.Token)) == 1
+}
+
+// checkOwner writes 404/403 and returns false when the caller does not own projectID.
+// Operators bypass the check.
+func (s *Server) checkOwner(w http.ResponseWriter, r *http.Request, projectID string) bool {
+	id, ok := getIdentity(r.Context())
+	if !ok || id.kind == opKind {
+		return true
+	}
+	err := control.AccountOwnsProject(r.Context(), s.AdminURL, projectID, id.accountID)
+	if err == nil {
+		return true
+	}
+	if errors.Is(err, control.ErrNotFound) {
+		http.NotFound(w, r)
+	} else {
+		http.Error(w, "forbidden", http.StatusForbidden)
+	}
+	return false
+}
+
+// sessionCookieValue extracts the pibase_session cookie value, or "".
+func sessionCookieValue(r *http.Request) string {
+	c, err := r.Cookie("pibase_session")
+	if err != nil {
+		return ""
+	}
+	return c.Value
+}
+
+func (s *Server) setSessionCookie(w http.ResponseWriter, token string) {
+	c := &http.Cookie{
+		Name:     "pibase_session",
+		Value:    token,
+		Path:     "/",
+		MaxAge:   86400,
+		HttpOnly: true,
+		SameSite: http.SameSiteStrictMode,
+		Secure:   s.Env != "test",
+	}
+	http.SetCookie(w, c)
+}
+
+func clearSessionCookie(w http.ResponseWriter) {
+	http.SetCookie(w, &http.Cookie{
+		Name:     "pibase_session",
+		Value:    "",
+		Path:     "/",
+		MaxAge:   -1,
+		HttpOnly: true,
+		SameSite: http.SameSiteStrictMode,
+	})
+}
+
+// --- Auth endpoints ---
+
+func (s *Server) authSignup(w http.ResponseWriter, r *http.Request) {
+	ip := clientIP(r)
+	if s.Env != "test" && !s.signupLimit.Allow(ip, 5, time.Minute) {
+		http.Error(w, "too many requests", http.StatusTooManyRequests)
+		return
+	}
+	var b struct {
+		Email    string `json:"email"`
+		Password string `json:"password"`
+	}
+	if !jsonBody(w, r, &b) {
+		return
+	}
+	account, err := control.CreateAccount(r.Context(), s.AdminURL, b.Email, b.Password)
+	if err != nil {
+		if errors.Is(err, control.ErrDuplicate) {
+			http.Error(w, "email already exists", http.StatusConflict)
+			return
+		}
+		http.Error(w, err.Error(), http.StatusBadRequest)
+		return
+	}
+	token, err := control.IssueSession(r.Context(), s.AdminURL, account.ID)
+	if err != nil {
+		fail(w, err)
+		return
+	}
+	s.setSessionCookie(w, token)
+	writeJSON(w, http.StatusCreated, account)
+}
+
+func (s *Server) authLogin(w http.ResponseWriter, r *http.Request) {
+	ip := clientIP(r)
+	if s.Env != "test" && !s.loginLimit.Allow(ip, 10, 10*time.Minute) {
+		http.Error(w, "too many requests", http.StatusTooManyRequests)
+		return
+	}
+	var b struct {
+		Email    string `json:"email"`
+		Password string `json:"password"`
+	}
+	if !jsonBody(w, r, &b) {
+		return
+	}
+	account, err := control.AuthenticateAccount(r.Context(), s.AdminURL, b.Email, b.Password)
+	if err != nil {
+		http.Error(w, "invalid credentials", http.StatusUnauthorized)
+		return
+	}
+	token, err := control.IssueSession(r.Context(), s.AdminURL, account.ID)
+	if err != nil {
+		fail(w, err)
+		return
+	}
+	s.setSessionCookie(w, token)
+	writeJSON(w, http.StatusOK, account)
+}
+
+func (s *Server) authLogout(w http.ResponseWriter, r *http.Request) {
+	token := sessionCookieValue(r)
+	if token == "" {
+		http.Error(w, "not authenticated", http.StatusUnauthorized)
+		return
+	}
+	_ = control.RevokeSession(r.Context(), s.AdminURL, token)
+	clearSessionCookie(w)
+	w.WriteHeader(http.StatusOK)
+}
+
+func (s *Server) authMe(w http.ResponseWriter, r *http.Request) {
+	token := sessionCookieValue(r)
+	if token == "" {
+		http.Error(w, "not authenticated", http.StatusUnauthorized)
+		return
+	}
+	account, err := control.ResolveSession(r.Context(), s.AdminURL, token)
+	if err != nil {
+		http.Error(w, "not authenticated", http.StatusUnauthorized)
+		return
+	}
+	writeJSON(w, http.StatusOK, account)
+}
+
+// --- Project endpoints ---
 
 type tableInfo struct {
 	Name         string   `json:"name"`
@@ -91,7 +293,11 @@ type tableInfo struct {
 }
 
 func (s *Server) tables(w http.ResponseWriter, r *http.Request) {
-	tables, err := adminsql.ListTables(r.Context(), s.DatabaseURL, r.PathValue("id"))
+	id := r.PathValue("id")
+	if !s.checkOwner(w, r, id) {
+		return
+	}
+	tables, err := adminsql.ListTables(r.Context(), s.DatabaseURL, id)
 	if err != nil {
 		fail(w, err)
 		return
@@ -100,6 +306,10 @@ func (s *Server) tables(w http.ResponseWriter, r *http.Request) {
 }
 
 func (s *Server) rows(w http.ResponseWriter, r *http.Request) {
+	id := r.PathValue("id")
+	if !s.checkOwner(w, r, id) {
+		return
+	}
 	t, err := s.table(r)
 	if err != nil {
 		fail(w, err)
@@ -110,7 +320,7 @@ func (s *Server) rows(w http.ResponseWriter, r *http.Request) {
 	if offset < 0 {
 		offset = 0
 	}
-	x, err := adminsql.BrowseRows(r.Context(), s.DatabaseURL, r.PathValue("id"), t.Name, t.Columns, t.PrimaryKey, offset)
+	x, err := adminsql.BrowseRows(r.Context(), s.DatabaseURL, id, t.Name, t.Columns, t.PrimaryKey, offset)
 	if err != nil {
 		fail(w, err)
 		return
@@ -158,9 +368,8 @@ func number(v any) int64 {
 	return 0
 }
 
-// User management deliberately uses the administrator connection, because the
-// auth schema is operator-owned and is not accessible to project owner SQL.
-// Its statements are fixed and all caller values are bound.
+// User management uses the administrator connection because the auth schema is
+// operator-owned and not accessible to project owner SQL.
 func (s *Server) projectDB(ctx context.Context, id string) (*pgx.Conn, error) {
 	controlURL, err := url.Parse(s.AdminURL)
 	if err != nil {
@@ -184,7 +393,11 @@ func (s *Server) projectDB(ctx context.Context, id string) (*pgx.Conn, error) {
 	return pgx.Connect(ctx, u.String())
 }
 func (s *Server) users(w http.ResponseWriter, r *http.Request) {
-	c, err := s.projectDB(r.Context(), r.PathValue("id"))
+	id := r.PathValue("id")
+	if !s.checkOwner(w, r, id) {
+		return
+	}
+	c, err := s.projectDB(r.Context(), id)
 	if err != nil {
 		fail(w, err)
 		return
@@ -214,6 +427,10 @@ func (s *Server) users(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, 200, out)
 }
 func (s *Server) createUser(w http.ResponseWriter, r *http.Request) {
+	id := r.PathValue("id")
+	if !s.checkOwner(w, r, id) {
+		return
+	}
 	var b struct {
 		Email        string `json:"email"`
 		Password     string `json:"password"`
@@ -232,13 +449,13 @@ func (s *Server) createUser(w http.ResponseWriter, r *http.Request) {
 		fail(w, err)
 		return
 	}
-	c, err := s.projectDB(r.Context(), r.PathValue("id"))
+	c, err := s.projectDB(r.Context(), id)
 	if err != nil {
 		fail(w, err)
 		return
 	}
 	defer c.Close(r.Context())
-	id, err := newUUID()
+	uid, err := newUUID()
 	if err != nil {
 		fail(w, err)
 		return
@@ -247,12 +464,12 @@ func (s *Server) createUser(w http.ResponseWriter, r *http.Request) {
 	if b.EmailConfirm {
 		confirmed = time.Now().UTC()
 	}
-	_, err = c.Exec(r.Context(), `INSERT INTO auth.users(id,email,password_hash,email_confirmed_at) VALUES($1,$2,$3,$4)`, id, b.Email, hash, confirmed)
+	_, err = c.Exec(r.Context(), `INSERT INTO auth.users(id,email,password_hash,email_confirmed_at) VALUES($1,$2,$3,$4)`, uid, b.Email, hash, confirmed)
 	if err != nil {
 		fail(w, err)
 		return
 	}
-	writeJSON(w, 201, map[string]string{"id": id, "email": b.Email})
+	writeJSON(w, 201, map[string]string{"id": uid, "email": b.Email})
 }
 
 func newUUID() (string, error) {
@@ -265,24 +482,28 @@ func newUUID() (string, error) {
 	return hex.EncodeToString(b[0:4]) + "-" + hex.EncodeToString(b[4:6]) + "-" + hex.EncodeToString(b[6:8]) + "-" + hex.EncodeToString(b[8:10]) + "-" + hex.EncodeToString(b[10:16]), nil
 }
 func (s *Server) deleteUser(w http.ResponseWriter, r *http.Request) {
+	projectID := r.PathValue("id")
+	if !s.checkOwner(w, r, projectID) {
+		return
+	}
 	var b struct {
 		Confirm string `json:"confirm"`
 	}
 	if !jsonBody(w, r, &b) {
 		return
 	}
-	id := r.PathValue("user")
-	if b.Confirm != id {
+	userID := r.PathValue("user")
+	if b.Confirm != userID {
 		fail(w, fmt.Errorf("type the user id to delete"))
 		return
 	}
-	c, err := s.projectDB(r.Context(), r.PathValue("id"))
+	c, err := s.projectDB(r.Context(), projectID)
 	if err != nil {
 		fail(w, err)
 		return
 	}
 	defer c.Close(r.Context())
-	tag, err := c.Exec(r.Context(), `DELETE FROM auth.users WHERE id=$1`, id)
+	tag, err := c.Exec(r.Context(), `DELETE FROM auth.users WHERE id=$1`, userID)
 	if err != nil {
 		fail(w, err)
 		return
@@ -294,37 +515,24 @@ func (s *Server) deleteUser(w http.ResponseWriter, r *http.Request) {
 	w.WriteHeader(204)
 }
 
-func (s *Server) authorized(r *http.Request) bool {
-	const p = "Bearer "
-	v := r.Header.Get("Authorization")
-	return strings.HasPrefix(v, p) && len(v[len(p):]) == len(s.Token) && subtle.ConstantTimeCompare([]byte(v[len(p):]), []byte(s.Token)) == 1
-}
-func jsonBody(w http.ResponseWriter, r *http.Request, v any) bool {
-	if err := json.NewDecoder(http.MaxBytesReader(w, r.Body, 2<<20)).Decode(v); err != nil {
-		http.Error(w, "invalid JSON", 400)
-		return false
-	}
-	return true
-}
-func writeJSON(w http.ResponseWriter, status int, v any) {
-	w.Header().Set("Content-Type", "application/json")
-	w.WriteHeader(status)
-	_ = json.NewEncoder(w).Encode(v)
-}
-func fail(w http.ResponseWriter, err error) { http.Error(w, err.Error(), http.StatusBadRequest) }
-
-func (s *Server) dashboard(w http.ResponseWriter, _ *http.Request) {
-	w.Header().Set("Content-Type", "text/html; charset=utf-8")
-	_, _ = w.Write([]byte(page))
-}
 func (s *Server) projects(w http.ResponseWriter, r *http.Request) {
-	p, err := control.ProjectStats(r.Context(), s.AdminURL, s.StorageRoot)
+	id, _ := getIdentity(r.Context())
+	var (
+		stats []control.ProjectStat
+		err   error
+	)
+	if id.kind == accountKind {
+		stats, err = control.ProjectStatsByOwner(r.Context(), s.AdminURL, s.StorageRoot, id.accountID)
+	} else {
+		stats, err = control.ProjectStats(r.Context(), s.AdminURL, s.StorageRoot)
+	}
 	if err != nil {
 		fail(w, err)
 		return
 	}
-	writeJSON(w, 200, p)
+	writeJSON(w, 200, stats)
 }
+
 func (s *Server) createProject(w http.ResponseWriter, r *http.Request) {
 	var b struct {
 		Name string `json:"name"`
@@ -337,41 +545,62 @@ func (s *Server) createProject(w http.ResponseWriter, r *http.Request) {
 		fail(w, err)
 		return
 	}
+	// If the caller is an account (not operator), assign project ownership.
+	if id, ok := getIdentity(r.Context()); ok && id.kind == accountKind {
+		if err := control.SetProjectOwner(r.Context(), s.AdminURL, p.ID, id.accountID); err != nil {
+			fail(w, err)
+			return
+		}
+	}
 	writeJSON(w, 201, p)
 }
+
 func (s *Server) deleteProject(w http.ResponseWriter, r *http.Request) {
+	projectID := r.PathValue("id")
+	if !s.checkOwner(w, r, projectID) {
+		return
+	}
 	var b struct {
 		Confirm string `json:"confirm"`
 	}
 	if !jsonBody(w, r, &b) {
 		return
 	}
-	id := r.PathValue("id")
-	if b.Confirm != id {
+	if b.Confirm != projectID {
 		http.Error(w, "type the project id to delete", 400)
 		return
 	}
-	if err := control.DeleteProject(r.Context(), s.AdminURL, id); err != nil {
+	if err := control.DeleteProject(r.Context(), s.AdminURL, projectID); err != nil {
 		fail(w, err)
 		return
 	}
 	w.WriteHeader(204)
 }
+
 func (s *Server) sql(w http.ResponseWriter, r *http.Request) {
+	id := r.PathValue("id")
+	if !s.checkOwner(w, r, id) {
+		return
+	}
 	var b struct {
 		SQL string `json:"sql"`
 	}
 	if !jsonBody(w, r, &b) {
 		return
 	}
-	x, err := adminsql.Run(r.Context(), s.DatabaseURL, r.PathValue("id"), b.SQL)
+	x, err := adminsql.Run(r.Context(), s.DatabaseURL, id, b.SQL)
 	if err != nil {
 		fail(w, err)
 		return
 	}
 	writeJSON(w, 200, x)
 }
+
 func (s *Server) migration(w http.ResponseWriter, r *http.Request) {
+	id := r.PathValue("id")
+	if !s.checkOwner(w, r, id) {
+		return
+	}
 	var b struct {
 		Name string `json:"name"`
 		SQL  string `json:"sql"`
@@ -379,14 +608,19 @@ func (s *Server) migration(w http.ResponseWriter, r *http.Request) {
 	if !jsonBody(w, r, &b) {
 		return
 	}
-	if err := adminsql.ApplyMigration(r.Context(), s.DatabaseURL, r.PathValue("id"), b.Name, b.SQL); err != nil {
+	if err := adminsql.ApplyMigration(r.Context(), s.DatabaseURL, id, b.Name, b.SQL); err != nil {
 		fail(w, err)
 		return
 	}
 	w.WriteHeader(204)
 }
+
 func (s *Server) migrations(w http.ResponseWriter, r *http.Request) {
-	x, err := adminsql.RunParams(r.Context(), s.DatabaseURL, r.PathValue("id"), `SELECT name, left(checksum,8) AS checksum, applied_at FROM public.pibase_migrations ORDER BY applied_at`)
+	id := r.PathValue("id")
+	if !s.checkOwner(w, r, id) {
+		return
+	}
+	x, err := adminsql.RunParams(r.Context(), s.DatabaseURL, id, `SELECT name, left(checksum,8) AS checksum, applied_at FROM public.pibase_migrations ORDER BY applied_at`)
 	if err != nil {
 		writeJSON(w, 200, []any{})
 		return
@@ -395,6 +629,12 @@ func (s *Server) migrations(w http.ResponseWriter, r *http.Request) {
 }
 
 func (s *Server) extension(w http.ResponseWriter, r *http.Request) {
+	// Extensions modify the shared cluster; operator only.
+	ident, ok := getIdentity(r.Context())
+	if !ok || ident.kind != opKind {
+		http.Error(w, "operator token required for extension management", http.StatusForbidden)
+		return
+	}
 	var err error
 	switch r.PathValue("extension") {
 	case "postgis":
@@ -411,24 +651,32 @@ func (s *Server) extension(w http.ResponseWriter, r *http.Request) {
 	}
 	w.WriteHeader(204)
 }
+
 func (s *Server) backup(w http.ResponseWriter, r *http.Request) {
+	id := r.PathValue("id")
+	if !s.checkOwner(w, r, id) {
+		return
+	}
 	var k [32]byte
 	copy(k[:], s.BackupKey)
-	// The backup package takes a destination directory and names the file.
-	file, err := backup.BackupTo(r.Context(), s.AdminURL, r.PathValue("id"), s.StorageRoot, s.BackupRoot, k)
+	file, err := backup.BackupTo(r.Context(), s.AdminURL, id, s.StorageRoot, s.BackupRoot, k)
 	if err != nil {
 		fail(w, err)
 		return
 	}
 	writeJSON(w, 201, map[string]string{"file": filepath.Base(file)})
 }
+
 func (s *Server) backups(w http.ResponseWriter, r *http.Request) {
+	id := r.PathValue("id")
+	if !s.checkOwner(w, r, id) {
+		return
+	}
 	entries, err := os.ReadDir(s.BackupRoot)
 	if err != nil && !os.IsNotExist(err) {
 		fail(w, err)
 		return
 	}
-	id := r.PathValue("id")
 	out := make([]map[string]any, 0)
 	for _, e := range entries {
 		name := e.Name()
@@ -445,13 +693,78 @@ func (s *Server) backups(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, 200, out)
 }
 
-const page = `<!doctype html><html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><title>pibase operator</title><link rel="icon" href="data:,"><style>
-:root{--ink:#333;--muted:#777;--line:#e8e8e8;--tint:#f3f6f8;font:14px system-ui,sans-serif;color:var(--ink);background:#fff}*{box-sizing:border-box}body{margin:0}button,a,.menu{font:inherit;color:inherit;-webkit-tap-highlight-color:transparent;user-select:none}button{background:#fff;border:1px solid var(--line);padding:9px 12px;cursor:pointer}button:focus{outline:none}button:focus-visible,a:focus-visible,.menu:focus-visible{outline:none;background:var(--tint);text-decoration:underline}input,textarea{font:inherit;color:var(--ink);border:1px solid var(--line);padding:9px;width:100%}textarea{min-height:150px}.side{position:fixed;inset:0 auto 0 0;width:210px;border-right:1px solid var(--line);padding:32px 20px;background:#fff;z-index:1}.brand{font-size:18px;margin-bottom:34px}.menu{display:block;border:0;background:transparent;padding:9px 0;text-align:left;width:100%;cursor:pointer}.menu.secondary{color:var(--muted);padding-left:12px}.muted{color:var(--muted)}.app{margin-left:210px}.token{border-bottom:1px solid var(--line);padding:24px;display:flex;gap:12px;align-items:center}.token input{max-width:360px}.chain{display:flex;min-height:calc(100vh - 73px);overflow-x:auto}.pane{flex:0 0 390px;min-width:0;border-right:1px solid var(--line);padding:32px 24px;min-height:100%}.pane.wide{flex-basis:760px}.pane p{overflow-wrap:anywhere}.actions{display:flex;flex-wrap:wrap;gap:8px;margin:0 0 28px}button:disabled{color:#bbb;cursor:default}.pane h1{font-size:18px;font-weight:600;margin:0 0 28px}.group{margin:0 0 28px}.group>*+*{margin-top:10px}.item{display:block;width:100%;text-align:left;border-width:0 0 1px;padding:13px 0}.item span{display:block;color:var(--muted);font-size:12px;margin-top:4px}.row{display:flex;gap:10px;align-items:center}.row>*{min-width:0}.row>*+*{margin-top:0}.row input{flex:1}.danger{color:#8b3333}.data{overflow:auto;border-top:1px solid var(--line);border-bottom:1px solid var(--line)}table{border-collapse:collapse;width:100%;font-size:12px}th,td{text-align:left;vertical-align:top;border-bottom:1px solid var(--line);padding:9px;white-space:nowrap}th{font-weight:600}pre{white-space:pre-wrap;overflow:auto;background:#fafafa;padding:12px}.hidden{display:none}@media(max-width:600px){.side{width:120px;padding:24px 12px}.app{margin-left:120px}.pane,.pane.wide{flex-basis:calc(100vw - 120px);padding:28px 18px}.token{padding:18px;display:block}.token button{margin-top:10px}.token #status{display:block;margin-top:10px}}
-</style></head><body><aside class="side"><div class="brand">pibase</div><button class="menu" data-menu="projects">Projects</button><div id="projectMenus" class="hidden"><button class="menu secondary" data-menu="tables">Tables</button><button class="menu secondary" data-menu="users">Users</button><button class="menu secondary" data-menu="sql">SQL</button><button class="menu secondary" data-menu="migrations">Migrations</button><button class="menu secondary" data-menu="backups">Backups</button><button class="menu secondary" data-menu="extensions">Extensions</button></div></aside><main class="app"><div class="token"><input id="token" type="password" placeholder="Operator token" autocomplete="off"><button id="load">Load projects</button><span id="status" class="muted"></span></div><div id="chain" class="chain"></div></main><script>
-const q=id=>document.getElementById(id), chain=q('chain');let projects=[],selected=null;
-const auth=()=>({Authorization:'Bearer '+q('token').value,'Content-Type':'application/json'}), projectPath=()=> '/_pibase/projects/'+encodeURIComponent(selected.id);
-function el(tag,text){const e=document.createElement(tag);if(text!==undefined)e.textContent=text;return e}function button(text,fn,cls){const b=el('button',text);if(cls)b.className=cls;b.onclick=fn;return b}function pane(title){const p=el('section');p.className='pane';p.append(el('h1',title));return p}function clearFrom(n){while(chain.children.length>n)chain.lastChild.remove()}function add(p){chain.append(p);alignChain()}function alignChain(){chain.style.paddingRight='0px';const max=chain.scrollWidth-chain.clientWidth;let x=max;for(const c of chain.children){const left=c.offsetLeft-chain.offsetLeft;if(left>=max){x=left;break}}if(x>max)chain.style.paddingRight=(x-max)+'px';chain.scrollLeft=x}function cell(v){if(v===null)return 'NULL';return typeof v==='object'?JSON.stringify(v):String(v)}function dataTable(columns,rows){const d=el('div');d.className='data';const table=el('table'),head=el('tr');for(const c of columns)head.append(el('th',c));table.append(head);for(const row of rows){const tr=el('tr');for(const c of columns){const td=el('td',cell(row[c]));if(row[c]===null)td.className='muted';tr.append(td)}table.append(tr)}d.append(table);return d}function say(v){q('status').textContent=v}
-async function api(path,opt={}){opt.headers=auth();const r=await fetch(path,opt),t=await r.text();if(!r.ok)throw Error(t||r.status);return t?JSON.parse(t):null}function body(v,method='POST'){return{method,body:JSON.stringify(v)}}
+func (s *Server) dashboard(w http.ResponseWriter, _ *http.Request) {
+	w.Header().Set("Content-Type", "text/html; charset=utf-8")
+	_, _ = w.Write([]byte(page))
+}
+
+// --- Helpers ---
+
+func jsonBody(w http.ResponseWriter, r *http.Request, v any) bool {
+	if err := json.NewDecoder(http.MaxBytesReader(w, r.Body, 2<<20)).Decode(v); err != nil {
+		http.Error(w, "invalid JSON", 400)
+		return false
+	}
+	return true
+}
+func writeJSON(w http.ResponseWriter, status int, v any) {
+	w.Header().Set("Content-Type", "application/json")
+	w.WriteHeader(status)
+	_ = json.NewEncoder(w).Encode(v)
+}
+func fail(w http.ResponseWriter, err error) { http.Error(w, err.Error(), http.StatusBadRequest) }
+
+func clientIP(r *http.Request) string {
+	if fwd := r.Header.Get("X-Forwarded-For"); fwd != "" {
+		return strings.SplitN(fwd, ",", 2)[0]
+	}
+	host := r.RemoteAddr
+	if i := strings.LastIndex(host, ":"); i >= 0 {
+		host = host[:i]
+	}
+	return host
+}
+
+// rateLimiter is a simple in-memory sliding-window rate limiter.
+type rateLimiter struct {
+	mu      sync.Mutex
+	buckets map[string][]time.Time
+}
+
+func newRateLimiter() *rateLimiter {
+	return &rateLimiter{buckets: make(map[string][]time.Time)}
+}
+
+// Allow returns true if the key has made fewer than maxN requests in window.
+func (r *rateLimiter) Allow(key string, maxN int, window time.Duration) bool {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	now := time.Now()
+	cutoff := now.Add(-window)
+	prev := r.buckets[key]
+	valid := prev[:0]
+	for _, t := range prev {
+		if t.After(cutoff) {
+			valid = append(valid, t)
+		}
+	}
+	valid = append(valid, now)
+	r.buckets[key] = valid
+	return len(valid) <= maxN
+}
+
+const page = `<!doctype html><html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><title>pibase</title><link rel="icon" href="data:,"><style>
+:root{--ink:#333;--muted:#777;--line:#e8e8e8;--tint:#f3f6f8;font:14px system-ui,sans-serif;color:var(--ink);background:#fff}*{box-sizing:border-box}body{margin:0}button,a,.menu{font:inherit;color:inherit;-webkit-tap-highlight-color:transparent;user-select:none}button{background:#fff;border:1px solid var(--line);padding:9px 12px;cursor:pointer}button:focus{outline:none}button:focus-visible,a:focus-visible,.menu:focus-visible{outline:none;background:var(--tint);text-decoration:underline}input,textarea{font:inherit;color:var(--ink);border:1px solid var(--line);padding:9px;width:100%}textarea{min-height:150px}.side{position:fixed;inset:0 auto 0 0;width:210px;border-right:1px solid var(--line);padding:32px 20px;background:#fff;z-index:1}.brand{font-size:18px;margin-bottom:34px}.menu{display:block;border:0;background:transparent;padding:9px 0;text-align:left;width:100%;cursor:pointer}.menu.secondary{color:var(--muted);padding-left:12px}.muted{color:var(--muted)}.app{margin-left:210px}.topbar{border-bottom:1px solid var(--line);padding:14px 24px;display:flex;gap:12px;align-items:center;min-height:52px}.topbar input{max-width:360px}.chain{display:flex;min-height:calc(100vh - 52px);overflow-x:auto}.pane{flex:0 0 390px;min-width:0;border-right:1px solid var(--line);padding:32px 24px;min-height:100%}.pane.wide{flex-basis:760px}.pane p{overflow-wrap:anywhere}.actions{display:flex;flex-wrap:wrap;gap:8px;margin:0 0 28px}button:disabled{color:#bbb;cursor:default}.pane h1{font-size:18px;font-weight:600;margin:0 0 28px}.group{margin:0 0 28px}.group>*+*{margin-top:10px}.item{display:block;width:100%;text-align:left;border-width:0 0 1px;padding:13px 0}.item span{display:block;color:var(--muted);font-size:12px;margin-top:4px}.row{display:flex;gap:10px;align-items:center}.row>*{min-width:0}.row>*+*{margin-top:0}.row input{flex:1}.danger{color:#8b3333}.data{overflow:auto;border-top:1px solid var(--line);border-bottom:1px solid var(--line)}table{border-collapse:collapse;width:100%;font-size:12px}th,td{text-align:left;vertical-align:top;border-bottom:1px solid var(--line);padding:9px;white-space:nowrap}th{font-weight:600}pre{white-space:pre-wrap;overflow:auto;background:#fafafa;padding:12px}.hidden{display:none}@media(max-width:600px){.side{width:120px;padding:24px 12px}.app{margin-left:120px}.pane,.pane.wide{flex-basis:calc(100vw - 120px);padding:28px 18px}.topbar{padding:12px 18px;display:block}.topbar button{margin-top:10px}}
+</style></head><body><aside class="side"><div class="brand">pibase</div><button class="menu" data-menu="projects">Projects</button><div id="projectMenus" class="hidden"><button class="menu secondary" data-menu="tables">Tables</button><button class="menu secondary" data-menu="users">Users</button><button class="menu secondary" data-menu="sql">SQL</button><button class="menu secondary" data-menu="migrations">Migrations</button><button class="menu secondary" data-menu="backups">Backups</button><button class="menu secondary" data-menu="extensions">Extensions</button></div></aside><main class="app"><div class="topbar" id="topbar"></div><div id="chain" class="chain"></div></main><script>
+const q=id=>document.getElementById(id), chain=q('chain');let projects=[],selected=null,account=null;
+function el(tag,text){const e=document.createElement(tag);if(text!==undefined)e.textContent=text;return e}function button(text,fn,cls){const b=el('button',text);if(cls)b.className=cls;b.onclick=fn;return b}function pane(title){const p=el('section');p.className='pane';p.append(el('h1',title));return p}function clearFrom(n){while(chain.children.length>n)chain.lastChild.remove()}function add(p){chain.append(p);alignChain()}function alignChain(){chain.style.paddingRight='0px';const max=chain.scrollWidth-chain.clientWidth;let x=max;for(const c of chain.children){const left=c.offsetLeft-chain.offsetLeft;if(left>=max){x=left;break}}if(x>max)chain.style.paddingRight=(x-max)+'px';chain.scrollLeft=x}function cell(v){if(v===null)return 'NULL';return typeof v==='object'?JSON.stringify(v):String(v)}function dataTable(columns,rows){const d=el('div');d.className='data';const table=el('table'),head=el('tr');for(const c of columns)head.append(el('th',c));table.append(head);for(const row of rows){const tr=el('tr');for(const c of columns){const td=el('td',cell(row[c]));if(row[c]===null)td.className='muted';tr.append(td)}table.append(tr)}d.append(table);return d}
+function apiHeaders(){return account?{'Content-Type':'application/json'}:{Authorization:'Bearer '+opToken(),'Content-Type':'application/json'}}function opToken(){const i=q('opToken');return i?i.value:''}
+async function api(path,opt={}){opt.headers=apiHeaders();const r=await fetch(path,opt),t=await r.text();if(!r.ok)throw Error(t||r.status);return t?JSON.parse(t):null}function body(v,method='POST'){return{method,body:JSON.stringify(v)}}
+function projectPath(){return '/_pibase/projects/'+encodeURIComponent(selected.id)}
+function renderTopbar(){const tb=q('topbar');tb.replaceChildren();if(account){const s=el('span',account.email);s.className='muted';tb.append(s,button('Log out',async()=>{await fetch('/_pibase/auth/logout',{method:'POST'});account=null;init()}))}else{const inp=el('input');inp.id='opToken';inp.type='password';inp.placeholder='Operator token';inp.autocomplete='off';const st=el('span');st.id='status';st.className='muted';tb.append(inp,button('Load',load),st)}}function say(m){const s=q('status');if(s)s.textContent=m}
+function showLogin(){const tb=q('topbar');tb.replaceChildren();const email=el('input');email.type='email';email.placeholder='Email';const pass=el('input');pass.type='password';pass.placeholder='Password';const msg=el('span');msg.className='muted';const doLogin=async()=>{try{const r=await fetch('/_pibase/auth/login',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({email:email.value,password:pass.value})});if(!r.ok){const t=await r.text();msg.textContent=t;return}account=await r.json();init()}catch(e){msg.textContent=e.message}};pass.addEventListener('keydown',e=>{if(e.key==='Enter')doLogin()});const signup=button('Create account',async()=>{try{const r=await fetch('/_pibase/auth/signup',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({email:email.value,password:pass.value})});if(!r.ok){const t=await r.text();msg.textContent=t;return}account=await r.json();init()}catch(e){msg.textContent=e.message}});tb.append(email,pass,button('Sign in',doLogin),signup,msg)}
+async function load(){try{projects=await api('/_pibase/projects');selected=null;q('projectMenus').classList.add('hidden');clearFrom(0);add(projectsPane());renderProjects();say(projects.length+' projects')}catch(e){say(e.message)}}
+async function init(){renderTopbar();try{const me=await fetch('/_pibase/auth/me');if(me.ok){account=await me.json();renderTopbar();load();return}}catch(_){}if(account){load();return}showLogin()}
 function projectsPane(){const p=pane('Projects');const create=el('div');create.className='group';create.append(el('div','Create project'));const input=el('input');input.placeholder='Project name';create.append(input,button('Create',async()=>{try{const x=await api('/_pibase/projects',body({name:input.value}));projects.push(x);renderProjects();clearFrom(1);const kp=pane(x.name);kp.append(el('p','Shown once; copy them now.'),el('p','project id: '+x.id));const ak=el('p');ak.textContent='anon key: '+x.anon_key;const sk=el('p');sk.textContent='service key: '+x.service_key;kp.append(ak,sk);add(kp)}catch(e){say(e.message)}}));p.append(create);const list=el('div');list.id='projectList';p.append(list);return p}
 function renderProjects(){const list=q('projectList');if(!list)return;list.replaceChildren();for(const x of projects){const b=button(x.name,()=>openProject(x),'item');b.append(el('span',x.id));list.append(b)}}
 function openProject(x){selected=x;q('projectMenus').classList.remove('hidden');clearFrom(1);const p=pane(x.name);p.append(el('p',x.id));const acts=el('div');acts.className='actions';acts.append(button('Tables',openTables),button('Users',openUsers),button('SQL',openSQL),button('Migrations',()=>openMigrations()),button('Backups',()=>openBackups()),button('Extensions',openExtensions));p.append(acts);const danger=el('div');danger.className='group danger';danger.append(el('div','Delete project — type its id to confirm'));const i=el('input');danger.append(i,button('Delete project',async()=>{try{await api(projectPath(),body({confirm:i.value},'DELETE'));selected=null;q('projectMenus').classList.add('hidden');await load();}catch(e){say(e.message)}}));p.append(danger);add(p)}
@@ -460,5 +773,5 @@ function openTable(t){clearFrom(3);const p=pane(t.name);p.append(el('p',t.count+
 async function openRows(t,offset=0){clearFrom(4);const p=pane(t.name+' rows');p.classList.add('wide');p.append(el('p','Loading…'));add(p);try{const data=await api(projectPath()+'/tables/'+encodeURIComponent(t.name)+'/rows?offset='+offset);p.replaceChildren(el('h1',t.name+' rows'));p.append(dataTable(data.columns,data.rows));const nav=el('div');nav.className='row group';const prev=button('Previous',()=>openRows(t,Math.max(0,offset-50)));if(offset===0)prev.disabled=true;const next=button('Next',()=>openRows(t,offset+50));if(!data.has_more)next.disabled=true;nav.append(prev,next,el('span','Rows '+(offset+1)+'–'+(offset+data.rows.length)));p.append(nav)}catch(e){p.append(el('p',e.message))}}
 async function openUsers(){clearFrom(2);const p=pane('Users');p.append(el('p','Loading…'));add(p);try{const users=await api(projectPath()+'/users');p.replaceChildren(el('h1','Users'));const email=el('input');email.placeholder='Email';const pass=el('input');pass.type='password';pass.placeholder='Password (8+ characters)';const cg=el('div');cg.className='group';p.append(cg);cg.append(el('div','Create user'),email,pass,button('Create user',async()=>{try{await api(projectPath()+'/users',body({email:email.value,password:pass.value,email_confirm:true}));openUsers()}catch(e){say(e.message)}}));for(const u of users){const g=el('div');g.className='group';g.append(el('div',u.email),el('div',u.id));const c=el('input');c.placeholder='Type id to confirm';g.append(c,button('Delete user',async()=>{try{await api(projectPath()+'/users/'+encodeURIComponent(u.id),body({confirm:c.value},'DELETE'));openUsers()}catch(e){say(e.message)}},'danger'));p.append(g)}}catch(e){p.append(el('p',e.message))}}
 function simple(title,content,wide){clearFrom(2);const p=pane(title);if(wide)p.classList.add('wide');p.append(content);add(p)}function openSQL(){const a=el('textarea');const out=el('div');const box=el('div');box.append(a,button('Run SQL',async()=>{try{const r=await api(projectPath()+'/sql',body({sql:a.value}));const n=(r.rows||[]).length;out.replaceChildren(el('p',r.command||(n+' rows')));if(r.columns&&r.columns.length)out.append(dataTable(r.columns,r.rows||[]))}catch(e){const m=el('pre',e.message);out.replaceChildren(m)}}),out);box.className='group';simple('SQL',box,true)}async function openMigrations(note){clearFrom(2);const p=pane('Migrations');const nameIn=el('input');nameIn.placeholder='Migration name';const sqlIn=el('textarea');sqlIn.placeholder='SQL';const status=el('p',note||'');status.className='muted';const g=el('div');g.className='group';g.append(el('div','Apply migration'),nameIn,sqlIn,button('Apply',async()=>{try{await api(projectPath()+'/migrations',body({name:nameIn.value,sql:sqlIn.value}));openMigrations('Applied: '+nameIn.value)}catch(e){status.textContent=e.message}}),status);p.append(g);p.append(el('h1','Applied'));try{const ms=await api(projectPath()+'/migrations');for(const m of ms){const d=el('div');d.className='item';d.textContent=m.name;d.append(el('span',m.checksum+' · '+new Date(m.applied_at).toLocaleString()));p.append(d)}if(!ms.length)p.append(el('p','No migrations applied.'))}catch(e){p.append(el('p',e.message))}add(p)}async function openBackups(note){clearFrom(2);const p=pane('Backups');const status=el('p',note||'');status.className='muted';p.append(button('Back up now',async()=>{try{const r=await api(projectPath()+'/backup',{method:'POST'});openBackups('Created: '+r.file)}catch(e){status.textContent=e.message}}),status);try{const bs=await api(projectPath()+'/backups');for(const b of bs){const d=el('div');d.className='item';d.textContent=b.name;d.append(el('span',Math.round(b.size/1024)+' KB'));p.append(d)}if(!bs.length)p.append(el('p','No backups yet.'))}catch(e){p.append(el('p',e.message))}add(p)}function openExtensions(){const x=el('div');x.append(button('Enable PostGIS',()=>api(projectPath()+'/extensions/postgis',{method:'POST'}).then(()=>say('PostGIS enabled')).catch(e=>say(e.message))),button('Enable pgvector',()=>api(projectPath()+'/extensions/pgvector',{method:'POST'}).then(()=>say('pgvector enabled')).catch(e=>say(e.message))));simple('Extensions',x)}
-async function load(){try{projects=await api('/_pibase/projects');selected=null;q('projectMenus').classList.add('hidden');clearFrom(0);add(projectsPane());renderProjects();say(projects.length+' projects loaded')}catch(e){say(e.message)}}q('load').onclick=load;document.querySelectorAll('[data-menu]').forEach(b=>b.onclick=()=>{if(b.dataset.menu==='projects')load();else if(selected)({tables:openTables,users:openUsers,sql:openSQL,migrations:()=>openMigrations(),backups:()=>openBackups(),extensions:openExtensions}[b.dataset.menu])()});add(projectsPane());
+document.querySelectorAll('[data-menu]').forEach(b=>b.onclick=()=>{if(b.dataset.menu==='projects')load();else if(selected)({tables:openTables,users:openUsers,sql:openSQL,migrations:()=>openMigrations(),backups:()=>openBackups(),extensions:openExtensions}[b.dataset.menu])()});init();
 </script></body></html>`

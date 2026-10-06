@@ -49,7 +49,17 @@ type ProjectStat struct {
 }
 
 // ProjectStats returns bounded operator telemetry without keys or encrypted material.
+// ProjectStats returns operator telemetry for all projects.
 func ProjectStats(ctx context.Context, adminURL, storageRoot string) ([]ProjectStat, error) {
+	return projectStats(ctx, adminURL, storageRoot, "")
+}
+
+// ProjectStatsByOwner returns telemetry for projects owned by the given account.
+func ProjectStatsByOwner(ctx context.Context, adminURL, storageRoot, ownerID string) ([]ProjectStat, error) {
+	return projectStats(ctx, adminURL, storageRoot, ownerID)
+}
+
+func projectStats(ctx context.Context, adminURL, storageRoot, ownerID string) ([]ProjectStat, error) {
 	controlURL, err := withDatabase(adminURL, "_control")
 	if err != nil {
 		return nil, err
@@ -59,9 +69,15 @@ func ProjectStats(ctx context.Context, adminURL, storageRoot string) ([]ProjectS
 		return nil, err
 	}
 	defer conn.Close(ctx)
-	rows, err := conn.Query(ctx, `SELECT p.id,p.name,p.database_name,p.created_at,p.max_database_bytes,p.schema_error,
+	const base = `SELECT p.id,p.name,p.database_name,p.created_at,p.max_database_bytes,p.schema_error,
 pg_database_size(p.database_name),COALESCE((SELECT sum(requests) FROM control.project_usage u WHERE u.project_id=p.id AND u.day>=current_date-29),0)
-	FROM control.project_catalog p ORDER BY p.created_at,p.id`)
+	FROM control.project_catalog p`
+	var rows pgx.Rows
+	if ownerID != "" {
+		rows, err = conn.Query(ctx, base+` WHERE p.owner_id=$1 ORDER BY p.created_at,p.id`, ownerID)
+	} else {
+		rows, err = conn.Query(ctx, base+` ORDER BY p.created_at,p.id`)
+	}
 	if err != nil {
 		return nil, err
 	}

@@ -13,6 +13,20 @@ import (
 const schemaSQL = `
 CREATE SCHEMA IF NOT EXISTS control;
 REVOKE ALL ON SCHEMA control FROM PUBLIC;
+CREATE TABLE IF NOT EXISTS control.accounts (
+  id            uuid        PRIMARY KEY DEFAULT gen_random_uuid(),
+  email         text        NOT NULL UNIQUE CHECK (email = lower(trim(email))),
+  password_hash text        NOT NULL,
+  created_at    timestamptz NOT NULL DEFAULT now()
+);
+CREATE TABLE IF NOT EXISTS control.sessions (
+  token_hash  bytea       PRIMARY KEY,
+  account_id  uuid        NOT NULL REFERENCES control.accounts(id) ON DELETE CASCADE,
+  expires_at  timestamptz NOT NULL,
+  created_at  timestamptz NOT NULL DEFAULT now()
+);
+CREATE INDEX IF NOT EXISTS sessions_account_idx ON control.sessions(account_id);
+CREATE INDEX IF NOT EXISTS sessions_expires_idx ON control.sessions(expires_at);
 CREATE TABLE IF NOT EXISTS control.projects (
   id text PRIMARY KEY CHECK (id ~ '^[0-9a-f]{8}$'),
   name text NOT NULL,
@@ -32,6 +46,7 @@ CREATE TABLE IF NOT EXISTS control.projects (
 ALTER TABLE control.projects ADD COLUMN IF NOT EXISTS max_database_bytes bigint NOT NULL DEFAULT 1073741824;
 ALTER TABLE control.projects ADD COLUMN IF NOT EXISTS schema_version integer NOT NULL DEFAULT 0;
 ALTER TABLE control.projects ADD COLUMN IF NOT EXISTS schema_error text;
+ALTER TABLE control.projects ADD COLUMN IF NOT EXISTS owner_id uuid REFERENCES control.accounts(id);
 CREATE TABLE IF NOT EXISTS control.project_usage (
   project_id text NOT NULL REFERENCES control.projects(id) ON DELETE CASCADE,
   day date NOT NULL DEFAULT current_date,
@@ -45,7 +60,8 @@ DROP VIEW IF EXISTS control.project_catalog;
 CREATE VIEW control.project_catalog AS
   SELECT id, database_name, anon_role, authenticated_role, service_role,
          admin_role, jwt_secret_encrypted, anon_key_hash, service_key_hash,
-         max_database_bytes, name, created_at, schema_version, schema_error
+         max_database_bytes, name, created_at, schema_version, schema_error,
+         owner_id
   FROM control.projects;
 GRANT USAGE ON SCHEMA control TO authenticator;
 GRANT SELECT ON control.project_catalog TO authenticator;

@@ -23,7 +23,7 @@ func TestDashboardPageLoadsWithoutTokenAndHoldsNoSecrets(t *testing.T) {
 	for _, path := range []string{"/", "/dashboard"} {
 		w := httptest.NewRecorder()
 		s.Handler().ServeHTTP(w, httptest.NewRequest(http.MethodGet, path, nil))
-		if w.Code != http.StatusOK || !strings.Contains(w.Body.String(), "pibase operator") {
+		if w.Code != http.StatusOK || !strings.Contains(w.Body.String(), "pibase") {
 			t.Fatalf("%s: got %d", path, w.Code)
 		}
 		if strings.Contains(w.Body.String(), "operator-secret-token") || strings.Contains(w.Body.String(), "innerHTML") {
