@@ -6,13 +6,20 @@ You are Claude, working as planner/auditor, and for this one task also as the fi
 Three review rounds on the dashboard each ended in blockers because code was pushed without a green real-Postgres run. To stop the loop: cut M7b to what is needed now, fix the remaining blockers directly, test each fix before pushing, and label the result honestly.
 
 ## Ground rules (do not break)
-- Work on `pibase/m7`, starting from `origin/pibase/m7` (66d99a6 or newer). Run `git fetch` first. If Codex pushed anything newer, read it before editing. The owner must tell Codex not to push `pibase/m7` while you work.
+- Work on `pibase/m7`, starting from `origin/pibase/m7`. As of 2026-10-06 06:37 (America/New_York) its tip is **66d99a6** (`feat: add operator data dashboard`), nothing newer, and `pibase/review-m7` holds this file (f12c77e or later). Run `git fetch` first. If the tip is not 66d99a6, read every newer commit before editing and say so in the report. The owner must tell Codex not to push `pibase/m7` while you work.
+- Create a local branch from the tip (`git switch -c m7-fix origin/pibase/m7`), commit there, and push with `git push origin m7-fix:pibase/m7` (fast-forward only). Do not work on `main`; `main` is the older PocketBase product and is unrelated.
 - Push `pibase/m7` only. Never `main`. Never force-push. Fast-forward only.
 - No `sudo`. Never print `.env`, tokens, keys or hashes in output, logs or the report.
 - Nothing is pushed with a red test. Before every commit: `gofmt -l cmd internal` empty, `go vet ./...`, `go build ./...`, and the real-Postgres tests below.
 - Customer-visible text never names internals beyond "Postgres".
 - Commits end with the attribution lines given by your session's system reminder.
 - Everything you fix is "auditor-applied, not independently reviewed". Say so in the report. After you finish, the owner should have Codex (or a fresh session) review it.
+
+## State of play at handoff (verified by the auditor)
+- 66d99a6 builds, vets and is gofmt-clean; compose parses; the checkpoint findings C01 to C03 and C05 to C07 are fixed.
+- `go test ./internal/adminsql` passes. `go test ./internal/adminserver` **fails** in `TestOperatorDashboardEndpoints` at the users call (task 1). With task 1 patched locally the rest of that test passed.
+- Not run by the auditor: Docker gates, the Pi, a real browser.
+- Do not trust this list over the code: re-run the tests first and record the starting result in the report.
 
 ## Test environment
 - Real Postgres 16 is required. In the cloud sandbox: `pg_ctlcluster 16 main start`, then `su postgres -c "psql -c \"alter user postgres password 'pw'\""` and `export PIBASE_TEST_ADMIN_DATABASE_URL='postgres://postgres:pw@127.0.0.1:5432/postgres'`. Run `go test -p 1 -count=1 ./internal/adminsql ./internal/adminserver ./internal/control ./internal/gateway ./internal/backup`.
