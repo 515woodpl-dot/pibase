@@ -677,25 +677,19 @@ func DeleteProject(ctx context.Context, adminURL, id string) error {
 		}
 		return err
 	}
+	// Every step below is repeatable and the control row goes last, so a delete
+	// that fails part way (DROP DATABASE cannot run in a transaction) is finished
+	// by simply calling DeleteProject again.
 	root, err := pgx.Connect(ctx, adminURL)
 	if err != nil {
 		return err
 	}
 	defer root.Close(ctx)
-	if _, err := root.Exec(ctx, `DROP DATABASE `+pgx.Identifier{database}.Sanitize()+` WITH (FORCE)`); err != nil {
+	if _, err := root.Exec(ctx, `DROP DATABASE IF EXISTS `+pgx.Identifier{database}.Sanitize()+` WITH (FORCE)`); err != nil {
 		return err
 	}
-	controlDB, err = pgx.Connect(ctx, controlURL)
-	if err != nil {
-		return err
-	}
-	if _, err := controlDB.Exec(ctx, `DELETE FROM control.projects WHERE id=$1`, id); err != nil {
-		controlDB.Close(ctx)
-		return err
-	}
-	controlDB.Close(ctx)
 	for _, role := range roles {
-		if _, err := root.Exec(ctx, `DROP ROLE `+pgx.Identifier{role}.Sanitize()); err != nil {
+		if _, err := root.Exec(ctx, `DROP ROLE IF EXISTS `+pgx.Identifier{role}.Sanitize()); err != nil {
 			return err
 		}
 	}
@@ -706,5 +700,11 @@ func DeleteProject(ctx context.Context, adminURL, id string) error {
 	if err := os.RemoveAll(filepath.Join(storageRoot, id)); err != nil {
 		return fmt.Errorf("remove project storage: %w", err)
 	}
-	return nil
+	controlDB, err = pgx.Connect(ctx, controlURL)
+	if err != nil {
+		return err
+	}
+	defer controlDB.Close(ctx)
+	_, err = controlDB.Exec(ctx, `DELETE FROM control.projects WHERE id=$1`, id)
+	return err
 }

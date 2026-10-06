@@ -37,6 +37,9 @@ type Config struct {
 	PublicURL string
 	// MaxProjectsPerAccount caps projects an account session may own; 0 means 2.
 	MaxProjectsPerAccount int
+	// TrustedProxies are peers (besides loopback) whose X-Forwarded-For header
+	// is believed when working out the client address for rate limiting.
+	TrustedProxies []*net.IPNet
 }
 
 type Server struct {
@@ -44,6 +47,11 @@ type Server struct {
 	loginLimit    *rateLimiter
 	signupLimit   *rateLimiter
 	passwordLimit *rateLimiter
+	loginFailures *rateLimiter
+	// accountProjectsMu serialises account-owned project creation and account
+	// deletion so the per-account cap cannot be raced and a delete cannot
+	// leave behind a project created while it ran.
+	accountProjectsMu sync.Mutex
 }
 
 func New(c Config) (*Server, error) {
@@ -59,7 +67,7 @@ func New(c Config) (*Server, error) {
 	if c.MaxProjectsPerAccount <= 0 {
 		c.MaxProjectsPerAccount = 2
 	}
-	return &Server{Config: c, loginLimit: newRateLimiter(), signupLimit: newRateLimiter(), passwordLimit: newRateLimiter()}, nil
+	return &Server{Config: c, loginLimit: newRateLimiter(), signupLimit: newRateLimiter(), passwordLimit: newRateLimiter(), loginFailures: newRateLimiter()}, nil
 }
 
 // identityKind distinguishes operator-token auth from account-session auth.
@@ -215,7 +223,7 @@ func clearSessionCookie(w http.ResponseWriter) {
 // --- Auth endpoints ---
 
 func (s *Server) authSignup(w http.ResponseWriter, r *http.Request) {
-	ip := clientIP(r)
+	ip := s.clientIP(r)
 	if s.Env != "test" && !s.signupLimit.Allow(ip, 5, time.Minute) {
 		http.Error(w, "too many requests", http.StatusTooManyRequests)
 		return
@@ -246,7 +254,7 @@ func (s *Server) authSignup(w http.ResponseWriter, r *http.Request) {
 }
 
 func (s *Server) authLogin(w http.ResponseWriter, r *http.Request) {
-	ip := clientIP(r)
+	ip := s.clientIP(r)
 	if s.Env != "test" && !s.loginLimit.Allow(ip, 10, 10*time.Minute) {
 		http.Error(w, "too many requests", http.StatusTooManyRequests)
 		return
@@ -258,11 +266,20 @@ func (s *Server) authLogin(w http.ResponseWriter, r *http.Request) {
 	if !jsonBody(w, r, &b) {
 		return
 	}
+	// Per-email lockout catches guessing spread across many addresses. It is
+	// short so a stranger cannot keep someone else's account locked for long.
+	emailKey := strings.ToLower(strings.TrimSpace(b.Email))
+	if s.loginFailures.Count(emailKey, loginFailureWindow) >= maxLoginFailures {
+		http.Error(w, "too many failed sign-in attempts for this account; try again in 15 minutes", http.StatusTooManyRequests)
+		return
+	}
 	account, err := control.AuthenticateAccount(r.Context(), s.AdminURL, b.Email, b.Password)
 	if err != nil {
+		s.loginFailures.Allow(emailKey, maxLoginFailures, loginFailureWindow)
 		http.Error(w, "invalid credentials", http.StatusUnauthorized)
 		return
 	}
+	s.loginFailures.Reset(emailKey)
 	token, err := control.IssueSession(r.Context(), s.AdminURL, account.ID)
 	if err != nil {
 		fail(w, err)
@@ -351,7 +368,10 @@ func (s *Server) authDeleteAccount(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, "type your email address to confirm deletion", http.StatusBadRequest)
 		return
 	}
-	if err := control.DeleteAccount(r.Context(), s.AdminURL, account.ID); err != nil {
+	s.accountProjectsMu.Lock()
+	defer s.accountProjectsMu.Unlock()
+	// Finish the delete even if the client disconnects part way through.
+	if err := control.DeleteAccount(context.WithoutCancel(r.Context()), s.AdminURL, account.ID); err != nil {
 		fail(w, err)
 		return
 	}
@@ -625,6 +645,8 @@ func (s *Server) createProject(w http.ResponseWriter, r *http.Request) {
 	}
 	id, _ := getIdentity(r.Context())
 	if id.kind == accountKind {
+		s.accountProjectsMu.Lock()
+		defer s.accountProjectsMu.Unlock()
 		n, err := control.CountOwnedProjects(r.Context(), s.AdminURL, id.accountID)
 		if err != nil {
 			fail(w, err)
@@ -895,21 +917,78 @@ func fail(w http.ResponseWriter, err error) { http.Error(w, err.Error(), http.St
 // clientIP keys rate limits. X-Forwarded-For is honoured only from a loopback
 // peer (the local reverse proxy), and only its last entry, which that proxy
 // wrote; earlier entries are client-controlled.
-func clientIP(r *http.Request) string {
+func (s *Server) clientIP(r *http.Request) string {
 	host, _, err := net.SplitHostPort(r.RemoteAddr)
 	if err != nil {
 		host = r.RemoteAddr
 	}
-	if ip := net.ParseIP(host); ip != nil && ip.IsLoopback() {
-		if fwd := r.Header.Get("X-Forwarded-For"); fwd != "" {
-			parts := strings.Split(fwd, ",")
-			if last := strings.TrimSpace(parts[len(parts)-1]); last != "" {
-				return last
-			}
+	if !s.trustedPeer(net.ParseIP(host)) {
+		return host
+	}
+	// Walk the chain from the nearest hop; the first address that is not one of
+	// our own proxies is the client. Anything further left is client-supplied.
+	parts := strings.Split(r.Header.Get("X-Forwarded-For"), ",")
+	for i := len(parts) - 1; i >= 0; i-- {
+		ip := net.ParseIP(strings.TrimSpace(parts[i]))
+		if ip == nil {
+			break
+		}
+		host = ip.String()
+		if !s.trustedPeer(ip) {
+			break
 		}
 	}
 	return host
 }
+
+func (s *Server) trustedPeer(ip net.IP) bool {
+	if ip == nil {
+		return false
+	}
+	if ip.IsLoopback() {
+		return true
+	}
+	for _, n := range s.TrustedProxies {
+		if n.Contains(ip) {
+			return true
+		}
+	}
+	return false
+}
+
+// ParseTrustedProxies parses a comma-separated list of IPs and CIDRs.
+func ParseTrustedProxies(v string) ([]*net.IPNet, error) {
+	var out []*net.IPNet
+	for _, f := range strings.Split(v, ",") {
+		f = strings.TrimSpace(f)
+		if f == "" {
+			continue
+		}
+		if !strings.Contains(f, "/") {
+			ip := net.ParseIP(f)
+			if ip == nil {
+				return nil, fmt.Errorf("invalid trusted proxy %q", f)
+			}
+			bits := 128
+			if ip.To4() != nil {
+				ip, bits = ip.To4(), 32
+			}
+			out = append(out, &net.IPNet{IP: ip, Mask: net.CIDRMask(bits, bits)})
+			continue
+		}
+		_, n, err := net.ParseCIDR(f)
+		if err != nil {
+			return nil, fmt.Errorf("invalid trusted proxy %q", f)
+		}
+		out = append(out, n)
+	}
+	return out, nil
+}
+
+const (
+	maxLoginFailures   = 10
+	loginFailureWindow = 15 * time.Minute
+)
 
 // rateLimiter is a simple in-memory sliding-window rate limiter.
 type rateLimiter struct {
@@ -946,6 +1025,28 @@ func (r *rateLimiter) Allow(key string, maxN int, window time.Duration) bool {
 	valid = append(valid, now)
 	r.buckets[key] = valid
 	return len(valid) <= maxN
+}
+
+// Count returns how many events key has recorded within window, without
+// recording a new one.
+func (r *rateLimiter) Count(key string, window time.Duration) int {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	cutoff := time.Now().Add(-window)
+	n := 0
+	for _, t := range r.buckets[key] {
+		if t.After(cutoff) {
+			n++
+		}
+	}
+	return n
+}
+
+// Reset forgets every event recorded for key.
+func (r *rateLimiter) Reset(key string) {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	delete(r.buckets, key)
 }
 
 const page = `<!doctype html><html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><title>pibase</title><link rel="icon" href="data:,"><style>

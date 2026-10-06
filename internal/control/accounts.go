@@ -255,7 +255,8 @@ func CountOwnedProjects(ctx context.Context, adminURL, accountID string) (int, e
 }
 
 // DeleteAccount deletes all projects owned by accountID then deletes the account.
-// Sessions are removed via ON DELETE CASCADE on control.sessions.
+// Sessions are removed via ON DELETE CASCADE on control.sessions. The account
+// row goes last, so a delete that fails part way can simply be retried.
 func DeleteAccount(ctx context.Context, adminURL, accountID string) error {
 	conn, err := controlDBConn(ctx, adminURL)
 	if err != nil {

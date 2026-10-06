@@ -5,6 +5,7 @@ import (
 	"net/http/httptest"
 	"strings"
 	"testing"
+	"time"
 )
 
 func TestEveryAdminEndpointRejectsMissingToken(t *testing.T) {
@@ -78,15 +79,53 @@ func TestClientIPIgnoresSpoofedForwardedFor(t *testing.T) {
 		{"127.0.0.1:4000", "1.2.3.4, 198.51.100.7", "198.51.100.7"},
 		{"[::1]:4000", "198.51.100.8", "198.51.100.8"},
 		{"127.0.0.1:4000", "", "127.0.0.1"},
+		{"127.0.0.1:4000", "garbage", "127.0.0.1"},
+		// Docker-bridge proxy is trusted only once configured.
+		{"172.18.0.5:4000", "198.51.100.9", "198.51.100.9"},
+		{"172.18.0.5:4000", "6.6.6.6, 198.51.100.9, 172.18.0.7", "198.51.100.9"},
+		{"172.19.0.5:4000", "198.51.100.9", "172.19.0.5"},
 	}
+	trusted, err := ParseTrustedProxies("172.18.0.0/16, 10.0.0.1")
+	if err != nil {
+		t.Fatal(err)
+	}
+	s := &Server{Config: Config{TrustedProxies: trusted}}
 	for _, c := range cases {
 		r := httptest.NewRequest("GET", "/", nil)
 		r.RemoteAddr = c.remote
 		if c.xff != "" {
 			r.Header.Set("X-Forwarded-For", c.xff)
 		}
-		if got := clientIP(r); got != c.want {
+		if got := s.clientIP(r); got != c.want {
 			t.Errorf("clientIP(%q, %q) = %q, want %q", c.remote, c.xff, got, c.want)
 		}
+	}
+}
+
+func TestParseTrustedProxiesRejectsJunk(t *testing.T) {
+	for _, v := range []string{"nope", "10.0.0.0/99", "1.2.3"} {
+		if _, err := ParseTrustedProxies(v); err == nil {
+			t.Errorf("ParseTrustedProxies(%q) accepted", v)
+		}
+	}
+	if n, err := ParseTrustedProxies(""); err != nil || len(n) != 0 {
+		t.Errorf("empty list: %v %v", n, err)
+	}
+}
+
+func TestLoginFailureCounter(t *testing.T) {
+	l := newRateLimiter()
+	for i := 0; i < 3; i++ {
+		l.Allow("a@x.test", maxLoginFailures, time.Minute)
+	}
+	if n := l.Count("a@x.test", time.Minute); n != 3 {
+		t.Fatalf("count=%d", n)
+	}
+	if n := l.Count("a@x.test", time.Minute); n != 3 {
+		t.Fatalf("Count must not record: %d", n)
+	}
+	l.Reset("a@x.test")
+	if n := l.Count("a@x.test", time.Minute); n != 0 {
+		t.Fatalf("after reset count=%d", n)
 	}
 }

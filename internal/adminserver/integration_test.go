@@ -12,6 +12,7 @@ import (
 	"os"
 	"path/filepath"
 	"strings"
+	"sync"
 	"testing"
 	"time"
 
@@ -1667,6 +1668,109 @@ func TestAccountHardening(t *testing.T) {
 		for _, e := range []string{"not-an-email", "@x.test", "a@", "a b@x.test"} {
 			b, _ := json.Marshal(map[string]string{"email": e, "password": "long-enough-pw"})
 			call("POST", "/_pibase/auth/signup", string(b), nil, 400)
+		}
+	})
+
+	t.Run("H4_parallel_creates_respect_cap", func(t *testing.T) {
+		b, _ := json.Marshal(map[string]string{"email": "race" + email, "password": "race-password"})
+		r, _ := call("POST", "/_pibase/auth/signup", string(b), nil, 201)
+		c := cookieOf(r)
+		codes := make(chan int, 4)
+		var wg sync.WaitGroup
+		for i := 0; i < 4; i++ {
+			wg.Add(1)
+			go func() {
+				defer wg.Done()
+				req, _ := http.NewRequest("POST", hs.URL+"/_pibase/projects", strings.NewReader(`{"name":"race"}`))
+				req.Header.Set("Content-Type", "application/json")
+				req.AddCookie(c)
+				resp, err := hs.Client().Do(req)
+				if err != nil {
+					codes <- 0
+					return
+				}
+				resp.Body.Close()
+				codes <- resp.StatusCode
+			}()
+		}
+		wg.Wait()
+		close(codes)
+		created := 0
+		for code := range codes {
+			switch code {
+			case 201:
+				created++
+			case 403:
+			default:
+				t.Errorf("unexpected status %d", code)
+			}
+		}
+		if created != 2 {
+			t.Fatalf("parallel creates made %d projects, want 2", created)
+		}
+		// Account deletion removes every owned project database and storage.
+		var a struct{ ID string }
+		_, me := call("GET", "/_pibase/auth/me", "", c, 200)
+		_ = json.Unmarshal(me, &a)
+		call("DELETE", "/_pibase/auth/account", fmt.Sprintf(`{"confirm":%q}`, "race"+email), c, 204)
+		n, err := control.CountOwnedProjects(ctx, adminURL, a.ID)
+		if err != nil || n != 0 {
+			t.Fatalf("after account delete: %d projects left (err %v)", n, err)
+		}
+	})
+
+	t.Run("H5_email_lockout_after_failures", func(t *testing.T) {
+		victim := "lock" + email
+		b, _ := json.Marshal(map[string]string{"email": victim, "password": "right-password"})
+		r, _ := call("POST", "/_pibase/auth/signup", string(b), nil, 201)
+		vc := cookieOf(r)
+		defer call("DELETE", "/_pibase/auth/account", fmt.Sprintf(`{"confirm":%q}`, victim), vc, 204)
+		bad, _ := json.Marshal(map[string]string{"email": strings.ToUpper(victim), "password": "wrong-password"})
+		for i := 0; i < maxLoginFailures; i++ {
+			call("POST", "/_pibase/auth/login", string(bad), nil, 401)
+		}
+		call("POST", "/_pibase/auth/login", string(b), nil, 429)
+		s.loginFailures.Reset(victim)
+		call("POST", "/_pibase/auth/login", string(b), nil, 200)
+		// A successful login clears earlier failures.
+		call("POST", "/_pibase/auth/login", string(bad), nil, 401)
+		if n := s.loginFailures.Count(victim, loginFailureWindow); n != 1 {
+			t.Fatalf("failures after success+1 bad = %d, want 1", n)
+		}
+	})
+
+	t.Run("H6_project_delete_is_retryable", func(t *testing.T) {
+		p, err := control.CreateProject(ctx, adminURL, "retry", s.MasterKey)
+		if err != nil {
+			t.Fatal(err)
+		}
+		cu, _ := url.Parse(adminURL)
+		cu.Path = "/_control"
+		cdb, err := pgx.Connect(ctx, cu.String())
+		if err != nil {
+			t.Fatal(err)
+		}
+		defer cdb.Close(ctx)
+		var dbName string
+		if err := cdb.QueryRow(ctx, `SELECT database_name FROM control.projects WHERE id=$1`, p.ID).Scan(&dbName); err != nil {
+			t.Fatal(err)
+		}
+		root, err := pgx.Connect(ctx, adminURL)
+		if err != nil {
+			t.Fatal(err)
+		}
+		defer root.Close(ctx)
+		// Simulate a delete that dropped the database and then failed.
+		if _, err := root.Exec(ctx, `DROP DATABASE `+pgx.Identifier{dbName}.Sanitize()+` WITH (FORCE)`); err != nil {
+			t.Fatal(err)
+		}
+		if err := control.DeleteProject(ctx, adminURL, p.ID); err != nil {
+			t.Fatalf("retry after partial delete: %v", err)
+		}
+		var left int
+		_ = cdb.QueryRow(ctx, `SELECT count(*) FROM control.projects WHERE id=$1`, p.ID).Scan(&left)
+		if left != 0 {
+			t.Fatal("project row survived retried delete")
 		}
 	})
 }

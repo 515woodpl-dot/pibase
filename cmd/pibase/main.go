@@ -274,7 +274,11 @@ func adminServe() error {
 	if err != nil || maxProjects < 1 {
 		return fmt.Errorf("PIBASE_MAX_PROJECTS_PER_ACCOUNT must be a positive integer")
 	}
-	s, err := adminserver.New(adminserver.Config{AdminURL: adminURL, DatabaseURL: databaseURL, StorageRoot: os.Getenv("PIBASE_STORAGE_ROOT"), BackupRoot: os.Getenv("PIBASE_BACKUP_ROOT"), Token: token, MasterKey: master, BackupKey: backupKey, PublicURL: os.Getenv("PIBASE_PUBLIC_URL"), MaxProjectsPerAccount: maxProjects})
+	trusted, err := adminserver.ParseTrustedProxies(os.Getenv("PIBASE_TRUSTED_PROXIES"))
+	if err != nil {
+		return err
+	}
+	s, err := adminserver.New(adminserver.Config{AdminURL: adminURL, DatabaseURL: databaseURL, StorageRoot: os.Getenv("PIBASE_STORAGE_ROOT"), BackupRoot: os.Getenv("PIBASE_BACKUP_ROOT"), Token: token, MasterKey: master, BackupKey: backupKey, PublicURL: os.Getenv("PIBASE_PUBLIC_URL"), MaxProjectsPerAccount: maxProjects, TrustedProxies: trusted})
 	if err != nil {
 		return err
 	}
