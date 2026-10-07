@@ -40,6 +40,9 @@ type Server struct {
 	schedulerStop      context.CancelFunc
 	schedulerWG        sync.WaitGroup
 	smtp               smtpConfig
+	activity           *activityRecorder
+	activityStop       context.CancelFunc
+	activityWG         sync.WaitGroup
 }
 
 func New(ctx context.Context, databaseURL string, masterKey []byte, activeProjects int, lightLoad bool) (*Server, error) {
@@ -105,11 +108,16 @@ func New(ctx context.Context, databaseURL string, masterKey []byte, activeProjec
 		storageQuotaBytes: storageQuotaBytes,
 		startedAt:         time.Now(),
 		smtp:              smtpFromEnv(),
+		activity:          newActivityRecorder(),
 	}
 	if s.realtime, err = newRealtimeHub(s); err != nil {
 		s.Close()
 		return nil, err
 	}
+	activityCtx, stopActivity := context.WithCancel(context.Background())
+	s.activityStop = stopActivity
+	s.activityWG.Add(1)
+	go func() { defer s.activityWG.Done(); s.runActivityFlusher(activityCtx) }()
 	if os.Getenv("PIBASE_SCHEDULER_DISABLED") != "true" {
 		workerCtx, stop := context.WithCancel(context.Background())
 		s.schedulerStop = stop
@@ -241,7 +249,7 @@ func (s *Server) Handler() http.Handler {
 		_, _ = w.Write([]byte(`{"status":"ok"}`))
 	})
 	limited := http.MaxBytesHandler(mux, 1<<20)
-	return cors(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+	return cors(s.observeActivity(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		s.requestCount.Add(1)
 		// Storage uploads stream directly to disk and enforce their own 1 GiB
 		// object limit; all other API requests retain the 1 MiB body cap.
@@ -250,7 +258,7 @@ func (s *Server) Handler() http.Handler {
 			return
 		}
 		limited.ServeHTTP(w, r)
-	}))
+	})))
 }
 
 func cors(next http.Handler) http.Handler {
@@ -274,6 +282,16 @@ func (s *Server) Close() {
 	}
 	if s.realtime != nil {
 		s.realtime.Close()
+	}
+	if s.activityStop != nil {
+		s.activityStop()
+		s.activityWG.Wait()
+		// Keep the last few seconds of activity across restarts.
+		ctx, cancel := context.WithTimeout(context.Background(), 3*time.Second)
+		if err := s.flushActivity(ctx); err != nil {
+			slog.Warn("final request activity flush", "error", err)
+		}
+		cancel()
 	}
 	for _, pool := range s.projects {
 		pool.Close()

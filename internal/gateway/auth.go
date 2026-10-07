@@ -102,6 +102,7 @@ FROM control.project_catalog WHERE anon_key_hash=$1 OR service_key_hash=$1`, has
 	if err != nil {
 		return project{}, nil, nil, fmt.Errorf("decrypt project secret: %w", err)
 	}
+	noteActivityProject(ctx, p.id)
 	return p, anonHash, serviceHash, nil
 }
 

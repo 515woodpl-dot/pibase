@@ -47,6 +47,21 @@ ALTER TABLE control.projects ADD COLUMN IF NOT EXISTS max_database_bytes bigint 
 ALTER TABLE control.projects ADD COLUMN IF NOT EXISTS schema_version integer NOT NULL DEFAULT 0;
 ALTER TABLE control.projects ADD COLUMN IF NOT EXISTS schema_error text;
 ALTER TABLE control.projects ADD COLUMN IF NOT EXISTS owner_id uuid REFERENCES control.accounts(id);
+-- Encrypted copies of the current API keys so the dashboard can show them
+-- again. NULL for keys issued before this column existed; rotating fills it.
+ALTER TABLE control.projects ADD COLUMN IF NOT EXISTS anon_key_encrypted bytea;
+ALTER TABLE control.projects ADD COLUMN IF NOT EXISTS service_key_encrypted bytea;
+-- Per-minute request counts by service and HTTP status class, written by the
+-- gateway in batches and pruned after 8 days.
+CREATE TABLE IF NOT EXISTS control.project_activity (
+  project_id text NOT NULL REFERENCES control.projects(id) ON DELETE CASCADE,
+  minute timestamptz NOT NULL,
+  service text NOT NULL CHECK (service IN ('database','auth','storage','realtime')),
+  status_class smallint NOT NULL CHECK (status_class BETWEEN 1 AND 5),
+  requests bigint NOT NULL CHECK (requests > 0),
+  PRIMARY KEY (project_id,minute,service,status_class)
+);
+CREATE INDEX IF NOT EXISTS project_activity_minute_idx ON control.project_activity(minute);
 CREATE TABLE IF NOT EXISTS control.project_usage (
   project_id text NOT NULL REFERENCES control.projects(id) ON DELETE CASCADE,
   day date NOT NULL DEFAULT current_date,
@@ -66,6 +81,7 @@ CREATE VIEW control.project_catalog AS
 GRANT USAGE ON SCHEMA control TO authenticator;
 GRANT SELECT ON control.project_catalog TO authenticator;
 GRANT SELECT,INSERT,UPDATE ON control.project_usage TO authenticator;
+GRANT SELECT,INSERT,UPDATE,DELETE ON control.project_activity TO authenticator;
 `
 
 const mfaUpgradeSQL = `
