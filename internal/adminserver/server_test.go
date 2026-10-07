@@ -63,6 +63,8 @@ func TestDashboardShowsKeysOnceAndWiresEveryEndpoint(t *testing.T) {
 		"'/_pibase/projects'",
 		"'/tables'", "'/tables/'+encodeURIComponent(t.name)+'/rows?offset='",
 		"'/users'", "'/sql'", "'/migrations'", "'/backup'", "'/backups'", "'/extensions/postgis'", "'/extensions/pgvector'",
+		"'/keys/rotate'", "'/usage'", "'/limits'", "'/_pibase/auth/password'",
+		"'/_pibase/auth/account'",
 	} {
 		if !strings.Contains(page, required) {
 			t.Errorf("dashboard page misses %q", required)
