@@ -1,0 +1,66 @@
+=== Memory measurement ===
+Date: 2026-10-04T18:57:41-04:00
+Machine: Linux gejg 6.18.34+rpt-rpi-v8 #1 SMP PREEMPT Debian 1:6.18.34-1+rpt1 (2026-06-09) aarch64 GNU/Linux
+Gateway image: pibase:m6d-rereview
+Postgres image: pibase-postgres:m6d-drill
+
+--- After 1 project (idle) ---
+
+Postgres whole-container PSS (all /proc processes, measured):
+  /proc/1: 12263 kB
+  /proc/105: 3526 kB
+  /proc/106: 6302 kB
+  /proc/112: 266 kB
+  /proc/84: 840 kB
+  /proc/85: 1028 kB
+  /proc/87: 2890 kB
+  /proc/88: 1505 kB
+  /proc/89: 1310 kB
+  total: 29930 kB
+
+Gateway whole-container PSS (all /proc processes, measured):
+  /proc/1: 11624 kB
+  /proc/15: 358 kB
+  total: 11982 kB
+
+--- After 20 projects (idle) ---
+
+Postgres whole-container PSS (all /proc processes, measured):
+  /proc/1: 11629 kB
+  /proc/226: 5478 kB
+  /proc/227: 3366 kB
+  /proc/268: 351 kB
+  /proc/274: 6033 kB
+  /proc/84: 1156 kB
+  /proc/85: 82141 kB
+  /proc/87: 2826 kB
+  /proc/88: 1514 kB
+  /proc/89: 1232 kB
+  total: 115726 kB
+
+Gateway whole-container PSS (all /proc processes, measured):
+  /proc/1: 13916 kB
+  /proc/17: 347 kB
+  total: 14263 kB
+
+Project database client backends after served REST reads (measured): 1
+--- After 20 projects (each served one request, measured) ---
+
+Postgres whole-container PSS (all /proc processes, measured):
+  /proc/1: 11512 kB
+  /proc/226: 4636 kB
+  /proc/227: 5828 kB
+  /proc/343: 357 kB
+  /proc/84: 1117 kB
+  /proc/85: 89743 kB
+  /proc/87: 2809 kB
+  /proc/88: 1515 kB
+  /proc/89: 1223 kB
+  total: 118740 kB
+
+Gateway whole-container PSS (all /proc processes, measured):
+  /proc/1: 15312 kB
+  /proc/25: 266 kB
+  total: 15578 kB
+
+=== Measurement complete ===

@@ -1,0 +1,115 @@
+name: pibase-m0
+
+services:
+  postgres:
+    build:
+      context: .
+      dockerfile: Dockerfile.postgres
+    image: pibase-postgres:16
+    environment:
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:?set POSTGRES_PASSWORD in .env}
+    command:
+      - postgres
+      - -c
+      - shared_buffers=128MB
+      - -c
+      - max_connections=40
+      - -c
+      - work_mem=4MB
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U postgres"]
+      interval: 2s
+      timeout: 3s
+      retries: 30
+    ports:
+      - "127.0.0.1:55432:5432"
+    volumes:
+      - postgres-data:/var/lib/postgresql/data
+
+  bootstrap:
+    build: .
+    command: ["bootstrap"]
+    environment:
+      PIBASE_ADMIN_DATABASE_URL: postgres://postgres:${POSTGRES_PASSWORD}@postgres:5432/postgres
+      PIBASE_AUTHENTICATOR_PASSWORD: ${PIBASE_AUTHENTICATOR_PASSWORD:?set PIBASE_AUTHENTICATOR_PASSWORD in .env}
+    depends_on:
+      postgres:
+        condition: service_healthy
+    restart: "no"
+
+  gateway:
+    user: "${PIBASE_UID:-65532}:${PIBASE_GID:-65532}"
+    build:
+      context: .
+      target: gateway
+    environment:
+      PIBASE_DATABASE_URL: postgres://authenticator:${PIBASE_AUTHENTICATOR_PASSWORD}@postgres:5432/_control
+      PIBASE_MASTER_KEY: ${PIBASE_MASTER_KEY:?set PIBASE_MASTER_KEY in .env}
+      PIBASE_LISTEN_ADDR: :8080
+      PIBASE_M0_ACTIVE_PROJECTS: ${PIBASE_M0_ACTIVE_PROJECTS:-0}
+      PIBASE_M0_LIGHT_LOAD: ${PIBASE_M0_LIGHT_LOAD:-false}
+      PIBASE_ENV: ${PIBASE_ENV:-production}
+      PIBASE_AUTH_EXPOSE_TOKENS: ${PIBASE_AUTH_EXPOSE_TOKENS:-false}
+      PIBASE_STORAGE_ROOT: /data/files
+    depends_on:
+      bootstrap:
+        condition: service_completed_successfully
+    ports:
+      - "127.0.0.1:18080:8080"
+    volumes:
+      - storage-data:/data/files
+      - backup-data:/data/backups
+
+  admin:
+    user: "${PIBASE_UID:-65532}:${PIBASE_GID:-65532}"
+    build:
+      context: .
+      target: ops
+    command: ["admin-serve"]
+    environment:
+      PIBASE_ADMIN_DATABASE_URL: postgres://postgres:${POSTGRES_PASSWORD}@postgres:5432/postgres
+      PIBASE_DATABASE_URL: postgres://authenticator:${PIBASE_AUTHENTICATOR_PASSWORD}@postgres:5432/_control
+      PIBASE_MASTER_KEY: ${PIBASE_MASTER_KEY:?set PIBASE_MASTER_KEY in .env}
+      PIBASE_BACKUP_KEY: ${PIBASE_BACKUP_KEY:?set PIBASE_BACKUP_KEY in .env}
+      PIBASE_OPERATOR_TOKEN: ${PIBASE_OPERATOR_TOKEN:?set PIBASE_OPERATOR_TOKEN in .env}
+      PIBASE_ADMIN_LISTEN_ADDR: 0.0.0.0:18081
+      PIBASE_ADMIN_ALLOW_NONLOCAL: "1"
+      PIBASE_STORAGE_ROOT: /data/files
+      PIBASE_BACKUP_ROOT: /data/backups
+      PIBASE_MAX_PROJECTS_PER_ACCOUNT: ${PIBASE_MAX_PROJECTS_PER_ACCOUNT:-2}
+      PIBASE_TRUSTED_PROXIES: ${PIBASE_TRUSTED_PROXIES:-}
+    depends_on:
+      bootstrap:
+        condition: service_completed_successfully
+    ports:
+      # Local only by default. To reach the dashboard over Tailscale, set
+      # PIBASE_ADMIN_BIND in .env to this machine's Tailscale IP (tailscale ip -4).
+      # Never set it to 0.0.0.0 on a machine reachable from the internet.
+      - "${PIBASE_ADMIN_BIND:-127.0.0.1}:18081:18081"
+    volumes:
+      - storage-data:/data/files
+      - backup-data:/data/backups
+
+  ops:
+    user: "${PIBASE_UID:-65532}:${PIBASE_GID:-65532}"
+    profiles: ["tools"]
+    build:
+      context: .
+      target: ops
+    environment:
+      PIBASE_ADMIN_DATABASE_URL: postgres://postgres:${POSTGRES_PASSWORD}@postgres:5432/postgres
+      PIBASE_DATABASE_URL: postgres://authenticator:${PIBASE_AUTHENTICATOR_PASSWORD}@postgres:5432/_control
+      PIBASE_MASTER_KEY: ${PIBASE_MASTER_KEY:?set PIBASE_MASTER_KEY in .env}
+      PIBASE_BACKUP_KEY: ${PIBASE_BACKUP_KEY:-}
+      PIBASE_STORAGE_ROOT: /data/files
+    depends_on:
+      postgres:
+        condition: service_healthy
+    volumes:
+      - storage-data:/data/files
+      - backup-data:/data/backups
+
+volumes:
+  postgres-data:
+  storage-data:
+  backup-data:

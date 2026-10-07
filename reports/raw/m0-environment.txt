@@ -1,0 +1,6 @@
+Linux gejg 6.18.34+rpt-rpi-v8 #1 SMP PREEMPT Debian 1:6.18.34-1+rpt1 (2026-06-09) aarch64 GNU/Linux
+               total        used        free      shared  buff/cache   available
+Mem:            3794        2327          51         102        1556        1467
+Swap:           2047        2046           1
+docker_client=26.1.5+dfsg1 docker_server=26.1.5+dfsg1
+Docker Compose version v5.5.1

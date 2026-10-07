@@ -1,1 +1,0 @@
-{ "tables": [ { "name": "gadgets", "fields": [ { "name": "label", "type": "text" } ], "access": "owner" } ] }

@@ -1,202 +1,194 @@
-# DATBase
+# pibase
 
-Backend-as-a-service for developers. Each project gets its own isolated PocketBase
-(database, app users, file storage, REST API) at `https://<project>.yourdomain.com`.
+A small Supabase-shaped backend for Raspberry Pi 4. It runs one PostgreSQL 16
+cluster and one Go gateway. M1 provides a PostgREST-compatible data subset,
+database-enforced RLS, RPC, migrations, and owner SQL tooling. Auth user
+management, storage, operations, project branching, realtime, and optional TOTP
+multi-factor authentication are included.
 
-PocketBase runs underneath each project; customers only ever see DATBase.
+## Requirements
 
-**Built so far: Stages 1–7 + schema import** (Stage 6: email, monitoring, Raspberry Pi; Stage 7: operator/owner tools). New session? Read `CLAUDE.md`. How this compares to Supabase: `docs/SUPABASE-COMPARISON.md`.
-- Accounts: sign up, sign in, sign out
-- Projects: create, rename, pause, resume, retry failed setup, delete (typed confirmation)
-- Automatic provisioning: container + data volume + health check + admin account, per project
-- Internal admin password stored encrypted (AES-256-GCM) and never shown; customers use **server keys**
-- Per-user project limit, per-project RAM/CPU caps
-- **Tables:** create, rename, delete; add/remove fields (text, number, yes/no, email, URL,
-  date, choice, JSON, file, link to another table)
-- **Import schema:** paste one JSON (usually written by an AI from `DATBASE.md`) in *Tables → Import schema* and every
-  table, field, link, unique rule and access setting is created at once, like pasting SQL into Supabase. Understands
-  SQL/Supabase-style type names, adds to tables that already exist (never changes their access, never deletes), and is
-  all-or-nothing. Example: `docs/examples/ecommerce-store.schema.json`. Acceptance test: `TESTING-SCHEMA-IMPORT.md`
-- **Schema is dashboard-only:** a server key can read and write data but gets 403 on creating, changing, importing or
-  deleting tables and on minting tokens (enforced in the project hook; existing projects need *Update all projects*)
-- **Data browser:** add, edit, delete records; file uploads; filter, sort, pagination
-- **SQL (read-only):** the project's *SQL* tab runs SELECT / WITH / EXPLAIN queries (1,000 rows, 10 s, Cancel,
-  Ctrl/⌘+Enter, CSV download), with saved queries in folders (**+** and right-click menus), favorites, search and
-  the last 20 runs. It never changes data or tables, and internal tables and hidden fields (passwords) aren't
-  visible. See `docs/SQL-EDITOR.md`.
-- **Users:** your app's users: create, edit, delete (they sign in through the API)
-- **Access:** per table, choose who can list/view/create/edit/delete: anyone, any signed-in
-  user, only the record's owner (needs a link field to `users`), or server only
-- **Data rules:** number min/max/whole numbers, unique fields and unique combinations (e.g. one review
-  per user per product), enforced by the database
-- **Server keys:** for the customer's own servers (Overview → Server keys): create, shown once, expire,
-  revoke instantly; can't be revived by restoring an older backup
-- **Build with AI:** each project's Overview has *Download DATBASE.md* + a copy-paste prompt. The
-  guide is generated from the live schema (tables, fields, access in plain words, error meanings)
-  and includes a dependency-free `datbase.ts` client. It never names the engine underneath.
-  Example: `docs/DATBASE.example.md`. Acceptance test for Codex: `TESTING-AI.md`. When an app needs tables the guide tells the AI to write a schema import for the owner to paste.
-- **Connect:** API URL and copy-paste code examples on the project overview
-- PocketBase's own admin panel is blocked on project URLs
-- **Backups:** every project daily + DATBase's own database daily, encrypted, stored off-server in
-  DigitalOcean Spaces. Keeps one backup for each of the last 7 days + one per week for 4 weeks
-  (manual and "before restore" backups are kept on top for 7 days); 14 for DATBase's database. Backups tab:
-  list, "Back up now" (once per 10 min), and Restore (typed confirmation; a safety backup is taken
-  first, so any restore can be undone).
-- **Security headers:** nonce-based CSP, clickjacking protection, HSTS over HTTPS (`app/src/proxy.ts`)
-- **Usage & limits:** API requests per month, database size, file storage and app users are
-  measured every 10 minutes (plus a Refresh button). Warning at 80%. At 100%:
-  - requests used up → the project's API returns 429 until next month (dashboard keeps working)
-  - database or storage full → new/edited records are blocked; reading and deleting still work
-  - user limit → new sign-ups are blocked
-  Limits lift automatically once usage drops (or the month rolls over). Free plan limits are in
-  `app/src/lib/plans.ts`; enforcement and request counting run inside each project via
-  `pocketbase/pb_hooks/datbase.pb.js`, unlocked only by a per-project secret, so project admins can't bypass them.
+- Docker with Compose
+- A USB3 SSD for persistent Pi deployments; do not use an SD card for PostgreSQL
+- No `sudo` is used by these project scripts
 
-```
-app/              Next.js dashboard + control plane (Drizzle, Better Auth, dockerode)
-pocketbase/       Image every project runs
-docker-compose.yml
-.env.example
+## Start
+
+```sh
+./scripts/init-env.sh
+docker compose up --build -d
+curl --fail http://localhost:18080/healthz
 ```
 
-## Deploy on DigitalOcean
+`scripts/init-env.sh` creates local development secrets in the ignored `.env` file. Do not commit it.
 
-1. **Droplet:** Ubuntu 24.04, at least 2 GB RAM. Allow ports 22, 80 and 443 in the firewall.
-2. **DNS:** point both at the Droplet IP:
-   - `A  yourdomain.com`
-   - `A  *.yourdomain.com`
-3. **Install and start:**
-   ```bash
-   curl -fsSL https://get.docker.com | sh
-   git clone <your repo> /opt/datbase    # or scp this folder
-   cd /opt/datbase
-   cp .env.example .env
-   # fill in DOMAIN; POSTGRES_PASSWORD and BETTER_AUTH_SECRET: `openssl rand -hex 32`
-   # ENCRYPTION_KEY: `openssl rand -base64 32` (must be base64). Keep a copy of .env off the server.
-   docker compose up -d --build
-   ```
-4. Open `https://yourdomain.com`, sign up, and create a project.
+Create a project (the keys are printed once; store them securely):
 
-Update: `git pull && docker compose up -d --build`. Database migrations run automatically on start.
-
-## Email
-
-Fill `SMTP_*` in `.env` (any provider: Resend, Brevo, Postmark, Amazon SES, a Gmail app password) and
-restart. That turns on:
-- **Dashboard accounts:** email confirmation before the first sign-in, and "Forgot your password?".
-  Sign-up no longer reveals whether an email is registered (the owner gets a "you already have an
-  account" email instead).
-- **Your customers' app users:** password reset and email confirmation, documented in DATBASE.md
-  (`requestPasswordReset()`, `requestVerification()`). Emails come from your `SMTP_FROM` address with the
-  app's name, and the links open pages hosted by DATBase (`/u/<project>/…`), so customers don't build any.
-  The project's hook writes every email itself (a project admin can't change sender, wording or links)
-  and caps each project at `PROJECT_MAIL_PER_HOUR`.
-- Access option **"Signed-in users with a confirmed email"** for tables.
-
-Without SMTP everything works, minus those emails. Accounts created before email existed stay usable.
-
-## Monitoring & alerts
-
-Every 5 minutes DATBase checks: projects not responding or in error, backups older than 36 h or
-failed, its own database backup, disk and memory. A problem must show up twice in a row before it
-alerts; you also get a message when it clears.
-- **Alerts** go to `ADMIN_EMAIL` and, optionally, `ALERT_WEBHOOK_URL` (Home Assistant, Discord, Slack).
-- **Server status page:** sign in with `ADMIN_EMAIL` → *Server status* (run checks, send a test alert,
-  re-apply email settings to all projects).
-- **Home Assistant:** set `MONITOR_TOKEN`, then use `integrations/home-assistant/` (sensors, a
-  problem binary sensor, phone notifications and a dashboard card). The JSON is at `GET /api/monitor`
-  with `Authorization: Bearer <MONITOR_TOKEN>`.
-
-Testing on a Raspberry Pi first? See `docs/RASPBERRY-PI.md`.
-
-## Operator tools (ADMIN_EMAIL account)
-
-- **Update all projects** (Server status): after `docker compose up -d --build`, projects keep running
-  the old project image until updated. The page shows how many are outdated; the button gives each
-  one a fresh container with its data kept (a few seconds offline each; paused/suspended stay stopped;
-  limits and email settings are re-applied). Do this after every update that touches `pocketbase/`.
-- **Accounts & projects:** every account with its projects and this month's requests. **Suspend** a
-  project (with a reason the owner sees) or a whole account (signed out, can't sign in, projects
-  stopped). Lifting restores exactly what was running before.
-
-Owners have **Account** (click your email): download each project's data (JSON + files zip) and
-delete the account (all projects, data and backups). Owners also get an email at **80% and 100%** of
-each plan limit (once per month each).
-
-## Backups & disaster recovery
-
-### Set up (once)
-1. DigitalOcean → Spaces → create a bucket (e.g. `datbase-backups`, private). Pick a different
-   region from your Droplet if you can.
-2. Spaces → Access Keys → create a key with access to that bucket.
-3. Fill `BACKUP_S3_*` in `.env`, then `docker compose up -d`. The log shows
-   `[backup] checking every 15 min`. If it says `backups are OFF`, a value is missing.
-4. **Save your whole `.env` in a password manager, off the server.** Backups are encrypted with
-   `ENCRYPTION_KEY`. If the server dies and you don't have that key, the backups can't be read.
-
-### If the server is lost
-1. New Droplet, same DNS records, install Docker, copy this repo, and put back the **same `.env`**.
-2. Start the database only: `docker compose up -d db`
-3. Restore DATBase's own database from the newest backup:
-   `docker compose run --rm app node scripts/backup-tool.mjs restore-control`
-4. Add `RECOVER_ON_START=1` to `.env`, then `docker compose up -d --build`. Every active or paused
-   project whose container is missing is recreated and loaded from its newest backup (paused ones stay paused)
-   (`docker compose logs -f app` shows `[recover] … restored backup …`).
-5. Remove `RECOVER_ON_START` from `.env` and run `docker compose up -d`.
-
-Other tool commands: `list [prefix]` shows stored backups, and `get <key> <file>` decrypts one
-(a project backup is a PocketBase zip).
-
-## Test checklist (Stages 1–5)
-- [ ] Sign up, sign out, sign in
-- [ ] Create a project → goes from `creating` to `active` in under ~30s
-- [ ] Create a table in project A; it does not exist in project B
-- [ ] A second account cannot see or open the first account's projects
-- [ ] Pause → the project's URL stops responding; Resume → data still there
-- [ ] Delete → container and data are gone (`docker ps -a`, `docker volume ls`)
-- [ ] `docker stats`: note RAM per idle project
-- [ ] Tables: create `products`, add fields, add a record with an image
-- [ ] Set `products` list/view to "Anyone", then open
-      `https://<project>.yourdomain.com/api/collections/products/records` in a browser
-- [ ] `https://<project>.yourdomain.com/_/` returns 404
-- [ ] Usage tab shows numbers after ~10 minutes (or press Refresh)
-- [ ] Optional limit test: add `PLAN_LIMITS_OVERRIDE={"requestsPerMonth":20}` to `.env`,
-      `docker compose up -d`, call the API 25 times, wait a minute, Refresh → API returns 429.
-      Remove the line afterwards. (Blocks lift at the next month; to reset early, delete the
-      project's rows in `usage_month`.)
-- [ ] Backups tab → Back up now → a row appears; the bucket has `projects/<id>/….dbk`
-- [ ] Change some data → Restore that backup → data is back; a "Before restore" backup exists
-- [ ] `docker compose run --rm app node scripts/backup-tool.mjs list` shows project + `control/` backups
-- [ ] Next day: a "Daily" backup appeared on its own
-
-## Automated tests
-`cd app && npm run test:unit` (no services needed) and `npm run test:e2e` (full stack). See `app/tests/README.md`.
-
-## Local development
-```bash
-cd app
-cp ../.env.example .env.local   # add DATABASE_URL and BETTER_AUTH_URL=http://localhost:3000
-# optional, to test the Tables screens against a local PocketBase on port 8090:
-# PB_INTERNAL_URL=http://127.0.0.1:8090
-npm install
-npm run dev
+```sh
+./scripts/create-project.sh "My project"
 ```
-Provisioning needs Docker locally. Without it, projects show `error` with the reason.
-Running the full stack with `docker compose` on a laptop? Project APIs live on the private Docker
-network; `scripts/local-api.sh <slug>` makes one reachable at `http://127.0.0.1:8090` for local apps.
-After changing `src/db/schema.ts`, run `npx drizzle-kit generate`.
 
-## Known limits (for later stages)
-- **HTTPS certificates:** each project subdomain gets its own Let's Encrypt certificate
-  (limit: 50 new per week per domain). Before scaling, switch to one wildcard
-  certificate using DigitalOcean DNS validation.
-- **Docker socket:** the app controls Docker directly, so it effectively has root on the
-  Droplet. Fine for a single-server MVP. Isolate it before adding more servers.
-- **Without SMTP settings** there are no reset/confirmation emails and sign-up reveals whether an
-  email is registered (capped at 5 sign-ups per IP per hour). Set `SMTP_*` in production.
-- **Monitoring** runs inside the app: if the whole server or the app is down, it can't alert. Home
-  Assistant's "unreachable" automation (integrations/home-assistant) covers that case.
-- **Bandwidth** isn't measured yet (needs proxy logs).
-- **PocketBase version:** pinned to 0.39.11. Before moving to 0.40+, run `app/tests/e2e/pb-stress.mjs`
-  against a test project on your real server (see FIXES.md, AI-01).
-- **Licence:** PocketBase is MIT-licensed; its LICENSE.md ships inside the project image. Keep it.
+The command creates an isolated database and four project-specific roles. It revokes public database access, creates protected `auth` and `storage` schemas, encrypts the JWT signing secret with AES-256-GCM, stores only SHA-256 API-key hashes, and returns distinct anon and service JWTs. The service key must never be shipped to browsers.
+
+Customer-authored `SECURITY DEFINER` functions can bypass intended policies if written incorrectly; their safety is the customer's responsibility.
+
+## Data API (M1)
+
+Use the returned project URL and anon key with `@supabase/supabase-js`, or call
+the wire API directly:
+
+```sh
+curl 'http://localhost:18080/rest/v1/todos?select=id,title&done=eq.false&order=id.desc&limit=20' \
+  -H "apikey: $ANON_KEY" \
+  -H 'Prefer: count=exact'
+```
+
+M1 supports:
+
+- select lists, `eq`, `neq`, `gt`, `gte`, `lt`, `lte`, `like`, `ilike`, `in`,
+  and `is` filters;
+- ordering, limit/offset, a 1,000-row cap, and exact counts;
+- insert, update, delete, representation returns, and conflict-target upsert;
+- named-argument functions at `/rest/v1/rpc/<name>`;
+- one-level, single-column foreign-key embedding in both directions;
+- anon, authenticated JWT, and service-role request contexts with RLS enforced
+  by PostgreSQL.
+
+Every request has a 1 MiB body cap, five-second statement timeout, bounded
+database concurrency, a per-project 100 requests/second window, daily request
+counting, and a configurable database-size quota. Unsupported PostgREST syntax
+returns a clear JSON 400 response.
+
+## Auth and TOTP MFA
+
+Email/password authentication supports signup, confirmation, login, rotating
+refresh tokens, logout, password recovery, user updates, and service-key user
+administration. M6a adds the Supabase Auth TOTP factor flow used by
+`supabase-js`: enroll, list, challenge, verify, and unenroll.
+
+TOTP secrets are random 160-bit values encrypted at rest with the instance
+master key. Challenges expire after five minutes, codes are rate-limited and
+single-use per 30-second counter, and successful verification rotates the
+session to a JWT carrying `aal2` plus a TOTP authentication-method claim.
+Removing the last verified factor makes the next refresh return `aal1`.
+Phone factors, WebAuthn, and recovery codes are not part of M6a.
+
+## Migrations and owner SQL
+
+Migration and arbitrary SQL commands execute through the constrained
+`authenticator` database URL, then assume only the selected project's admin
+role inside that project's database. A superuser database URL is deliberately
+rejected so submitted SQL cannot recover superuser privileges. SQL is read from
+standard input so it does not appear in process arguments.
+
+```sh
+docker compose run --rm -T \
+  gateway migration-apply PROJECT_ID 0001_create_todos < migration.sql
+
+printf 'select current_user, now()' | docker compose run --rm -T \
+  gateway sql PROJECT_ID
+```
+
+Migration names are idempotent and checksum-protected. Owner SQL has a
+token-based guard against privilege-changing statements; it is not a security
+boundary—the constrained authenticator connection and PostgreSQL roles are.
+30-second statement timeout and is not exposed through the public HTTP API.
+
+## Verify
+
+```sh
+./scripts/test.sh
+./scripts/measure-m0.sh
+./scripts/test-supabase-js.sh
+```
+
+The main test script runs static checks, unit tests, real-PostgreSQL security and
+data tests, builds the production image, and cross-compiles for Linux ARM64.
+The Supabase acceptance script creates a temporary isolated project, exercises
+M1 through the real `@supabase/supabase-js` client, and deletes that project.
+The M0 measurement harness remains available for reproducing Pi memory data.
+
+## Operations (M4)
+
+`/healthz` is the readiness check, `/metrics` exposes compact Prometheus text
+metrics, and the loopback-only admin listener's `/dashboard` is a static, no-Node operator UI. The dashboard lists
+request, database, and file-storage usage and provides the owner SQL editor.
+Dashboard API calls require `PIBASE_OPERATOR_TOKEN`; owner SQL executes through
+the M1 authenticator boundary, with a 30-second timeout and 1,000-row cap.
+
+The binary also provides encrypted per-project `backup` and guarded `restore`
+commands plus `project-branch`. Branches receive fresh roles and keys and copy
+only the source `public` schema/data—not users, sessions, or private files.
+Branches preserve operator-enabled PostGIS and pgvector. A legacy project with
+any other installed extension is rejected with a clear error instead of
+silently producing an incomplete branch.
+See [docs/PI-OPERATIONS.md](docs/PI-OPERATIONS.md) for Pi setup, backup-key
+handling, restore drills, monitoring, and branching semantics.
+
+## Realtime and delivery (M5a)
+
+`/realtime/v1/websocket` supports the `postgres_changes` channel used by
+supabase-js for unfiltered, explicit `INSERT` and `UPDATE` changes on `public`
+tables. Wildcard and `DELETE` subscriptions are rejected clearly.
+An owner enables a table explicitly through the SQL tool:
+
+```sql
+SELECT realtime.enable_table('public.todos'::regclass);
+```
+
+The gateway receives only a table, operation, and row id from PostgreSQL, then
+fetches the current row in every subscriber's RLS-scoped transaction before it
+sends anything. `DELETE` changes are explicitly unsupported: after commit the
+row cannot be rechecked without retaining an unsafe stale copy. The connection
+cap is 32 per project by default (set `PIBASE_REALTIME_MAX_CONNECTIONS` to an
+integer from 1 through 512); idle clients time out after five minutes.
+
+Each project has `cron.jobs` and `cron.webhook_outbox`. M5a accepts
+`* * * * *` and `*/N * * * *` schedules (N is 1–1440) for either SQL or an
+HTTP webhook. Webhooks are retried with bounded exponential backoff and cannot
+target loopback, private, link-local, multicast, or unspecified addresses;
+redirects are refused. An owner can enqueue durable event-driven webhooks with
+an `AFTER` row trigger, for example
+
+```sql
+CREATE TRIGGER todo_webhook AFTER INSERT OR UPDATE OR DELETE ON public.todos
+FOR EACH ROW EXECUTE FUNCTION cron.enqueue_webhook('https://hooks.example/todos', 'POST');
+```
+
+The trigger stores the event and row JSON in the outbox as part of the same
+database transaction; the gateway performs the network delivery later. The
+outbox permits at most 256 pending items per project (about 256 MiB at the
+1 MiB body maximum), applying backpressure to scheduled, trigger, and direct
+owner inserts alike. The
+operator can enable pgvector only with:
+
+```sh
+docker compose run --rm ops pgvector-enable PROJECT_ID
+```
+
+The host PostgreSQL image must have the `vector` extension installed first.
+Extension create/alter/drop commands are also blocked by a PostgreSQL event
+trigger for all non-superuser sessions; SQL text validation supplies only the
+friendlier early error.
+
+M5b also supports ephemeral `broadcast` and `presence` events on public
+Realtime channels. Routing is isolated by project and topic; `self`/`ack`,
+presence state, track/untrack, and disconnect cleanup are supported. These
+messages live only in one gateway process and disappear on restart. Private
+channels, replay, cross-node fanout, HTTP broadcast, and arbitrary binary
+payloads are not supported. Presence keys and payloads are client-supplied
+metadata, not authenticated identity. Any browser origin may connect because
+the socket uses the public project key plus JWT/RLS boundaries; applications
+must apply their own trust rules to public broadcast and presence content.
+
+## Stop
+
+```sh
+docker compose down
+```
+
+To also delete local PostgreSQL data, run the explicit destructive command:
+
+```sh
+docker compose down --volumes
+```

@@ -1,0 +1,75 @@
+M6c version 7 -> 8 ownership evidence
+Run: 2026-10-04 on Linux aarch64 host gejg
+Disposable PostgreSQL 16 project: p_68118b84
+
+Commands
+========
+
+# Establish the synthetic version 7 boundary.
+psql "$PROJECT_DATABASE_URL" -c \
+  "ALTER SCHEMA auth OWNER TO p_68118b84_admin;
+   ALTER SCHEMA storage OWNER TO p_68118b84_admin;
+   ALTER SCHEMA realtime OWNER TO p_68118b84_admin;
+   ALTER SCHEMA cron OWNER TO p_68118b84_admin"
+psql "$CONTROL_DATABASE_URL" -c \
+  "UPDATE control.projects SET schema_version=7 WHERE id='68118b84'"
+
+# Run each before and after `pibase bootstrap`.
+psql "$PROJECT_DATABASE_URL" \
+  -c '\dn+ auth' -c '\dn+ storage' -c '\dn+ realtime' -c '\dn+ cron' \
+  -c '\dp auth.*' -c '\dp storage.*' -c '\dp realtime.*' -c '\dp cron.*'
+pibase bootstrap
+
+Before: \dn+
+=============
+
+auth      owner=p_68118b84_admin  admin=UC  anon=U authenticated=U service_role=U
+storage   owner=p_68118b84_admin  admin=UC  anon=U authenticated=U service_role=U
+realtime  owner=p_68118b84_admin  admin=UC
+cron      owner=p_68118b84_admin  admin=UC
+
+Before: \dp
+============
+
+auth.mfa_challenges             postgres=arwdDxt  admin=arwdDxt
+auth.mfa_factors                postgres=arwdDxt  admin=arwdDxt
+auth.refresh_tokens             postgres=arwdDxt  admin=arwdDxt
+auth.users                      postgres=arwdDxt  admin=arwdDxt
+storage.buckets                 postgres=arwdDxt  anon=r authenticated=r service_role=arwd admin=arwdDxt
+storage.objects                 postgres=arwdDxt  anon=r authenticated=arwd service_role=arwd admin=arwdDxt
+realtime.*                      no relations
+cron.jobs                       postgres=arwdDxt  admin=arwdDxt
+cron.jobs_id_seq                postgres=rwU      admin=rU
+cron.webhook_outbox             postgres=arwdDxt  admin=arwdDxt
+cron.webhook_outbox_id_seq      postgres=rwU      admin=rU
+
+After: \dn+
+============
+
+auth      owner=postgres  operator=UC  admin=U  anon=U authenticated=U service_role=U
+storage   owner=postgres  operator=UC  admin=U  anon=U authenticated=U service_role=U
+realtime  owner=postgres  operator=UC  admin=U
+cron      owner=postgres  operator=UC  admin=U
+
+After: \dp
+===========
+
+auth.mfa_challenges             postgres=arwdDxt  admin=arwdDxt
+auth.mfa_factors                postgres=arwdDxt  admin=arwdDxt
+auth.refresh_tokens             postgres=arwdDxt  admin=arwdDxt
+auth.users                      postgres=arwdDxt  admin=arwdDxt
+storage.buckets                 postgres=arwdDxt  anon=r authenticated=r service_role=arwd admin=arwdDxt
+storage.objects                 postgres=arwdDxt  anon=r authenticated=arwd service_role=arwd admin=arwdDxt
+realtime.*                      no relations
+cron.jobs                       postgres=arwdDxt  admin=arwdDxt
+cron.jobs_id_seq                postgres=rwU      admin=rU
+cron.webhook_outbox             postgres=arwdDxt  admin=arwdDxt
+cron.webhook_outbox_id_seq      postgres=rwU      admin=rU
+
+Result
+======
+
+All four schema owners moved from the project admin to the existing operator.
+The project admin changed from implicit owner UC to explicit U, so CREATE was
+removed. Relation and sequence ACLs were byte-for-byte unchanged; the automated
+managedObjectGrantSnapshot regression compares the complete catalog ACL strings.
