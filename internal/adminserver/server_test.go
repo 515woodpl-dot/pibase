@@ -56,10 +56,10 @@ func TestDashboardUIHardRules(t *testing.T) {
 
 func TestDashboardShowsKeysOnceAndWiresEveryEndpoint(t *testing.T) {
 	for _, required := range []string{
-		"Shown once; copy them now.",
-		"'project id: '+x.id",
-		"ak.textContent='anon key: '+x.anon_key",
-		"sk.textContent='service key: '+x.service_key",
+		"shown once; copy them now.",
+		"'Project ID: '+x.id",
+		"secretField('Anon key',x.anon_key)",
+		"secretField('Service key',x.service_key)",
 		"'/_pibase/projects'",
 		"'/tables'", "'/tables/'+encodeURIComponent(t.name)+'/rows?offset='",
 		"'/users'", "'/sql'", "'/migrations'", "'/backup'", "'/backups'", "'/extensions/postgis'", "'/extensions/pgvector'",

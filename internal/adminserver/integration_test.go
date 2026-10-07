@@ -1197,7 +1197,7 @@ func TestAccountSelfService(t *testing.T) {
 		var stats []map[string]any
 		json.NewDecoder(resp2.Body).Decode(&stats)
 		resp2.Body.Close()
-		want := "https://api.example.com/" + projID
+		want := "https://api.example.com"
 		found := false
 		for _, s := range stats {
 			if s["id"] == projID {
