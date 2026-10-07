@@ -30,7 +30,7 @@ services:
     build: .
     command: ["bootstrap"]
     environment:
-      PIBASE_ADMIN_DATABASE_URL: postgres://postgres:${POSTGRES_PASSWORD}@postgres:5432/postgres
+      PIBASE_ADMIN_DATABASE_URL: postgres://postgres:${POSTGRES_PASSWORD}@postgres:5432/postgres?sslmode=disable
       PIBASE_AUTHENTICATOR_PASSWORD: ${PIBASE_AUTHENTICATOR_PASSWORD:?set PIBASE_AUTHENTICATOR_PASSWORD in .env}
     depends_on:
       postgres:
@@ -43,7 +43,7 @@ services:
       context: .
       target: gateway
     environment:
-      PIBASE_DATABASE_URL: postgres://authenticator:${PIBASE_AUTHENTICATOR_PASSWORD}@postgres:5432/_control
+      PIBASE_DATABASE_URL: postgres://authenticator:${PIBASE_AUTHENTICATOR_PASSWORD}@postgres:5432/_control?sslmode=disable
       PIBASE_MASTER_KEY: ${PIBASE_MASTER_KEY:?set PIBASE_MASTER_KEY in .env}
       PIBASE_LISTEN_ADDR: :8080
       PIBASE_M0_ACTIVE_PROJECTS: ${PIBASE_M0_ACTIVE_PROJECTS:-0}
@@ -67,8 +67,8 @@ services:
       target: ops
     command: ["admin-serve"]
     environment:
-      PIBASE_ADMIN_DATABASE_URL: postgres://postgres:${POSTGRES_PASSWORD}@postgres:5432/postgres
-      PIBASE_DATABASE_URL: postgres://authenticator:${PIBASE_AUTHENTICATOR_PASSWORD}@postgres:5432/_control
+      PIBASE_ADMIN_DATABASE_URL: postgres://postgres:${POSTGRES_PASSWORD}@postgres:5432/postgres?sslmode=disable
+      PIBASE_DATABASE_URL: postgres://authenticator:${PIBASE_AUTHENTICATOR_PASSWORD}@postgres:5432/_control?sslmode=disable
       PIBASE_MASTER_KEY: ${PIBASE_MASTER_KEY:?set PIBASE_MASTER_KEY in .env}
       PIBASE_BACKUP_KEY: ${PIBASE_BACKUP_KEY:?set PIBASE_BACKUP_KEY in .env}
       PIBASE_OPERATOR_TOKEN: ${PIBASE_OPERATOR_TOKEN:?set PIBASE_OPERATOR_TOKEN in .env}
@@ -97,8 +97,8 @@ services:
       context: .
       target: ops
     environment:
-      PIBASE_ADMIN_DATABASE_URL: postgres://postgres:${POSTGRES_PASSWORD}@postgres:5432/postgres
-      PIBASE_DATABASE_URL: postgres://authenticator:${PIBASE_AUTHENTICATOR_PASSWORD}@postgres:5432/_control
+      PIBASE_ADMIN_DATABASE_URL: postgres://postgres:${POSTGRES_PASSWORD}@postgres:5432/postgres?sslmode=disable
+      PIBASE_DATABASE_URL: postgres://authenticator:${PIBASE_AUTHENTICATOR_PASSWORD}@postgres:5432/_control?sslmode=disable
       PIBASE_MASTER_KEY: ${PIBASE_MASTER_KEY:?set PIBASE_MASTER_KEY in .env}
       PIBASE_BACKUP_KEY: ${PIBASE_BACKUP_KEY:-}
       PIBASE_STORAGE_ROOT: /data/files
