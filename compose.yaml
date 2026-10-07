@@ -72,8 +72,8 @@ services:
       PIBASE_MASTER_KEY: ${PIBASE_MASTER_KEY:?set PIBASE_MASTER_KEY in .env}
       PIBASE_BACKUP_KEY: ${PIBASE_BACKUP_KEY:?set PIBASE_BACKUP_KEY in .env}
       PIBASE_OPERATOR_TOKEN: ${PIBASE_OPERATOR_TOKEN:?set PIBASE_OPERATOR_TOKEN in .env}
-      # The local dashboard is loopback-only HTTP, so account session cookies
-      # must not be marked Secure. Set this to production behind HTTPS.
+      # The dashboard is served over plain HTTP (localhost or Tailscale), so
+      # session cookies cannot be marked Secure. Set to production behind HTTPS.
       PIBASE_ADMIN_ENV: ${PIBASE_ADMIN_ENV:-development}
       PIBASE_ADMIN_LISTEN_ADDR: 0.0.0.0:18081
       PIBASE_ADMIN_ALLOW_NONLOCAL: "1"
