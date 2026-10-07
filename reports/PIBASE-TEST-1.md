@@ -53,7 +53,7 @@ PR #1 is draft and its fixes are not part of `pibase/m7`. The combined source pa
 | Criterion | Status |
 |---|---|
 | 1. Bucket validator | **Fixed** in `11844d3`. Ordinary names such as `box` and `2026-files` are accepted; `storage_names_test.go` covers valid names and traversal, separator, NUL and encoded variants. The new test failed on 5 valid names before the fix. |
-| 2. Integrate PR #1 with latest `pibase/m7` | **Done.** `fix/tier1-audit` is merged into `pibase/m7` together with the T2 hardening commits. On the merged commit, `go vet` and `go test -p 1 -count=1 ./...` pass against PostgreSQL 16, and the storage, adversarial and account-hardening tests pass with `-race`. `scripts/test.sh` (image builds, ARM64 build) was **not** run in this session: it requires a non-root operator account that the session could not use. Run it on the Pi or a workstation before tagging. |
+| 2. Integrate PR #1 with latest `pibase/m7` | **Done.** `fix/tier1-audit` is merged into `pibase/m7` together with the T2 hardening commits. On the merged commit, `go vet` and `go test -p 1 -count=1 ./...` pass against PostgreSQL 16, and the storage, adversarial and account-hardening tests pass with `-race`. `scripts/test.sh` was run by the operator as a non-root user on a fresh clone of `pibase/m7` (2026-10-07) and **exited 0**. That covers formatting, vet, unit and PostgreSQL integration tests, the production and PostgreSQL images, and the Linux ARM64 build. |
 | 3. Pi deployment check (HTTPS, backup/restore, end-to-end) | **Open.** Needs the target Pi; see `docs/PI-OPERATIONS.md` and `docs/PI-DRILL.md`. |
 | 4. Older Next.js app on `main` | **Not a release target.** pibase replaces it; its advisories do not apply to the pibase release. |
 

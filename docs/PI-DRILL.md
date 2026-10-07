@@ -39,13 +39,13 @@ SSD. Do not run `mkfs` on an existing partition containing data.
 
 ```sh
 # engineering machine
-git bundle create /tmp/datbase-m6e.bundle pibase/m6e
-scp /tmp/datbase-m6e.bundle operator@PI_HOST:/tmp/
+git bundle create /tmp/datbase-beta.bundle pibase/m7
+scp /tmp/datbase-beta.bundle operator@PI_HOST:/tmp/
 # Pi
 command -v git >/dev/null || echo 'Install git using the image package manager before continuing.'
-git clone /tmp/datbase-m6e.bundle ~/datbase
+git clone /tmp/datbase-beta.bundle ~/datbase
 cd ~/datbase
-git switch pibase/m6e
+git switch pibase/m7   # or main once PR #2 is merged
 ```
 
 The image may provide Git through its package manager; install it before the
