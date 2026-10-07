@@ -419,6 +419,10 @@ GRANT EXECUTE ON FUNCTION cron.enqueue_webhook() TO ` + pgx.Identifier{admin}.Sa
 	if err != nil {
 		return Project{}, err
 	}
+	anonEncrypted, serviceEncrypted, err := encryptKeys(masterKey, anonKey, serviceKey)
+	if err != nil {
+		return Project{}, err
+	}
 
 	controlURL, err := withDatabase(adminURL, "_control")
 	if err != nil {
@@ -430,8 +434,8 @@ GRANT EXECUTE ON FUNCTION cron.enqueue_webhook() TO ` + pgx.Identifier{admin}.Sa
 	}
 	defer controlDB.Close(ctx)
 	_, err = controlDB.Exec(ctx, `INSERT INTO control.projects
- (id,name,database_name,anon_role,authenticated_role,service_role,admin_role,jwt_secret_encrypted,anon_key_hash,service_key_hash,schema_version)
- VALUES($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11)`, id, name, database, anon, authenticated, service, admin, encrypted, keys.Hash(anonKey), keys.Hash(serviceKey), currentProjectSchemaVersion)
+ (id,name,database_name,anon_role,authenticated_role,service_role,admin_role,jwt_secret_encrypted,anon_key_hash,service_key_hash,schema_version,anon_key_encrypted,service_key_encrypted)
+ VALUES($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13)`, id, name, database, anon, authenticated, service, admin, encrypted, keys.Hash(anonKey), keys.Hash(serviceKey), currentProjectSchemaVersion, anonEncrypted, serviceEncrypted)
 	if err != nil {
 		return Project{}, err
 	}
@@ -443,8 +447,8 @@ func JSON(project Project) ([]byte, error) { return json.MarshalIndent(project, 
 // RotateKeys replaces the project's JWT signing secret with a fresh random one,
 // then signs new anon and service_role keys with it. The old secret, and
 // therefore all previously issued API keys and user auth tokens, are
-// immediately invalidated. The caller must show the returned plaintext keys to
-// the end user exactly once; they are never stored in plaintext.
+// immediately invalidated. The keys are stored encrypted with the master key
+// so the owner can view them again; they are never stored in plaintext.
 func RotateKeys(ctx context.Context, adminURL, projectID string, masterKey []byte) (anonKey, serviceKey string, err error) {
 	conn, err := controlDBConn(ctx, adminURL)
 	if err != nil {
@@ -476,9 +480,13 @@ func RotateKeys(ctx context.Context, adminURL, projectID string, masterKey []byt
 	if err != nil {
 		return "", "", fmt.Errorf("encrypt jwt secret: %w", err)
 	}
+	anonEncrypted, serviceEncrypted, err := encryptKeys(masterKey, anonKey, serviceKey)
+	if err != nil {
+		return "", "", err
+	}
 	tag, err := conn.Exec(ctx,
-		`UPDATE control.projects SET jwt_secret_encrypted=$1, anon_key_hash=$2, service_key_hash=$3 WHERE id=$4`,
-		encrypted, keys.Hash(anonKey), keys.Hash(serviceKey), projectID,
+		`UPDATE control.projects SET jwt_secret_encrypted=$1, anon_key_hash=$2, service_key_hash=$3, anon_key_encrypted=$4, service_key_encrypted=$5 WHERE id=$6`,
+		encrypted, keys.Hash(anonKey), keys.Hash(serviceKey), anonEncrypted, serviceEncrypted, projectID,
 	)
 	if err != nil {
 		return "", "", err

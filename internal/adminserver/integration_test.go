@@ -1546,6 +1546,68 @@ func TestProjectManagement(t *testing.T) {
 		}
 	})
 
+	// P1: an account with no projects gets an empty JSON array, not null.
+	t.Run("P1_empty_project_list_is_array", func(t *testing.T) {
+		emailC := "t3c" + sfx + "@t3.test"
+		respC, _ := acctCall("POST", "/_pibase/auth/signup", loginBody(emailC, "password-t3c"), nil, 201)
+		_, data := acctCall("GET", "/_pibase/projects", "", sessionCookieFrom(respC), 200)
+		if strings.TrimSpace(string(data)) != "[]" {
+			t.Fatalf("empty project list = %s", data)
+		}
+	})
+
+	// A1-A3: per-service activity over fixed windows, owner-only.
+	t.Run("A1_activity_windows", func(t *testing.T) {
+		for window, buckets := range map[string]int{"": 60, "60m": 60, "24h": 48, "7d": 28} {
+			_, data := acctCall("GET", "/_pibase/projects/"+acctProjID+"/activity?window="+window, "", cookieA, 200)
+			var a struct {
+				Requests    int64    `json:"requests"`
+				SuccessRate *float64 `json:"success_rate"`
+				Total       []any    `json:"total"`
+				Services    []struct {
+					Service string `json:"service"`
+					Series  []any  `json:"series"`
+				} `json:"services"`
+			}
+			if err := json.Unmarshal(data, &a); err != nil {
+				t.Fatalf("%s: %v %s", window, err, data)
+			}
+			if len(a.Total) != buckets || len(a.Services) != 4 || len(a.Services[0].Series) != buckets {
+				t.Fatalf("%s: %d buckets, %d services", window, len(a.Total), len(a.Services))
+			}
+			if a.Requests != 0 || a.SuccessRate != nil {
+				t.Fatalf("%s: fresh project reports activity: %s", window, data)
+			}
+		}
+	})
+	t.Run("A2_activity_non_owner_forbidden", func(t *testing.T) {
+		acctCall("GET", "/_pibase/projects/"+acctProjID+"/activity", "", cookieB, 403)
+	})
+	t.Run("A3_activity_bad_window", func(t *testing.T) {
+		acctCall("GET", "/_pibase/projects/"+acctProjID+"/activity?window=5y", "", cookieA, 400)
+	})
+
+	// K7-K8: the owner can view current keys again; others cannot.
+	t.Run("K7_owner_views_current_keys", func(t *testing.T) {
+		_, rotated := acctCall("POST", "/_pibase/projects/"+acctProjID+"/keys/rotate", "", cookieA, 200)
+		var want map[string]string
+		json.Unmarshal(rotated, &want)
+		resp, data := acctCall("GET", "/_pibase/projects/"+acctProjID+"/keys", "", cookieA, 200)
+		var got map[string]string
+		if err := json.Unmarshal(data, &got); err != nil {
+			t.Fatal(err)
+		}
+		if got["anon_key"] != want["anon_key"] || got["service_key"] != want["service_key"] || got["jwt_secret"] == "" {
+			t.Fatal("keys endpoint does not return the current keys")
+		}
+		if resp.Header.Get("Cache-Control") != "no-store" {
+			t.Fatalf("Cache-Control = %q", resp.Header.Get("Cache-Control"))
+		}
+	})
+	t.Run("K8_non_owner_keys_forbidden", func(t *testing.T) {
+		acctCall("GET", "/_pibase/projects/"+acctProjID+"/keys", "", cookieB, 403)
+	})
+
 	// L1: operator can set max_database_bytes; returns 204.
 	t.Run("L1_set_limits_succeeds", func(t *testing.T) {
 		rb, _ := json.Marshal(map[string]int64{"max_database_bytes": 2 << 30})
