@@ -278,7 +278,7 @@ func adminServe() error {
 	if err != nil {
 		return err
 	}
-	s, err := adminserver.New(adminserver.Config{AdminURL: adminURL, DatabaseURL: databaseURL, StorageRoot: os.Getenv("PIBASE_STORAGE_ROOT"), BackupRoot: os.Getenv("PIBASE_BACKUP_ROOT"), Token: token, MasterKey: master, BackupKey: backupKey, PublicURL: os.Getenv("PIBASE_PUBLIC_URL"), MaxProjectsPerAccount: maxProjects, TrustedProxies: trusted})
+	s, err := adminserver.New(adminserver.Config{AdminURL: adminURL, DatabaseURL: databaseURL, StorageRoot: os.Getenv("PIBASE_STORAGE_ROOT"), BackupRoot: os.Getenv("PIBASE_BACKUP_ROOT"), Token: token, MasterKey: master, BackupKey: backupKey, Env: os.Getenv("PIBASE_ADMIN_ENV"), PublicURL: os.Getenv("PIBASE_PUBLIC_URL"), MaxProjectsPerAccount: maxProjects, TrustedProxies: trusted})
 	if err != nil {
 		return err
 	}
