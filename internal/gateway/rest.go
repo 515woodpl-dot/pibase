@@ -34,6 +34,10 @@ func (s *Server) restHandler(w http.ResponseWriter, r *http.Request) {
 		writeAPIError(w, httpError(http.StatusBadRequest, "invalid relation"))
 		return
 	}
+	if err := checkSchemaProfile(r); err != nil {
+		writeAPIError(w, err)
+		return
+	}
 	buffer := newResponseBuffer()
 	err = s.transaction(r.Context(), who, func(tx pgx.Tx) error {
 		table, err := loadTable(r.Context(), tx, "public", relation)
@@ -246,7 +250,7 @@ func writeFilters(values url.Values, table tableInfo, firstArg int) (queryPlan, 
 	filtered := make(url.Values)
 	for key, value := range values {
 		switch key {
-		case "select", "order", "limit", "offset", "on_conflict":
+		case "select", "order", "limit", "offset", "on_conflict", "columns":
 		default:
 			filtered[key] = value
 		}
@@ -446,20 +450,39 @@ func insertRows(ctx context.Context, w http.ResponseWriter, r *http.Request, tx 
 	quoted := quoteColumns(columns)
 	selected := prefixedColumns("input", columns)
 	statement := "INSERT INTO " + table.identifier() + " (" + strings.Join(quoted, ",") + ") SELECT " + strings.Join(selected, ",") + " FROM jsonb_populate_recordset(NULL::" + table.identifier() + ",$1::jsonb) input"
-	if strings.Contains(r.Header.Get("Prefer"), "resolution=merge-duplicates") {
-		rawConflict := r.URL.Query().Get("on_conflict")
-		if rawConflict == "" {
-			return httpError(http.StatusBadRequest, "upsert requires on_conflict")
-		}
-		var conflict []string
-		conflictSet := make(map[string]bool)
-		for _, name := range strings.Split(rawConflict, ",") {
-			name = strings.TrimSpace(name)
-			if _, err := table.column(name); err != nil {
+	prefer := r.Header.Get("Prefer")
+	merge := strings.Contains(prefer, "resolution=merge-duplicates")
+	ignore := strings.Contains(prefer, "resolution=ignore-duplicates")
+	if merge || ignore {
+		// Like PostgREST, the conflict target defaults to the primary key, so
+		// supabase-js upsert() works without an explicit onConflict.
+		var names []string
+		if raw := r.URL.Query().Get("on_conflict"); raw != "" {
+			for _, name := range strings.Split(raw, ",") {
+				name = strings.TrimSpace(name)
+				if _, err := table.column(name); err != nil {
+					return err
+				}
+				names = append(names, name)
+			}
+		} else {
+			names, err = primaryKeyColumns(ctx, tx, table)
+			if err != nil {
 				return err
 			}
+		}
+		if len(names) == 0 && merge {
+			return httpError(http.StatusBadRequest, "upsert needs on_conflict when the table has no primary key")
+		}
+		conflict := make([]string, 0, len(names))
+		conflictSet := make(map[string]bool)
+		for _, name := range names {
 			conflict = append(conflict, pgx.Identifier{name}.Sanitize())
 			conflictSet[name] = true
+		}
+		target := ""
+		if len(conflict) > 0 {
+			target = " (" + strings.Join(conflict, ",") + ")"
 		}
 		var updates []string
 		for _, name := range columns {
@@ -468,13 +491,50 @@ func insertRows(ctx context.Context, w http.ResponseWriter, r *http.Request, tx 
 				updates = append(updates, identifier+"=EXCLUDED."+identifier)
 			}
 		}
-		if len(updates) == 0 {
-			statement += " ON CONFLICT (" + strings.Join(conflict, ",") + ") DO NOTHING"
+		if ignore || len(updates) == 0 {
+			statement += " ON CONFLICT" + target + " DO NOTHING"
 		} else {
-			statement += " ON CONFLICT (" + strings.Join(conflict, ",") + ") DO UPDATE SET " + strings.Join(updates, ",")
+			statement += " ON CONFLICT" + target + " DO UPDATE SET " + strings.Join(updates, ",")
 		}
 	}
 	return executeMutation(ctx, w, r, tx, statement, []any{body}, http.StatusCreated)
+}
+
+// primaryKeyColumns returns the table's primary key columns in key order, or
+// none when the table has no primary key.
+func primaryKeyColumns(ctx context.Context, tx pgx.Tx, table tableInfo) ([]string, error) {
+	rows, err := tx.Query(ctx, `SELECT a.attname
+FROM pg_catalog.pg_index i
+JOIN pg_catalog.pg_class c ON c.oid=i.indrelid
+JOIN pg_catalog.pg_namespace n ON n.oid=c.relnamespace
+CROSS JOIN LATERAL unnest(i.indkey) WITH ORDINALITY AS k(attnum,position)
+JOIN pg_catalog.pg_attribute a ON a.attrelid=c.oid AND a.attnum=k.attnum
+WHERE n.nspname=$1 AND c.relname=$2 AND i.indisprimary
+ORDER BY k.position`, table.schema, table.name)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	var names []string
+	for rows.Next() {
+		var name string
+		if err := rows.Scan(&name); err != nil {
+			return nil, err
+		}
+		names = append(names, name)
+	}
+	return names, rows.Err()
+}
+
+// checkSchemaProfile refuses requests for any schema other than public, the
+// only one the data API exposes, instead of silently using public.
+func checkSchemaProfile(r *http.Request) error {
+	for _, header := range []string{"Accept-Profile", "Content-Profile"} {
+		if value := strings.TrimSpace(r.Header.Get(header)); value != "" && value != "public" {
+			return httpError(http.StatusNotAcceptable, "only the public schema is exposed")
+		}
+	}
+	return nil
 }
 
 func updateRows(ctx context.Context, w http.ResponseWriter, r *http.Request, tx pgx.Tx, table tableInfo) error {
@@ -552,7 +612,7 @@ func decodeWriteBody(r *http.Request, table tableInfo, allowArray bool) ([]byte,
 	decoder.UseNumber()
 	var value any
 	if err := decoder.Decode(&value); err != nil {
-		return nil, nil, httpError(http.StatusBadRequest, "body must be valid JSON")
+		return nil, nil, bodyError(err, "body must be valid JSON")
 	}
 	if err := decoder.Decode(&struct{}{}); err != io.EOF {
 		return nil, nil, httpError(http.StatusBadRequest, "body must contain one JSON value")
@@ -576,12 +636,24 @@ func decodeWriteBody(r *http.Request, table tableInfo, allowArray bool) ([]byte,
 		return nil, nil, httpError(http.StatusBadRequest, "body must be an object or array of objects")
 	}
 	seen := make(map[string]bool)
-	for _, record := range records {
-		for name := range record {
+	if raw := r.URL.Query().Get("columns"); raw != "" && allowArray {
+		// supabase-js lists the union of keys for array writes; keys outside
+		// the list are ignored and missing keys become NULL.
+		for _, name := range strings.Split(raw, ",") {
+			name = strings.Trim(strings.TrimSpace(name), `"`)
 			if _, err := table.column(name); err != nil {
 				return nil, nil, err
 			}
 			seen[name] = true
+		}
+	} else {
+		for _, record := range records {
+			for name := range record {
+				if _, err := table.column(name); err != nil {
+					return nil, nil, err
+				}
+				seen[name] = true
+			}
 		}
 	}
 	if len(seen) == 0 {
@@ -661,6 +733,15 @@ func writeAPIError(w http.ResponseWriter, err error) {
 				message = "related record does not exist"
 			case "23514":
 				message = "record violates a data constraint"
+			case "42501":
+				message = "not allowed by the project's permissions or row level security"
+			case "P0001":
+				// Raised on purpose by the project's own SQL (RAISE EXCEPTION),
+				// so the text is meant for the caller, as in PostgREST.
+				message = pgErr.Message
+				if len(message) > 300 {
+					message = message[:300]
+				}
 			}
 			if pgErr.Detail != "" {
 				details = pgErr.Detail

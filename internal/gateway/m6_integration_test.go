@@ -106,7 +106,11 @@ func TestM6TOTPFlowAndAAL(t *testing.T) {
 	if claims, err := keys.VerifyJWT(aal2.Access, jwtSecret, time.Now()); err != nil || claims.AAL != "aal2" || !bytes.Contains(claims.JSON, []byte(`"method":"totp"`)) {
 		t.Fatalf("verified AAL claims=%s err=%v", claims.JSON, err)
 	}
-	requestAuthJSONBearer(t, httpServer.Client(), http.MethodPost, httpServer.URL+"/auth/v1/factors/"+factor.ID+"/verify", p.AnonKey, aal1.Access, `{"challenge_id":"`+challenged.ID+`","code":"`+code+`"}`, http.StatusBadRequest)
+	// Elevating to aal2 ends the aal1 session, so its access token is refused
+	// everywhere from now on, not only when it expires.
+	requestAuthJSONBearer(t, httpServer.Client(), http.MethodGet, httpServer.URL+"/auth/v1/user", p.AnonKey, aal1.Access, "", http.StatusUnauthorized)
+	// The same TOTP code cannot be used twice, even from a valid session.
+	requestAuthJSONBearer(t, httpServer.Client(), http.MethodPost, httpServer.URL+"/auth/v1/factors/"+factor.ID+"/verify", p.AnonKey, aal2.Access, `{"challenge_id":"`+challenged.ID+`","code":"`+code+`"}`, http.StatusBadRequest)
 
 	rotated := requestAuthJSON(t, httpServer.Client(), http.MethodPost, httpServer.URL+"/auth/v1/token?grant_type=refresh_token", p.AnonKey, `{"refresh_token":"`+aal2.Refresh+`"}`, http.StatusOK)
 	var refreshed struct {
@@ -119,7 +123,15 @@ func TestM6TOTPFlowAndAAL(t *testing.T) {
 	if claims, err := keys.VerifyJWT(refreshed.Access, jwtSecret, time.Now()); err != nil || claims.AAL != "aal2" {
 		t.Fatalf("refreshed AAL claims=%+v err=%v", claims, err)
 	}
-	requestAuthJSONBearer(t, httpServer.Client(), http.MethodDelete, httpServer.URL+"/auth/v1/factors/"+factor.ID, p.AnonKey, aal1.Access, "", http.StatusUnprocessableEntity)
+	// A password-only (aal1) session cannot remove a verified factor.
+	relogin := requestAuthJSON(t, httpServer.Client(), http.MethodPost, httpServer.URL+"/auth/v1/token?grant_type=password", p.AnonKey, `{"email":"`+email+`","password":"correct horse battery staple"}`, http.StatusOK)
+	var aal1Again struct {
+		Access string `json:"access_token"`
+	}
+	if err := json.Unmarshal(relogin, &aal1Again); err != nil || aal1Again.Access == "" {
+		t.Fatalf("second login: %s", relogin)
+	}
+	requestAuthJSONBearer(t, httpServer.Client(), http.MethodDelete, httpServer.URL+"/auth/v1/factors/"+factor.ID, p.AnonKey, aal1Again.Access, "", http.StatusUnprocessableEntity)
 	requestAuthJSONBearer(t, httpServer.Client(), http.MethodDelete, httpServer.URL+"/auth/v1/factors/"+factor.ID, p.AnonKey, refreshed.Access, "", http.StatusOK)
 	downgraded := requestAuthJSON(t, httpServer.Client(), http.MethodPost, httpServer.URL+"/auth/v1/token?grant_type=refresh_token", p.AnonKey, `{"refresh_token":"`+refreshed.Refresh+`"}`, http.StatusOK)
 	if err := json.Unmarshal(downgraded, &refreshed); err != nil {

@@ -33,7 +33,7 @@ func writeJSON(w http.ResponseWriter, status int, value any) {
 func decodeJSON(r *http.Request, dst any) error {
 	dec := json.NewDecoder(r.Body)
 	if err := dec.Decode(dst); err != nil {
-		return httpError(http.StatusBadRequest, "invalid JSON body")
+		return bodyError(err, "invalid JSON body")
 	}
 	return nil
 }
@@ -106,16 +106,21 @@ func accessToken(p project, id, email, session, aal, method string) (string, err
 	})
 }
 
-func (s *Server) issueSession(ctx context.Context, p project, tx pgx.Tx, id, email, aal, method string) (map[string]any, error) {
-	session, err := auth.UUID()
+// issueSession starts a new sign-in session, or continues session (keeping its
+// ID) when one is given, as a refresh does.
+func (s *Server) issueSession(ctx context.Context, p project, tx pgx.Tx, id, email, aal, method, session string) (map[string]any, error) {
+	row, err := auth.UUID()
 	if err != nil {
 		return nil, err
+	}
+	if session == "" {
+		session = row
 	}
 	refresh, digest, err := auth.RandomToken(32)
 	if err != nil {
 		return nil, err
 	}
-	if _, err = tx.Exec(ctx, `INSERT INTO auth.refresh_tokens(id,user_id,token_hash,expires_at,aal) VALUES($1,$2,$3,now()+interval '30 days',$4)`, session, id, digest, aal); err != nil {
+	if _, err = tx.Exec(ctx, `INSERT INTO auth.refresh_tokens(id,user_id,token_hash,expires_at,aal,session_id) VALUES($1,$2,$3,now()+interval '30 days',$4,$5)`, row, id, digest, aal, session); err != nil {
 		return nil, err
 	}
 	access, err := accessToken(p, id, email, session, aal, method)
@@ -249,7 +254,7 @@ func (s *Server) authToken(w http.ResponseWriter, r *http.Request) {
 		if confirmed == nil {
 			return httpError(400, "email not confirmed")
 		}
-		session, err := s.issueSession(r.Context(), p, tx, id, email, "aal1", "password")
+		session, err := s.issueSession(r.Context(), p, tx, id, email, "aal1", "password", "")
 		if err != nil {
 			return err
 		}
@@ -268,22 +273,40 @@ func (s *Server) authToken(w http.ResponseWriter, r *http.Request) {
 }
 
 func (s *Server) refreshTx(ctx context.Context, p project, tx pgx.Tx, raw string, out *map[string]any, replayed *bool) error {
-	var id, user, aal string
+	var id, user, aal, session string
 	var expires time.Time
 	var revoked *time.Time
+	var recentlyRotated bool
 	var email string
-	err := tx.QueryRow(ctx, `SELECT id,user_id,expires_at,revoked_at,aal FROM auth.refresh_tokens WHERE token_hash=$1 FOR UPDATE`, tokenHash(raw)).Scan(&id, &user, &expires, &revoked, &aal)
+	err := tx.QueryRow(ctx, `SELECT id,user_id,expires_at,revoked_at,aal,COALESCE(session_id,id)::text,
+  replaced_by IS NOT NULL AND revoked_at > now() - make_interval(secs => $2)
+FROM auth.refresh_tokens WHERE token_hash=$1 FOR UPDATE`, tokenHash(raw), s.refreshReuse.Seconds()).Scan(&id, &user, &expires, &revoked, &aal, &session, &recentlyRotated)
 	if err != nil || expires.Before(time.Now()) {
 		return httpError(400, "invalid refresh token")
 	}
 	if revoked != nil {
-		// Commit the family revocation before reporting a replay to the caller.
-		_, err = tx.Exec(ctx, `UPDATE auth.refresh_tokens SET revoked_at=COALESCE(revoked_at,now()) WHERE user_id=$1`, user)
-		if err != nil {
+		var live bool
+		if err = tx.QueryRow(ctx, `SELECT EXISTS(SELECT 1 FROM auth.refresh_tokens WHERE COALESCE(session_id,id)=$1::uuid AND revoked_at IS NULL AND expires_at>now())`, session).Scan(&live); err != nil {
 			return err
 		}
-		*replayed = true
-		return nil
+		if !live {
+			// The session already ended (signed out): nothing left to protect.
+			return httpError(400, "invalid refresh token")
+		}
+		if !recentlyRotated {
+			// A rotated token used again long after rotation is treated as
+			// stolen: end every session of the user. Commit the revocation
+			// before reporting a replay to the caller.
+			_, err = tx.Exec(ctx, `UPDATE auth.refresh_tokens SET revoked_at=COALESCE(revoked_at,now()) WHERE user_id=$1`, user)
+			if err != nil {
+				return err
+			}
+			s.endSessions(p.id, user, "")
+			*replayed = true
+			return nil
+		}
+		// Another tab refreshed with the same token moments ago. Give this
+		// caller its own token in the same session rather than ending it.
 	}
 	if err = tx.QueryRow(ctx, `SELECT email FROM auth.users WHERE id=$1`, user).Scan(&email); err != nil {
 		return err
@@ -300,13 +323,15 @@ func (s *Server) refreshTx(ctx context.Context, p project, tx pgx.Tx, raw string
 			aal = "aal1"
 		}
 	}
-	newSession, err := s.issueSession(ctx, p, tx, user, email, aal, method)
+	newSession, err := s.issueSession(ctx, p, tx, user, email, aal, method, session)
 	if err != nil {
 		return err
 	}
-	newID := newSession["refresh_token"].(string)
-	if _, err = tx.Exec(ctx, `UPDATE auth.refresh_tokens SET revoked_at=now(),replaced_by=(SELECT id FROM auth.refresh_tokens WHERE token_hash=$1) WHERE id=$2`, tokenHash(newID), id); err != nil {
-		return err
+	if revoked == nil {
+		newID := newSession["refresh_token"].(string)
+		if _, err = tx.Exec(ctx, `UPDATE auth.refresh_tokens SET revoked_at=now(),replaced_by=(SELECT id FROM auth.refresh_tokens WHERE token_hash=$1) WHERE id=$2`, tokenHash(newID), id); err != nil {
+			return err
+		}
 	}
 	*out = newSession
 	return nil
@@ -331,7 +356,7 @@ func (s *Server) authVerify(w http.ResponseWriter, r *http.Request) {
 				return err
 			}
 			var e error
-			out, e = s.issueSession(r.Context(), p, tx, id, email, "aal1", "recovery")
+			out, e = s.issueSession(r.Context(), p, tx, id, email, "aal1", "recovery", "")
 			if e != nil {
 				return e
 			}
@@ -406,6 +431,9 @@ func (s *Server) bearerUser(r *http.Request) (project, keys.Claims, error) {
 	if err != nil || c.Subject == "" || c.Audience != "authenticated" || c.Role != "authenticated" {
 		return project{}, keys.Claims{}, httpError(401, "invalid JWT")
 	}
+	if err := s.requireActiveSession(r.Context(), p, cSessionID(c), c.Subject); err != nil {
+		return project{}, keys.Claims{}, err
+	}
 	return p, c, nil
 }
 
@@ -419,13 +447,14 @@ func (s *Server) authLogout(w http.ResponseWriter, r *http.Request) {
 		if cSessionID(c) == "" {
 			return httpError(http.StatusUnauthorized, "invalid JWT session")
 		}
-		_, e := tx.Exec(r.Context(), `UPDATE auth.refresh_tokens SET revoked_at=COALESCE(revoked_at,now()) WHERE id=$1 AND user_id=$2`, cSessionID(c), c.Subject)
+		_, e := tx.Exec(r.Context(), `UPDATE auth.refresh_tokens SET revoked_at=COALESCE(revoked_at,now()) WHERE COALESCE(session_id,id)=$1::uuid AND user_id=$2`, cSessionID(c), c.Subject)
 		return e
 	})
 	if err != nil {
 		writeAPIError(w, err)
 		return
 	}
+	s.endSessions(p.id, c.Subject, cSessionID(c))
 	w.WriteHeader(http.StatusNoContent)
 }
 
@@ -666,5 +695,6 @@ func (s *Server) authAdminDelete(w http.ResponseWriter, r *http.Request) {
 		writeAPIError(w, err)
 		return
 	}
+	s.endSessions(p.id, id, "")
 	w.WriteHeader(http.StatusNoContent)
 }

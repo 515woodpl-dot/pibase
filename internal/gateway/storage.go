@@ -204,7 +204,7 @@ func storageSubject(who principal) string {
 
 func decodeStorageJSON(r *http.Request, dst any) error {
 	if err := json.NewDecoder(r.Body).Decode(dst); err != nil {
-		return httpError(http.StatusBadRequest, "invalid JSON body")
+		return bodyError(err, "invalid JSON body")
 	}
 	return nil
 }

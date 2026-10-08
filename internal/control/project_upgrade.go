@@ -13,8 +13,18 @@ import (
 // databases. Version 5 introduced realtime/cron; version 6 added TOTP MFA;
 // version 8 moved managed schemas from the customer admin to the operator;
 // version 9 narrowed admin table grants and data-driven CREATE revoke; version
-// 10 adds public-table API defaults and RLS for owner-created tables.
-const currentProjectSchemaVersion = 10
+// 10 adds public-table API defaults and RLS for owner-created tables; version
+// 11 keeps one session ID across refresh-token rotation, adds auth.jwt(),
+// auth.role(), the storage path helpers and write hook, and lets the project
+// admin create and update buckets.
+const currentProjectSchemaVersion = 11
+
+// sessionUpgradeSQL records which sign-in session each refresh token belongs
+// to. Rows written before this column existed are their own session.
+const sessionUpgradeSQL = `
+ALTER TABLE auth.refresh_tokens ADD COLUMN IF NOT EXISTS session_id uuid;
+CREATE INDEX IF NOT EXISTS refresh_tokens_session_idx ON auth.refresh_tokens ((COALESCE(session_id,id)));
+`
 
 var managedSchemas = []string{"auth", "storage", "realtime", "cron"}
 
@@ -229,7 +239,7 @@ GRANT SELECT,INSERT,UPDATE,DELETE ON cron.jobs,cron.webhook_outbox TO ` + q(admi
 REVOKE TRIGGER,REFERENCES,TRUNCATE ON cron.jobs,cron.webhook_outbox FROM ` + q(admin) + `;
 GRANT USAGE,SELECT ON ALL SEQUENCES IN SCHEMA cron TO ` + q(admin) + `;
 GRANT EXECUTE ON FUNCTION cron.enqueue_webhook() TO ` + q(admin) + `;
-` + mfaUpgradeSQL + `
+` + mfaUpgradeSQL + sessionUpgradeSQL + compatibilitySQL(admin, anon, authenticated, service) + `
 
 ALTER SCHEMA auth OWNER TO CURRENT_USER;
 ALTER SCHEMA storage OWNER TO CURRENT_USER;
@@ -329,4 +339,76 @@ func ensureNoCustomerManagedObjects(ctx context.Context, tx pgx.Tx) error {
 		return fmt.Errorf("customer-owned objects in managed schemas: %s", strings.Join(objects, ", "))
 	}
 	return nil
+}
+
+// compatibilitySQL adds Supabase's auth.jwt()/auth.role() and storage path
+// helpers, a write hook that lets a project narrow uploads with its own
+// migration, and row access for the project admin so migrations can create and
+// update buckets.
+//
+// The default storage_object_owner policy lets any signed-in user write objects
+// they own. Policies on storage.objects belong to the operator, and permissive
+// policies can only widen access, so a project cannot narrow that rule itself.
+// Instead, when the project defines
+//
+//	public.storage_write_allowed(bucket_id text, name text) RETURNS boolean
+//
+// every signed-in insert, update and delete must also satisfy it. The hook runs
+// with the caller's rights; a missing function allows the write, and a NULL
+// result or an error refuses it. The service role is not affected.
+func compatibilitySQL(admin, anon, authenticated, service string) string {
+	q := func(role string) string { return pgx.Identifier{role}.Sanitize() }
+	everyone := q(anon) + ", " + q(authenticated) + ", " + q(service) + ", " + q(admin)
+	return `
+CREATE OR REPLACE FUNCTION auth.jwt() RETURNS jsonb
+LANGUAGE sql STABLE SET search_path = pg_catalog
+AS $$ SELECT coalesce(nullif(current_setting('request.jwt.claims', true), ''), '{}')::jsonb $$;
+CREATE OR REPLACE FUNCTION auth.role() RETURNS text
+LANGUAGE sql STABLE SET search_path = pg_catalog
+AS $$ SELECT auth.jwt() ->> 'role' $$;
+REVOKE ALL ON FUNCTION auth.jwt(), auth.role() FROM PUBLIC;
+GRANT EXECUTE ON FUNCTION auth.jwt(), auth.role() TO ` + everyone + `;
+CREATE OR REPLACE FUNCTION storage.foldername(name text) RETURNS text[]
+LANGUAGE sql IMMUTABLE STRICT PARALLEL SAFE SET search_path = pg_catalog
+AS $$ SELECT (string_to_array(name, '/'))[1:greatest(coalesce(array_length(string_to_array(name, '/'), 1), 0) - 1, 0)] $$;
+CREATE OR REPLACE FUNCTION storage.filename(name text) RETURNS text
+LANGUAGE sql IMMUTABLE STRICT PARALLEL SAFE SET search_path = pg_catalog
+AS $$ SELECT (string_to_array(name, '/'))[array_length(string_to_array(name, '/'), 1)] $$;
+CREATE OR REPLACE FUNCTION storage.extension(name text) RETURNS text
+LANGUAGE sql IMMUTABLE STRICT PARALLEL SAFE SET search_path = pg_catalog
+AS $$ SELECT reverse(split_part(reverse(storage.filename(name)), '.', 1)) $$;
+CREATE OR REPLACE FUNCTION storage.write_allowed(bucket text, object_name text) RETURNS boolean
+LANGUAGE plpgsql STABLE SET search_path = pg_catalog
+AS $$
+DECLARE allowed boolean;
+BEGIN
+  IF to_regprocedure('public.storage_write_allowed(text,text)') IS NULL THEN
+    RETURN true;
+  END IF;
+  EXECUTE 'SELECT public.storage_write_allowed($1, $2)' INTO allowed USING bucket, object_name;
+  RETURN coalesce(allowed, false);
+END $$;
+REVOKE ALL ON FUNCTION storage.foldername(text), storage.filename(text), storage.extension(text), storage.write_allowed(text, text) FROM PUBLIC;
+GRANT EXECUTE ON FUNCTION storage.foldername(text), storage.filename(text), storage.extension(text), storage.write_allowed(text, text) TO ` + everyone + `;
+DROP POLICY IF EXISTS storage_object_write_hook_insert ON storage.objects;
+CREATE POLICY storage_object_write_hook_insert ON storage.objects AS RESTRICTIVE FOR INSERT TO ` + q(authenticated) + `
+  WITH CHECK (storage.write_allowed(bucket_id, name));
+DROP POLICY IF EXISTS storage_object_write_hook_update ON storage.objects;
+CREATE POLICY storage_object_write_hook_update ON storage.objects AS RESTRICTIVE FOR UPDATE TO ` + q(authenticated) + `
+  USING (storage.write_allowed(bucket_id, name)) WITH CHECK (storage.write_allowed(bucket_id, name));
+DROP POLICY IF EXISTS storage_object_write_hook_delete ON storage.objects;
+CREATE POLICY storage_object_write_hook_delete ON storage.objects AS RESTRICTIVE FOR DELETE TO ` + q(authenticated) + `
+  USING (storage.write_allowed(bucket_id, name));
+-- Migrations may create and change buckets. Deleting one goes through the
+-- storage API so its files are removed too, and object rows stay read-only
+-- here because they must match the files on disk.
+DROP POLICY IF EXISTS storage_bucket_admin_read ON storage.buckets;
+CREATE POLICY storage_bucket_admin_read ON storage.buckets FOR SELECT TO ` + q(admin) + ` USING (true);
+DROP POLICY IF EXISTS storage_bucket_admin_insert ON storage.buckets;
+CREATE POLICY storage_bucket_admin_insert ON storage.buckets FOR INSERT TO ` + q(admin) + ` WITH CHECK (true);
+DROP POLICY IF EXISTS storage_bucket_admin_update ON storage.buckets;
+CREATE POLICY storage_bucket_admin_update ON storage.buckets FOR UPDATE TO ` + q(admin) + ` USING (true) WITH CHECK (true);
+DROP POLICY IF EXISTS storage_object_admin_read ON storage.objects;
+CREATE POLICY storage_object_admin_read ON storage.objects FOR SELECT TO ` + q(admin) + ` USING (true);
+`
 }

@@ -51,6 +51,11 @@ func (s *Server) authenticate(ctx context.Context, r *http.Request) (principal, 
 			return principal{}, httpError(http.StatusUnauthorized, "invalid JWT")
 		}
 		var databaseRole string
+		if claims.Role == "authenticated" {
+			if err := s.requireActiveSession(ctx, project, sessionIDFromClaims(claims.JSON), claims.Subject); err != nil {
+				return principal{}, err
+			}
+		}
 		switch claims.Role {
 		case "anon":
 			databaseRole = project.anonRole

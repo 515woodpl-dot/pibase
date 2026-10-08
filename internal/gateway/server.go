@@ -2,6 +2,7 @@ package gateway
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"log/slog"
 	"net/http"
@@ -41,6 +42,9 @@ type Server struct {
 	schedulerWG        sync.WaitGroup
 	smtp               smtpConfig
 	activity           *activityRecorder
+	sessions           sessionCache
+	refreshReuse       time.Duration
+	maxBodyBytes       int64
 	activityStop       context.CancelFunc
 	activityWG         sync.WaitGroup
 }
@@ -90,6 +94,16 @@ func New(ctx context.Context, databaseURL string, masterKey []byte, activeProjec
 		controlPool.Close()
 		return nil, fmt.Errorf("PIBASE_AUTH_EXPOSE_TOKENS requires PIBASE_ENV=test")
 	}
+	refreshReuseSeconds, err := config.Int("PIBASE_REFRESH_REUSE_SECONDS", 10)
+	if err != nil || refreshReuseSeconds < 0 || refreshReuseSeconds > 60 {
+		controlPool.Close()
+		return nil, fmt.Errorf("PIBASE_REFRESH_REUSE_SECONDS must be between 0 and 60")
+	}
+	maxBodyBytes, err := config.Int("PIBASE_MAX_BODY_BYTES", defaultMaxBodyBytes)
+	if err != nil || maxBodyBytes < 64<<10 || maxBodyBytes > 16<<20 {
+		controlPool.Close()
+		return nil, fmt.Errorf("PIBASE_MAX_BODY_BYTES must be between 65536 and 16777216")
+	}
 	maxProjectConnections, err := config.Int("PIBASE_MAX_PROJECT_CONNECTIONS", 30)
 	if err != nil || maxProjectConnections < 1 {
 		controlPool.Close()
@@ -109,6 +123,8 @@ func New(ctx context.Context, databaseURL string, masterKey []byte, activeProjec
 		startedAt:         time.Now(),
 		smtp:              smtpFromEnv(),
 		activity:          newActivityRecorder(),
+		refreshReuse:      time.Duration(refreshReuseSeconds) * time.Second,
+		maxBodyBytes:      int64(maxBodyBytes),
 	}
 	if s.realtime, err = newRealtimeHub(s); err != nil {
 		s.Close()
@@ -248,7 +264,11 @@ func (s *Server) Handler() http.Handler {
 		w.Header().Set("Content-Type", "application/json")
 		_, _ = w.Write([]byte(`{"status":"ok"}`))
 	})
-	limited := http.MaxBytesHandler(mux, 1<<20)
+	bodyLimit := s.maxBodyBytes
+	if bodyLimit == 0 {
+		bodyLimit = defaultMaxBodyBytes
+	}
+	limited := http.MaxBytesHandler(mux, bodyLimit)
 	return cors(s.observeActivity(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		s.requestCount.Add(1)
 		// Storage uploads stream directly to disk and enforce their own 1 GiB
@@ -261,13 +281,36 @@ func (s *Server) Handler() http.Handler {
 	})))
 }
 
+// defaultMaxBodyBytes caps every API request body except storage uploads,
+// which stream to disk under their own limit. PIBASE_MAX_BODY_BYTES changes it.
+const defaultMaxBodyBytes = 1 << 20
+
+// bodyError reports an oversized body as 413 with the limit, and anything else
+// that fails to decode as 400 with the given message.
+func bodyError(err error, invalid string) error {
+	var tooLarge *http.MaxBytesError
+	if errors.As(err, &tooLarge) {
+		return httpError(http.StatusRequestEntityTooLarge, fmt.Sprintf("request body is larger than the %d-byte limit (PIBASE_MAX_BODY_BYTES)", tooLarge.Limit))
+	}
+	return httpError(http.StatusBadRequest, invalid)
+}
+
+// corsAllowHeaders lists every request header the Supabase JavaScript clients
+// send for features pibase implements: auth (x-supabase-api-version), the
+// data API (accept-profile, content-profile, prefer, range, x-retry-count) and
+// storage (x-upsert, x-metadata, cache-control). A browser refuses the whole
+// request when any header it sends is missing here.
+const corsAllowHeaders = "authorization, apikey, content-type, prefer, range, range-unit, x-client-info, " +
+	"x-supabase-api-version, accept-profile, content-profile, x-retry-count, x-upsert, x-metadata, cache-control"
+
 func cors(next http.Handler) http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		w.Header().Set("Access-Control-Allow-Origin", "*")
-		w.Header().Set("Access-Control-Allow-Headers", "authorization, apikey, content-type, prefer, range, x-client-info")
-		w.Header().Set("Access-Control-Allow-Methods", "GET, HEAD, POST, PATCH, DELETE, OPTIONS")
+		w.Header().Set("Access-Control-Allow-Headers", corsAllowHeaders)
+		w.Header().Set("Access-Control-Allow-Methods", "GET, HEAD, POST, PUT, PATCH, DELETE, OPTIONS")
 		w.Header().Set("Access-Control-Expose-Headers", "Content-Range, Range-Unit, X-Affected-Rows")
 		if r.Method == http.MethodOptions {
+			w.Header().Set("Access-Control-Max-Age", "600")
 			w.WriteHeader(http.StatusNoContent)
 			return
 		}
