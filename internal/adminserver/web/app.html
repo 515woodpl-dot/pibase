@@ -390,15 +390,16 @@ async function openMigrations(note_){
   const p=pane('Migrations',intro);const name=input('text','for example: create_todos'),sql=el('textarea');sql.placeholder='create table todos (id serial primary key, title text)';const status=note(note_||'');
   p.append(group('Apply a migration','Give it a short unique name and the SQL to run. If it fails nothing is changed.',field('Name',name,'Letters, numbers and underscores.'),field('SQL',sql),button('Apply',async()=>{try{await api(projectPath()+'/migrations',body({name:name.value,sql:sql.value}));openMigrations('Applied: '+name.value)}catch(e){status.textContent=e.message}},'primary'),status));
   p.append(el('h2','Already applied'));
-  try{const ms=await api(projectPath()+'/migrations');for(const m of ms){const d=el('div',null,'item');d.append(el('b',m.name),el('span',m.checksum+' · '+new Date(m.applied_at).toLocaleString()));p.append(d)}if(!ms.length)p.append(note('No migrations applied yet.'))}catch(e){p.append(el('p',e.message))}
-  add(p)
+  // Show the page now; only the list below waits for the server.
+  const wait=note('Loading…');p.append(wait);add(p);
+  try{const ms=await api(projectPath()+'/migrations');wait.remove();for(const m of ms){const d=el('div',null,'item');d.append(el('b',m.name),el('span',m.checksum+' · '+new Date(m.applied_at).toLocaleString()));p.append(d)}if(!ms.length)p.append(note('No migrations applied yet.'))}catch(e){wait.textContent=e.message}
 }
 async function openBackups(msg){
   clearFrom(2);const p=pane('Backups','A backup is an encrypted saved copy of this project\'s database. Create one before risky changes. Restoring a backup is done by the server operator.');const status=note(msg||'');
   p.append(group('Create a backup','Saves a copy of the database right now. It can take a few seconds.',button('Back up now',async()=>{try{const r=await api(projectPath()+'/backup',{method:'POST'});openBackups('Created: '+r.file)}catch(e){status.textContent=e.message}},'primary'),status));
   p.append(el('h2','Saved backups'));
-  try{const bs=await api(projectPath()+'/backups');for(const b of bs){const d=el('div',null,'item');d.append(el('b',b.name),el('span',Math.round(b.size/1024)+' KB'));p.append(d)}if(!bs.length)p.append(note('No backups yet.'))}catch(e){p.append(el('p',e.message))}
-  add(p)
+  const wait=note('Loading…');p.append(wait);add(p);
+  try{const bs=await api(projectPath()+'/backups');wait.remove();for(const b of bs){const d=el('div',null,'item');d.append(el('b',b.name),el('span',Math.round(b.size/1024)+' KB'));p.append(d)}if(!bs.length)p.append(note('No backups yet.'))}catch(e){wait.textContent=e.message}
 }
 function openExtensions(){
   clearFrom(2);const p=pane('Extensions','Optional add-ons for the database: PostGIS for maps and locations, and pgvector for similarity search. They change the shared database server, so only the operator can turn them on.');
