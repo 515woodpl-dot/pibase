@@ -187,8 +187,31 @@ func (e *auditEnv) status(method, path, bearer, body string) int {
 
 func TestAuditLogoutEndsTheSessionsAccessTokens(t *testing.T) {
 	e := newAuditEnv(t, nil)
+	auth := pgx.Identifier{e.authenticated}.Sanitize()
 	e.mustSQL(`CREATE TABLE notes (id int PRIMARY KEY, body text);
-CREATE POLICY notes_rw ON notes FOR ALL TO ` + pgx.Identifier{e.authenticated}.Sanitize() + ` USING (true) WITH CHECK (true);`)
+CREATE POLICY notes_rw ON notes FOR ALL TO ` + auth + ` USING (true) WITH CHECK (true);
+-- The guard Visual Edit installed for earlier releases: the token's
+-- session_id must name an unrevoked refresh-token row.
+CREATE FUNCTION public.token_row_live() RETURNS boolean LANGUAGE sql STABLE SECURITY DEFINER SET search_path = public AS $$
+  SELECT EXISTS (SELECT 1 FROM auth.refresh_tokens
+    WHERE id = (auth.jwt() ->> 'session_id')::uuid AND revoked_at IS NULL AND expires_at > now())
+$$;
+GRANT EXECUTE ON FUNCTION public.token_row_live() TO ` + auth + `;
+CREATE TABLE guarded (id int PRIMARY KEY);
+CREATE POLICY guarded_rw ON guarded FOR ALL TO ` + auth + ` USING (public.token_row_live()) WITH CHECK (public.token_row_live());`)
+	ctx := context.Background()
+	db, err := pgx.Connect(ctx, databaseURL(t, e.adminURL, e.p.Database, parsedUsername(t, e.adminURL), urlPassword(t, e.adminURL)))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer db.Close(ctx)
+	rowState := func(token string) (live bool, sessionGroup string) {
+		t.Helper()
+		if err := db.QueryRow(ctx, `SELECT revoked_at IS NULL, COALESCE(session_id,id)::text FROM auth.refresh_tokens WHERE id=$1::uuid`, tokenSession(t, token)).Scan(&live, &sessionGroup); err != nil {
+			t.Fatal(err)
+		}
+		return live, sessionGroup
+	}
 	userID := e.createUser("audit-session@example.test")
 	first := e.login("audit-session@example.test")
 	other := e.login("audit-session@example.test") // a second device
@@ -196,27 +219,36 @@ CREATE POLICY notes_rw ON notes FOR ALL TO ` + pgx.Identifier{e.authenticated}.S
 	if got := e.status("POST", "/rest/v1/notes", first.Access, `{"id":1,"body":"hello"}`); got != http.StatusCreated {
 		t.Fatalf("insert with a live session: %d", got)
 	}
-	// Refreshing keeps the session ID, and the access token from before the
-	// refresh keeps working: another tab may still be using it.
+	// After a refresh the new token names its own, unrevoked refresh-token
+	// row (so guards written for earlier releases keep passing), and both
+	// rows belong to the same sign-in.
 	refreshed := e.refresh(first.Refresh, http.StatusOK)
-	if tokenSession(t, refreshed.Access) == "" || tokenSession(t, refreshed.Access) != tokenSession(t, first.Access) {
-		t.Fatalf("refresh changed the session: %s -> %s", tokenSession(t, first.Access), tokenSession(t, refreshed.Access))
+	firstLive, firstGroup := rowState(first.Access)
+	newLive, newGroup := rowState(refreshed.Access)
+	if firstLive || !newLive || firstGroup != newGroup {
+		t.Fatalf("after refresh: old row live=%v new row live=%v groups %s/%s", firstLive, newLive, firstGroup, newGroup)
 	}
+	if got := e.status("POST", "/rest/v1/guarded", refreshed.Access, `{"id":1}`); got != http.StatusCreated {
+		t.Fatalf("existing row guard rejected a refreshed token: %d", got)
+	}
+	// pibase itself still accepts the pre-refresh token: another tab may be
+	// using it.
 	if got := e.status("GET", "/rest/v1/notes?select=id", first.Access, ""); got != http.StatusOK {
 		t.Fatalf("pre-refresh token after refresh: %d", got)
 	}
 	// A second tab refreshing with the same token moments later gets its own
 	// token in the same session instead of ending everything.
 	sibling := e.refresh(first.Refresh, http.StatusOK)
-	if tokenSession(t, sibling.Access) != tokenSession(t, first.Access) {
-		t.Fatal("concurrent refresh started a different session")
+	if live, group := rowState(sibling.Access); !live || group != firstGroup {
+		t.Fatalf("concurrent refresh: live=%v group=%s, want the same sign-in", live, group)
 	}
 	if got := e.status("GET", "/auth/v1/user", refreshed.Access, ""); got != http.StatusOK {
 		t.Fatalf("session after concurrent refresh: %d", got)
 	}
 
-	// A realtime connection of this session is closed by logout.
-	header := http.Header{"Authorization": {"Bearer " + refreshed.Access}}
+	// A realtime connection opened with an older token of this sign-in is
+	// closed when the sign-in ends.
+	header := http.Header{"Authorization": {"Bearer " + first.Access}}
 	wsURL := "ws" + strings.TrimPrefix(e.h.URL, "http") + "/realtime/v1/websocket?apikey=" + e.p.AnonKey
 	conn, _, err := websocket.DefaultDialer.Dial(wsURL, header)
 	if err != nil {

@@ -209,6 +209,7 @@ func (s *Server) authMFAVerify(w http.ResponseWriter, r *http.Request) {
 	}
 	factorID := r.PathValue("id")
 	var session map[string]any
+	var ended []string
 	err = s.adminTx(r.Context(), p, func(tx pgx.Tx) error {
 		var encrypted []byte
 		var expires time.Time
@@ -247,14 +248,14 @@ FOR UPDATE OF c,f`, req.ChallengeID, factorID, claims.Subject).Scan(&encrypted, 
 		if sessionID == "" {
 			return httpError(http.StatusBadRequest, "invalid JWT session")
 		}
-		_, err = tx.Exec(r.Context(), `UPDATE auth.refresh_tokens SET revoked_at=COALESCE(revoked_at,now()) WHERE COALESCE(session_id,id)=$1::uuid AND user_id=$2`, sessionID, claims.Subject)
+		ended, err = revokeSession(r.Context(), tx, sessionID, claims.Subject)
 		return err
 	})
 	if err != nil {
 		writeAPIError(w, err)
 		return
 	}
-	s.endSessions(p.id, claims.Subject, cSessionID(claims))
+	s.endSessions(p.id, claims.Subject, ended)
 	writeJSON(w, http.StatusOK, session)
 }
 

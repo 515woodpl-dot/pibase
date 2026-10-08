@@ -106,8 +106,8 @@ func accessToken(p project, id, email, session, aal, method string) (string, err
 	})
 }
 
-// issueSession starts a new sign-in session, or continues session (keeping its
-// ID) when one is given, as a refresh does.
+// issueSession starts a new sign-in session, or adds a token to session when
+// one is given, as a refresh does. The access token names the new row.
 func (s *Server) issueSession(ctx context.Context, p project, tx pgx.Tx, id, email, aal, method, session string) (map[string]any, error) {
 	row, err := auth.UUID()
 	if err != nil {
@@ -123,7 +123,7 @@ func (s *Server) issueSession(ctx context.Context, p project, tx pgx.Tx, id, ema
 	if _, err = tx.Exec(ctx, `INSERT INTO auth.refresh_tokens(id,user_id,token_hash,expires_at,aal,session_id) VALUES($1,$2,$3,now()+interval '30 days',$4,$5)`, row, id, digest, aal, session); err != nil {
 		return nil, err
 	}
-	access, err := accessToken(p, id, email, session, aal, method)
+	access, err := accessToken(p, id, email, row, aal, method)
 	if err != nil {
 		return nil, err
 	}
@@ -301,7 +301,7 @@ FROM auth.refresh_tokens WHERE token_hash=$1 FOR UPDATE`, tokenHash(raw), s.refr
 			if err != nil {
 				return err
 			}
-			s.endSessions(p.id, user, "")
+			s.endSessions(p.id, user, nil)
 			*replayed = true
 			return nil
 		}
@@ -443,18 +443,20 @@ func (s *Server) authLogout(w http.ResponseWriter, r *http.Request) {
 		writeAPIError(w, err)
 		return
 	}
+	var ended []string
 	err = s.adminTx(r.Context(), p, func(tx pgx.Tx) error {
 		if cSessionID(c) == "" {
 			return httpError(http.StatusUnauthorized, "invalid JWT session")
 		}
-		_, e := tx.Exec(r.Context(), `UPDATE auth.refresh_tokens SET revoked_at=COALESCE(revoked_at,now()) WHERE COALESCE(session_id,id)=$1::uuid AND user_id=$2`, cSessionID(c), c.Subject)
+		var e error
+		ended, e = revokeSession(r.Context(), tx, cSessionID(c), c.Subject)
 		return e
 	})
 	if err != nil {
 		writeAPIError(w, err)
 		return
 	}
-	s.endSessions(p.id, c.Subject, cSessionID(c))
+	s.endSessions(p.id, c.Subject, ended)
 	w.WriteHeader(http.StatusNoContent)
 }
 
@@ -695,6 +697,6 @@ func (s *Server) authAdminDelete(w http.ResponseWriter, r *http.Request) {
 		writeAPIError(w, err)
 		return
 	}
-	s.endSessions(p.id, id, "")
+	s.endSessions(p.id, id, nil)
 	w.WriteHeader(http.StatusNoContent)
 }
