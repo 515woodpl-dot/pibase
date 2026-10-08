@@ -11,12 +11,13 @@ import (
 	"github.com/jackc/pgx/v5"
 )
 
-// An access token names the sign-in session it belongs to in its session_id
-// claim. The session keeps its ID when refresh tokens rotate, and logging out
-// revokes every refresh token of the session. From then on the session's
-// access tokens are refused even though their signature and expiry are still
-// valid. Tokens without a session_id (minted by a project's own server with
-// the JWT secret) are not tied to a session and are not checked.
+// An access token's session_id claim names the refresh-token row it was issued
+// with, as in earlier releases, so project SQL that checks that row keeps
+// working. Every row of one sign-in shares a session (the session_id column),
+// which survives refresh-token rotation. Signing out revokes the whole
+// session, and from then on all of its access tokens are refused even though
+// their signature and expiry are still valid. Tokens without a session_id
+// (minted by a project's own server with the JWT secret) are not checked.
 
 const (
 	sessionCacheTTL = 15 * time.Second
@@ -48,12 +49,17 @@ func (c *sessionCache) remember(k sessionKey, now time.Time) {
 	c.active[k] = now.Add(sessionCacheTTL)
 }
 
-// forget drops cached sessions of one user, or one session when session is set.
-func (c *sessionCache) forget(project, session, user string) {
+// forget drops cached approvals of the given token rows, or of every token of
+// the user when rows is nil.
+func (c *sessionCache) forget(project, user string, rows []string) {
+	ended := make(map[string]bool, len(rows))
+	for _, row := range rows {
+		ended[row] = true
+	}
 	c.mu.Lock()
 	defer c.mu.Unlock()
 	for k := range c.active {
-		if k.project == project && k.user == user && (session == "" || k.session == session) {
+		if k.project == project && k.user == user && (rows == nil || ended[k.session]) {
 			delete(c.active, k)
 		}
 	}
@@ -68,6 +74,7 @@ func sessionIDFromClaims(raw []byte) string {
 }
 
 // requireActiveSession refuses an access token whose sign-in session has ended.
+// sessionID is the token's claim: the refresh-token row it was issued with.
 func (s *Server) requireActiveSession(ctx context.Context, p project, sessionID, userID string) error {
 	if sessionID == "" {
 		return nil
@@ -82,8 +89,9 @@ func (s *Server) requireActiveSession(ctx context.Context, p project, sessionID,
 	}
 	var active bool
 	err := s.adminTx(ctx, p, func(tx pgx.Tx) error {
-		return tx.QueryRow(ctx, `SELECT EXISTS(SELECT 1 FROM auth.refresh_tokens
-WHERE COALESCE(session_id,id)=$1::uuid AND user_id=$2::uuid AND revoked_at IS NULL AND expires_at>now())`, sessionID, userID).Scan(&active)
+		return tx.QueryRow(ctx, `SELECT EXISTS(SELECT 1 FROM auth.refresh_tokens f
+WHERE f.user_id=$2::uuid AND f.revoked_at IS NULL AND f.expires_at>now()
+  AND COALESCE(f.session_id,f.id) = (SELECT COALESCE(r.session_id,r.id) FROM auth.refresh_tokens r WHERE r.id=$1::uuid AND r.user_id=$2::uuid))`, sessionID, userID).Scan(&active)
 	})
 	if err != nil {
 		return err
@@ -95,12 +103,34 @@ WHERE COALESCE(session_id,id)=$1::uuid AND user_id=$2::uuid AND revoked_at IS NU
 	return nil
 }
 
+// revokeSession revokes every refresh token of the sign-in that tokenRow
+// belongs to and returns their IDs, which are also the session_id claims of
+// the sign-in's access tokens.
+func revokeSession(ctx context.Context, tx pgx.Tx, tokenRow, userID string) ([]string, error) {
+	rows, err := tx.Query(ctx, `UPDATE auth.refresh_tokens SET revoked_at=COALESCE(revoked_at,now())
+WHERE user_id=$2 AND COALESCE(session_id,id) = (SELECT COALESCE(session_id,id) FROM auth.refresh_tokens WHERE id=$1::uuid AND user_id=$2)
+RETURNING id::text`, tokenRow, userID)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	ended := []string{tokenRow}
+	for rows.Next() {
+		var id string
+		if err := rows.Scan(&id); err != nil {
+			return nil, err
+		}
+		ended = append(ended, id)
+	}
+	return ended, rows.Err()
+}
+
 // endSessions takes effect immediately in this gateway: cached approvals are
-// dropped and live realtime connections of the session (or of every session
-// of the user when sessionID is empty) are closed.
-func (s *Server) endSessions(projectID, userID, sessionID string) {
-	s.sessions.forget(projectID, sessionID, userID)
+// dropped and live realtime connections are closed, for the given token rows
+// or for every session of the user when rows is nil.
+func (s *Server) endSessions(projectID, userID string, rows []string) {
+	s.sessions.forget(projectID, userID, rows)
 	if s.realtime != nil {
-		s.realtime.closeSessions(projectID, userID, sessionID)
+		s.realtime.closeSessions(projectID, userID, rows)
 	}
 }

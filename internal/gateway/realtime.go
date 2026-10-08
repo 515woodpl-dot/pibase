@@ -304,9 +304,13 @@ func (c *realtimeClient) writeControl(kind int, data []byte, deadline time.Time)
 	return c.conn.WriteControl(kind, data, deadline)
 }
 
-// closeSessions disconnects the realtime clients of an ended session, or of
-// every session of the user when sessionID is empty.
-func (h *realtimeHub) closeSessions(projectID, userID, sessionID string) {
+// closeSessions disconnects realtime clients connected with the given token
+// rows, or every client of the user when rows is nil.
+func (h *realtimeHub) closeSessions(projectID, userID string, rows []string) {
+	match := make(map[string]bool, len(rows))
+	for _, row := range rows {
+		match[row] = true
+	}
 	var ended []*realtimeClient
 	h.mu.Lock()
 	for client := range h.clients {
@@ -318,7 +322,7 @@ func (h *realtimeHub) closeSessions(projectID, userID, sessionID string) {
 			SessionID string `json:"session_id"`
 		}
 		_ = json.Unmarshal(client.principal.claims, &claims)
-		if claims.Subject == userID && (sessionID == "" || claims.SessionID == sessionID) {
+		if claims.Subject == userID && (rows == nil || match[claims.SessionID]) {
 			ended = append(ended, client)
 		}
 	}

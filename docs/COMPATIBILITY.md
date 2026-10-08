@@ -79,19 +79,22 @@ through the storage API so their files are removed too.
 
 ## Sessions and sign-out
 
-* A sign-in session keeps one ID while its refresh token rotates. Access tokens
-  carry that ID.
-* Signing out ends the session. Its access tokens are refused at once by the
-  data API, functions, storage and auth, and its realtime connections are
-  closed. They don't keep working until they expire. Deleting a user does the
-  same. (`TestAuditLogoutEndsTheSessionsAccessTokens`)
-* Two tabs that refresh the same session within `PIBASE_REFRESH_REUSE_SECONDS`
+* Each refresh issues a new refresh token. An access token's `session_id`
+  claim names the refresh-token row it was issued with, as in earlier releases,
+  so SQL that checks that row in `auth.refresh_tokens` keeps working. All the
+  rows of one sign-in belong to the same session.
+* Signing out ends the whole sign-in. Every access token it ever issued is
+  refused at once by the data API, functions, storage and auth, and its
+  realtime connections are closed; they don't keep working until they expire.
+  Deleting a user does the same. Project SQL no longer needs its own sign-out
+  check. (`TestAuditLogoutEndsTheSessionsAccessTokens`)
+* Two tabs that refresh the same sign-in within `PIBASE_REFRESH_REUSE_SECONDS`
   (default 10) both get working tokens. Reusing an old refresh token after that
   window is treated as theft and ends every session of the user, as before.
   Set the value to 0 for strict detection.
 * Access tokens last one hour. A token your own server mints with the JWT secret
   must use `"iss": "pibase"`. Without a `session_id` claim it isn't tied to a
-  session, so it stays valid until its `exp`.
+  sign-in, so it stays valid until its `exp`.
 
 ## Concurrent editors
 
