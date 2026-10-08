@@ -5,7 +5,9 @@ import (
 	"crypto/rand"
 	"encoding/hex"
 	"encoding/json"
+	"errors"
 	"fmt"
+	"io/fs"
 	"os"
 	"path/filepath"
 	"strings"
@@ -43,10 +45,13 @@ type ProjectUsage struct {
 
 type ProjectStat struct {
 	ProjectSummary
-	DatabaseBytes int64  `json:"database_bytes"`
-	StorageBytes  int64  `json:"storage_bytes"`
-	Requests30d   int64  `json:"requests_30d"`
-	APIURL        string `json:"api_url,omitempty"`
+	DatabaseBytes int64 `json:"database_bytes"`
+	StorageBytes  int64 `json:"storage_bytes"`
+	// StorageError is set when the project's file folder cannot be read, so
+	// StorageBytes is unknown. The rest of the project list still loads.
+	StorageError string `json:"storage_error,omitempty"`
+	Requests30d  int64  `json:"requests_30d"`
+	APIURL       string `json:"api_url,omitempty"`
 }
 
 // ProjectStats returns bounded operator telemetry without keys or encrypted material.
@@ -93,6 +98,10 @@ pg_database_size(p.database_name),COALESCE((SELECT sum(requests) FROM control.pr
 		err := filepath.Walk(root, func(_ string, info os.FileInfo, walkErr error) error {
 			if os.IsNotExist(walkErr) {
 				return nil
+			}
+			if errors.Is(walkErr, fs.ErrPermission) {
+				item.StorageError = "the dashboard cannot read this project's files; PIBASE_UID and PIBASE_GID in .env must own the data folder"
+				return filepath.SkipAll
 			}
 			if walkErr != nil {
 				return walkErr

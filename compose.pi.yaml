@@ -4,16 +4,19 @@ services:
     volumes:
       - ${PIBASE_DATA_ROOT:-/srv/pibase}/postgres:/var/lib/postgresql/data
   gateway:
+    user: "${PIBASE_UID:?set PIBASE_UID in .env to the output of id -u}:${PIBASE_GID:?set PIBASE_GID in .env to the output of id -g}"
     restart: unless-stopped
     volumes:
       - ${PIBASE_DATA_ROOT:-/srv/pibase}/files:/data/files
       - ${PIBASE_DATA_ROOT:-/srv/pibase}/backups:/data/backups
   admin:
+    user: "${PIBASE_UID:?set PIBASE_UID in .env to the output of id -u}:${PIBASE_GID:?set PIBASE_GID in .env to the output of id -g}"
     restart: unless-stopped
     volumes:
       - ${PIBASE_DATA_ROOT:-/srv/pibase}/files:/data/files
       - ${PIBASE_DATA_ROOT:-/srv/pibase}/backups:/data/backups
   ops:
+    user: "${PIBASE_UID:?set PIBASE_UID in .env to the output of id -u}:${PIBASE_GID:?set PIBASE_GID in .env to the output of id -g}"
     volumes:
       - ${PIBASE_DATA_ROOT:-/srv/pibase}/files:/data/files
       - ${PIBASE_DATA_ROOT:-/srv/pibase}/backups:/data/backups
