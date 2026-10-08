@@ -25,6 +25,9 @@ CREATE TABLE IF NOT EXISTS control.sessions (
   expires_at  timestamptz NOT NULL,
   created_at  timestamptz NOT NULL DEFAULT now()
 );
+-- Organization the account belongs to, shown in the dashboard. Accounts created
+-- before this column existed have an empty name and are asked to add one.
+ALTER TABLE control.accounts ADD COLUMN IF NOT EXISTS organization text NOT NULL DEFAULT '';
 CREATE INDEX IF NOT EXISTS sessions_account_idx ON control.sessions(account_id);
 CREATE INDEX IF NOT EXISTS sessions_expires_idx ON control.sessions(expires_at);
 CREATE TABLE IF NOT EXISTS control.projects (

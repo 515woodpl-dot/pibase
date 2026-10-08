@@ -111,9 +111,13 @@ The M0 measurement harness remains available for reproducing Pi memory data.
 ## Operations (M4)
 
 `/healthz` is the readiness check, `/metrics` exposes compact Prometheus text
-metrics, and the loopback-only admin listener's `/dashboard` is a static, no-Node operator UI. The dashboard lists
-request, database, and file-storage usage and provides the owner SQL editor.
-Dashboard API calls require `PIBASE_OPERATOR_TOKEN`; owner SQL executes through
+metrics, and the admin listener (port 18081) serves a static, no-Node web UI. `/` is a landing page
+with log in and sign up; signing up asks for an organization name and the password twice.
+After logging in, `/app` shows only that account's projects, with an icon menu that expands on tap,
+a per-project overview (database size, requests, success rate, warnings and errors by service, and daily
+requests), API keys, tables, users, the owner SQL editor, migrations, backups and settings.
+Every page explains what it does. `/app#operator` is the operator view of all projects and needs
+`PIBASE_OPERATOR_TOKEN`; owner SQL executes through
 the M1 authenticator boundary, with a 30-second timeout and 1,000-row cap.
 
 The binary also provides encrypted per-project `backup` and guarded `restore`

@@ -3,6 +3,7 @@ package adminserver
 import (
 	"net/http"
 	"net/http/httptest"
+	"regexp"
 	"strings"
 	"testing"
 	"time"
@@ -19,9 +20,9 @@ func TestEveryAdminEndpointRejectsMissingToken(t *testing.T) {
 	}
 }
 
-func TestDashboardPageLoadsWithoutTokenAndHoldsNoSecrets(t *testing.T) {
+func TestPagesLoadWithoutTokenAndHoldNoSecrets(t *testing.T) {
 	s := &Server{Config: Config{Token: "operator-secret-token"}}
-	for _, path := range []string{"/", "/dashboard"} {
+	for _, path := range []string{"/", "/app", "/dashboard"} {
 		w := httptest.NewRecorder()
 		s.Handler().ServeHTTP(w, httptest.NewRequest(http.MethodGet, path, nil))
 		if w.Code != http.StatusOK || !strings.Contains(w.Body.String(), "pibase") {
@@ -30,48 +31,114 @@ func TestDashboardPageLoadsWithoutTokenAndHoldsNoSecrets(t *testing.T) {
 		if strings.Contains(w.Body.String(), "operator-secret-token") || strings.Contains(w.Body.String(), "innerHTML") {
 			t.Fatalf("%s: page leaks the token or uses innerHTML", path)
 		}
+		if !strings.Contains(w.Header().Get("Content-Security-Policy"), "default-src 'none'") || w.Header().Get("X-Content-Type-Options") != "nosniff" {
+			t.Fatalf("%s: missing security headers: %v", path, w.Header())
+		}
 	}
-	// Writes never bypass the token, even on the page path.
-	for _, method := range []string{http.MethodPost, http.MethodDelete} {
+	// Uptime checkers send HEAD; it must not need a credential either.
+	for _, path := range []string{"/", "/app"} {
 		w := httptest.NewRecorder()
-		s.Handler().ServeHTTP(w, httptest.NewRequest(method, "/dashboard", nil))
-		if w.Code != http.StatusUnauthorized {
-			t.Fatalf("%s /dashboard: got %d", method, w.Code)
+		s.Handler().ServeHTTP(w, httptest.NewRequest(http.MethodHead, path, nil))
+		if w.Code != http.StatusOK {
+			t.Fatalf("HEAD %s: got %d", path, w.Code)
+		}
+	}
+	// Writes never bypass the token, even on the page paths.
+	for _, path := range []string{"/", "/app", "/dashboard"} {
+		for _, method := range []string{http.MethodPost, http.MethodDelete} {
+			w := httptest.NewRecorder()
+			s.Handler().ServeHTTP(w, httptest.NewRequest(method, path, nil))
+			if w.Code != http.StatusUnauthorized {
+				t.Fatalf("%s %s: got %d", method, path, w.Code)
+			}
 		}
 	}
 }
 
-func TestDashboardUIHardRules(t *testing.T) {
-	for _, forbidden := range []string{"alert(", "confirm(", "prompt(", "<dialog", "transition", "animation", "scroll-behavior: smooth", "innerHTML"} {
-		if strings.Contains(page, forbidden) {
-			t.Fatalf("dashboard contains forbidden %q", forbidden)
+func TestLandingPageIsALandingPageWithLoginAndSignup(t *testing.T) {
+	s := &Server{Config: Config{Token: "operator"}}
+	w := httptest.NewRecorder()
+	s.Handler().ServeHTTP(w, httptest.NewRequest(http.MethodGet, "/", nil))
+	body := w.Body.String()
+	for _, required := range []string{
+		"<h1>Your own Postgres backend.",
+		`id="form-login"`, `id="form-signup"`,
+		`name="organization"`, `name="password_confirm"`,
+		"The two passwords do not match.",
+		"/_pibase/auth/login", "/_pibase/auth/signup", "password_confirm: again",
+		`href="/app#operator"`,
+	} {
+		if !strings.Contains(body, required) {
+			t.Errorf("landing page misses %q", required)
 		}
 	}
-	for _, required := range []string{"--ink:#333", "-webkit-tap-highlight-color:transparent", ":focus-visible", "function alignChain()", "chain.scrollLeft=x", "function dataTable(", "textContent"} {
+	if strings.Contains(body, "id=\"chain\"") {
+		t.Error("landing page must not contain the dashboard")
+	}
+	for _, external := range []string{`src="http`, `href="http`, "//cdn", "googleapis"} {
+		if strings.Contains(body, external) {
+			t.Errorf("landing page loads something from another site: %q", external)
+		}
+	}
+	// The app and the landing page are different documents.
+	app := httptest.NewRecorder()
+	s.Handler().ServeHTTP(app, httptest.NewRequest(http.MethodGet, "/app", nil))
+	if !strings.Contains(app.Body.String(), `id="chain"`) || strings.Contains(app.Body.String(), `id="form-signup"`) {
+		t.Error("/app must serve the dashboard, not the landing page")
+	}
+}
+
+func TestPagesUIHardRules(t *testing.T) {
+	for name, doc := range map[string]string{"dashboard": page, "landing": landingPage} {
+		for _, forbidden := range []string{"alert(", "confirm(", "prompt(", "<dialog", "transition", "animation", "scroll-behavior: smooth", "innerHTML", "localStorage", "sessionStorage"} {
+			if strings.Contains(doc, forbidden) {
+				t.Fatalf("%s contains forbidden %q", name, forbidden)
+			}
+		}
+		for _, required := range []string{"--ink:", "-webkit-tap-highlight-color:transparent", ":focus-visible", "textContent", `name="viewport"`, "@media(max-width:"} {
+			if !strings.Contains(doc, required) {
+				t.Fatalf("%s misses %q", name, required)
+			}
+		}
+	}
+	for _, required := range []string{"function alignChain()", "chain.scrollLeft=x", "function dataTable("} {
 		if !strings.Contains(page, required) {
 			t.Fatalf("dashboard misses %q", required)
 		}
 	}
 }
 
-func TestDashboardShowsKeysOnceAndWiresEveryEndpoint(t *testing.T) {
+// Every pane explains itself: pane(title, description) is never called with a
+// title alone.
+func TestEveryDashboardPaneHasADescription(t *testing.T) {
+	for _, m := range regexp.MustCompile(`pane\((?:'(?:[^'\\]|\\.)*'|[^,()]+)\)`).FindAllString(page, -1) {
+		t.Errorf("pane without a description: %s", m)
+	}
+	if n := strings.Count(page, "pane('") + strings.Count(page, "pane(x.name,") + strings.Count(page, "pane(t.name+"); n < 12 {
+		t.Errorf("only %d described panes found; a pane may have been dropped", n)
+	}
+}
+
+func TestDashboardWiresEveryEndpoint(t *testing.T) {
 	for _, required := range []string{
-		"Copy the keys now, or find them later under API keys.",
+		"Your project is ready. Copy these keys into your app, or come back to this page any time under API keys.",
 		"'Project ID: '+x.id",
-		"secretField('Anon key',x.anon_key)",
-		"secretField('Service key',x.service_key)",
+		"secretField('service_role · secret',k.service_key",
 		"'/_pibase/projects'",
 		"'/tables'", "'/tables/'+encodeURIComponent(t.name)+'/rows?offset='",
 		"'/users'", "'/sql'", "'/migrations'", "'/backup'", "'/backups'", "'/extensions/postgis'", "'/extensions/pgvector'",
 		"'/keys/rotate'", "'/usage'", "'/activity?window='", "'/keys'", "'/limits'", "'/_pibase/auth/password'",
-		"'/_pibase/auth/account'",
+		"'/_pibase/auth/account'", "'/_pibase/auth/organization'", "'/_pibase/auth/me'", "'/_pibase/auth/logout'",
 	} {
 		if !strings.Contains(page, required) {
 			t.Errorf("dashboard page misses %q", required)
 		}
 	}
-	if strings.Contains(page, "localStorage") || strings.Contains(page, "sessionStorage") {
-		t.Error("dashboard must not store keys or the token in browser storage")
+	// Collapsed by default: labels only show when the menu is open.
+	for _, required := range []string{".nav-item .lbl{display:none}", ".nav.open .lbl{display:inline}", "function navOpen("} {
+		if !strings.Contains(page, required) {
+			t.Errorf("dashboard menu misses %q", required)
+		}
 	}
 }
 

@@ -480,7 +480,7 @@ func TestAccountAuth(t *testing.T) {
 
 	// U1: Signup valid → 201 + cookie
 	t.Run("U1_signup_valid", func(t *testing.T) {
-		resp := do("POST", "/_pibase/auth/signup", `{"email":"u1`+sfx+`@t2a.test","password":"longpassword"}`, nil)
+		resp := do("POST", "/_pibase/auth/signup", `{"organization":"Test Org","password_confirm":"longpassword","email":"u1`+sfx+`@t2a.test","password":"longpassword"}`, nil)
 		readBody(resp)
 		if resp.StatusCode != 201 {
 			t.Fatalf("want 201 got %d", resp.StatusCode)
@@ -492,12 +492,12 @@ func TestAccountAuth(t *testing.T) {
 
 	// U2: Signup duplicate email → 409
 	t.Run("U2_signup_duplicate", func(t *testing.T) {
-		resp := do("POST", "/_pibase/auth/signup", `{"email":"u2`+sfx+`@t2a.test","password":"longpassword"}`, nil)
+		resp := do("POST", "/_pibase/auth/signup", `{"organization":"Test Org","password_confirm":"longpassword","email":"u2`+sfx+`@t2a.test","password":"longpassword"}`, nil)
 		readBody(resp)
 		if resp.StatusCode != 201 {
 			t.Fatalf("setup: want 201 got %d", resp.StatusCode)
 		}
-		resp2 := do("POST", "/_pibase/auth/signup", `{"email":"u2`+sfx+`@t2a.test","password":"anotherpassword"}`, nil)
+		resp2 := do("POST", "/_pibase/auth/signup", `{"organization":"Test Org","password_confirm":"anotherpassword","email":"u2`+sfx+`@t2a.test","password":"anotherpassword"}`, nil)
 		readBody(resp2)
 		if resp2.StatusCode != 409 {
 			t.Fatalf("want 409 got %d", resp2.StatusCode)
@@ -506,7 +506,7 @@ func TestAccountAuth(t *testing.T) {
 
 	// U3: Signup password < 8 chars → 400
 	t.Run("U3_signup_short_password", func(t *testing.T) {
-		resp := do("POST", "/_pibase/auth/signup", `{"email":"u3`+sfx+`@t2a.test","password":"short"}`, nil)
+		resp := do("POST", "/_pibase/auth/signup", `{"organization":"Test Org","password_confirm":"short","email":"u3`+sfx+`@t2a.test","password":"short"}`, nil)
 		readBody(resp)
 		if resp.StatusCode != 400 {
 			t.Fatalf("want 400 got %d", resp.StatusCode)
@@ -515,7 +515,7 @@ func TestAccountAuth(t *testing.T) {
 
 	// U4: Login correct → 200 + cookie
 	t.Run("U4_login_correct", func(t *testing.T) {
-		resp := do("POST", "/_pibase/auth/signup", `{"email":"u4`+sfx+`@t2a.test","password":"correctpassword"}`, nil)
+		resp := do("POST", "/_pibase/auth/signup", `{"organization":"Test Org","password_confirm":"correctpassword","email":"u4`+sfx+`@t2a.test","password":"correctpassword"}`, nil)
 		readBody(resp)
 		if resp.StatusCode != 201 {
 			t.Fatalf("setup: want 201 got %d", resp.StatusCode)
@@ -532,7 +532,7 @@ func TestAccountAuth(t *testing.T) {
 
 	// U5: Login wrong password → 401
 	t.Run("U5_login_wrong_password", func(t *testing.T) {
-		resp := do("POST", "/_pibase/auth/signup", `{"email":"u5`+sfx+`@t2a.test","password":"correctpassword"}`, nil)
+		resp := do("POST", "/_pibase/auth/signup", `{"organization":"Test Org","password_confirm":"correctpassword","email":"u5`+sfx+`@t2a.test","password":"correctpassword"}`, nil)
 		readBody(resp)
 		if resp.StatusCode != 201 {
 			t.Fatalf("setup: want 201 got %d", resp.StatusCode)
@@ -555,7 +555,7 @@ func TestAccountAuth(t *testing.T) {
 
 	// U7: Logout valid session → 200, cookie cleared (Max-Age <= 0)
 	t.Run("U7_logout_valid", func(t *testing.T) {
-		resp := do("POST", "/_pibase/auth/signup", `{"email":"u7`+sfx+`@t2a.test","password":"longpassword"}`, nil)
+		resp := do("POST", "/_pibase/auth/signup", `{"organization":"Test Org","password_confirm":"longpassword","email":"u7`+sfx+`@t2a.test","password":"longpassword"}`, nil)
 		readBody(resp)
 		cookie := sessionCookie(resp)
 		if cookie == nil {
@@ -584,7 +584,7 @@ func TestAccountAuth(t *testing.T) {
 
 	// U9: GET /auth/me valid → 200 with id/email/created_at
 	t.Run("U9_me_valid", func(t *testing.T) {
-		resp := do("POST", "/_pibase/auth/signup", `{"email":"u9`+sfx+`@t2a.test","password":"longpassword"}`, nil)
+		resp := do("POST", "/_pibase/auth/signup", `{"organization":"Test Org","password_confirm":"longpassword","email":"u9`+sfx+`@t2a.test","password":"longpassword"}`, nil)
 		cookie := sessionCookie(resp)
 		readBody(resp)
 		if cookie == nil {
@@ -652,7 +652,7 @@ func TestAccountOwnership(t *testing.T) {
 	signup := func(email, pw string) *http.Cookie {
 		t.Helper()
 		req, _ := http.NewRequest("POST", hs.URL+"/_pibase/auth/signup",
-			strings.NewReader(`{"email":"`+email+`","password":"`+pw+`"}`))
+			strings.NewReader(`{"organization":"Test Org","email":"`+email+`","password":"`+pw+`","password_confirm":"`+pw+`"}`))
 		req.Header.Set("Content-Type", "application/json")
 		resp, err := hs.Client().Do(req)
 		if err != nil {
@@ -1024,7 +1024,7 @@ func TestAccountSelfService(t *testing.T) {
 	signup := func(hs *httptest.Server, email, pw string) *http.Cookie {
 		t.Helper()
 		resp := do(hs, "POST", "/_pibase/auth/signup",
-			`{"email":"`+email+`","password":"`+pw+`"}`, nil)
+			`{"organization":"Test Org","email":"`+email+`","password":"`+pw+`","password_confirm":"`+pw+`"}`, nil)
 		readBody(resp)
 		if resp.StatusCode != 201 {
 			t.Fatalf("signup %s: want 201 got %d", email, resp.StatusCode)
@@ -1426,7 +1426,7 @@ func TestProjectManagement(t *testing.T) {
 	emailA := "t3a" + sfx + "@t3.test"
 	emailB := "t3b" + sfx + "@t3.test"
 	loginBody := func(email, pw string) string {
-		b, _ := json.Marshal(map[string]string{"email": email, "password": pw})
+		b, _ := json.Marshal(map[string]string{"email": email, "password": pw, "organization": "Test Org", "password_confirm": pw})
 		return string(b)
 	}
 	respA, _ := acctCall("POST", "/_pibase/auth/signup", loginBody(emailA, "password-t3a"), nil, 201)
@@ -1691,7 +1691,7 @@ func TestAccountHardening(t *testing.T) {
 	}
 	email := fmt.Sprintf("t2h%d@t2.test", time.Now().UnixNano())
 	cred := func(pw string) string {
-		b, _ := json.Marshal(map[string]string{"email": email, "password": pw})
+		b, _ := json.Marshal(map[string]string{"email": email, "password": pw, "organization": "Test Org", "password_confirm": pw})
 		return string(b)
 	}
 	r1, _ := call("POST", "/_pibase/auth/signup", cred("first-password"), nil, 201)
@@ -1728,13 +1728,13 @@ func TestAccountHardening(t *testing.T) {
 
 	t.Run("H3_invalid_email_rejected", func(t *testing.T) {
 		for _, e := range []string{"not-an-email", "@x.test", "a@", "a b@x.test"} {
-			b, _ := json.Marshal(map[string]string{"email": e, "password": "long-enough-pw"})
+			b, _ := json.Marshal(map[string]string{"email": e, "password": "long-enough-pw", "organization": "Test Org", "password_confirm": "long-enough-pw"})
 			call("POST", "/_pibase/auth/signup", string(b), nil, 400)
 		}
 	})
 
 	t.Run("H4_parallel_creates_respect_cap", func(t *testing.T) {
-		b, _ := json.Marshal(map[string]string{"email": "race" + email, "password": "race-password"})
+		b, _ := json.Marshal(map[string]string{"email": "race" + email, "password": "race-password", "organization": "Test Org", "password_confirm": "race-password"})
 		r, _ := call("POST", "/_pibase/auth/signup", string(b), nil, 201)
 		c := cookieOf(r)
 		codes := make(chan int, 4)
@@ -1783,7 +1783,7 @@ func TestAccountHardening(t *testing.T) {
 
 	t.Run("H5_email_lockout_after_failures", func(t *testing.T) {
 		victim := "lock" + email
-		b, _ := json.Marshal(map[string]string{"email": victim, "password": "right-password"})
+		b, _ := json.Marshal(map[string]string{"email": victim, "password": "right-password", "organization": "Test Org", "password_confirm": "right-password"})
 		r, _ := call("POST", "/_pibase/auth/signup", string(b), nil, 201)
 		vc := cookieOf(r)
 		defer call("DELETE", "/_pibase/auth/account", fmt.Sprintf(`{"confirm":%q}`, victim), vc, 204)
@@ -1833,6 +1833,87 @@ func TestAccountHardening(t *testing.T) {
 		_ = cdb.QueryRow(ctx, `SELECT count(*) FROM control.projects WHERE id=$1`, p.ID).Scan(&left)
 		if left != 0 {
 			t.Fatal("project row survived retried delete")
+		}
+	})
+	signup := func(email, org, pw, confirm string, want int) (*http.Response, []byte) {
+		b, _ := json.Marshal(map[string]string{"email": email, "password": pw, "organization": org, "password_confirm": confirm})
+		return call("POST", "/_pibase/auth/signup", string(b), nil, want)
+	}
+
+	t.Run("H7_password_must_be_entered_twice", func(t *testing.T) {
+		_, data := signup("typo"+email, "Acme", "right-password", "right-passwrod", 400)
+		if !strings.Contains(string(data), "do not match") {
+			t.Fatalf("message = %q", data)
+		}
+		// Leaving the confirmation out is the same as a mismatch.
+		b, _ := json.Marshal(map[string]string{"email": "nocnf" + email, "password": "right-password", "organization": "Acme"})
+		call("POST", "/_pibase/auth/signup", string(b), nil, 400)
+		// No account was created by either attempt.
+		call("POST", "/_pibase/auth/login", `{"email":"typo`+email+`","password":"right-password"}`, nil, 401)
+	})
+
+	t.Run("H8_organization_is_required_and_checked", func(t *testing.T) {
+		for _, org := range []string{"", "   ", strings.Repeat("x", 101), "bad\u0007name"} {
+			signup("org"+email, org, "right-password", "right-password", 400)
+		}
+		signup("org"+email, strings.Repeat("x", 100), "right-password", "right-password", 201)
+	})
+
+	t.Run("H9_organization_shown_and_editable", func(t *testing.T) {
+		r, data := signup("name"+email, "  Acme Co  ", "right-password", "right-password", 201)
+		c := cookieOf(r)
+		defer call("DELETE", "/_pibase/auth/account", fmt.Sprintf(`{"confirm":%q}`, "name"+email), c, 204)
+		var a struct{ Organization string }
+		if err := json.Unmarshal(data, &a); err != nil || a.Organization != "Acme Co" {
+			t.Fatalf("signup response organization = %q (%v)", a.Organization, err)
+		}
+		_, data = call("GET", "/_pibase/auth/me", "", c, 200)
+		json.Unmarshal(data, &a)
+		if a.Organization != "Acme Co" {
+			t.Fatalf("me organization = %q", a.Organization)
+		}
+		_, data = call("PATCH", "/_pibase/auth/organization", `{"organization":"Globex"}`, c, 200)
+		json.Unmarshal(data, &a)
+		if a.Organization != "Globex" {
+			t.Fatalf("renamed organization = %q", a.Organization)
+		}
+		_, data = call("GET", "/_pibase/auth/me", "", c, 200)
+		json.Unmarshal(data, &a)
+		if a.Organization != "Globex" {
+			t.Fatalf("me after rename = %q", a.Organization)
+		}
+		call("PATCH", "/_pibase/auth/organization", `{"organization":"  "}`, c, 400)
+		call("PATCH", "/_pibase/auth/organization", `{"organization":"x"}`, nil, 401)
+	})
+
+	t.Run("H10_account_without_organization_still_works", func(t *testing.T) {
+		legacy := "legacy" + email
+		r, _ := signup(legacy, "Temp", "right-password", "right-password", 201)
+		c := cookieOf(r)
+		defer call("DELETE", "/_pibase/auth/account", fmt.Sprintf(`{"confirm":%q}`, legacy), c, 204)
+		cu, _ := url.Parse(adminURL)
+		cu.Path = "/_control"
+		cdb, err := pgx.Connect(ctx, cu.String())
+		if err != nil {
+			t.Fatal(err)
+		}
+		defer cdb.Close(ctx)
+		// Accounts created before organizations existed have an empty name.
+		if _, err := cdb.Exec(ctx, `UPDATE control.accounts SET organization='' WHERE email=$1`, legacy); err != nil {
+			t.Fatal(err)
+		}
+		r, data := call("POST", "/_pibase/auth/login", fmt.Sprintf(`{"email":%q,"password":"right-password"}`, legacy), nil, 200)
+		var a struct{ Organization string }
+		json.Unmarshal(data, &a)
+		if a.Organization != "" {
+			t.Fatalf("legacy organization = %q", a.Organization)
+		}
+		c = cookieOf(r)
+		call("GET", "/_pibase/projects", "", c, 200)
+		_, data = call("PATCH", "/_pibase/auth/organization", `{"organization":"Added later"}`, c, 200)
+		json.Unmarshal(data, &a)
+		if a.Organization != "Added later" {
+			t.Fatalf("organization after adding = %q", a.Organization)
 		}
 	})
 }
