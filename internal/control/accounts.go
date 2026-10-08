@@ -7,6 +7,8 @@ import (
 	"fmt"
 	"strings"
 	"time"
+	"unicode"
+	"unicode/utf8"
 
 	"github.com/515woodpl-dot/pibase/internal/auth"
 	"github.com/jackc/pgx/v5"
@@ -23,16 +25,40 @@ var ErrDuplicate = errors.New("already exists")
 
 // Account is a dashboard operator account.
 type Account struct {
-	ID        string    `json:"id"`
-	Email     string    `json:"email"`
-	CreatedAt time.Time `json:"created_at"`
+	ID           string    `json:"id"`
+	Email        string    `json:"email"`
+	Organization string    `json:"organization"`
+	CreatedAt    time.Time `json:"created_at"`
 }
 
 // sessionTTL is the lifetime of a dashboard session cookie.
 const sessionTTL = 24 * time.Hour
 
-// CreateAccount creates a new dashboard account with the given email and password.
-func CreateAccount(ctx context.Context, adminURL, email, password string) (Account, error) {
+// ValidateOrganization trims and checks an organization name: 1 to 100
+// characters with no control characters.
+func ValidateOrganization(name string) (string, error) {
+	name = strings.TrimSpace(name)
+	if name == "" {
+		return "", fmt.Errorf("organization name is required")
+	}
+	if utf8.RuneCountInString(name) > 100 {
+		return "", fmt.Errorf("organization name must be 100 characters or fewer")
+	}
+	for _, r := range name {
+		if unicode.IsControl(r) {
+			return "", fmt.Errorf("organization name contains invalid characters")
+		}
+	}
+	return name, nil
+}
+
+// CreateAccount creates a new dashboard account with the given email, password
+// and organization name.
+func CreateAccount(ctx context.Context, adminURL, email, password, organization string) (Account, error) {
+	organization, err := ValidateOrganization(organization)
+	if err != nil {
+		return Account{}, err
+	}
 	email = strings.ToLower(strings.TrimSpace(email))
 	if at := strings.IndexByte(email, '@'); at < 1 || at == len(email)-1 || len(email) > 254 || strings.ContainsAny(email, " \t\r\n") {
 		return Account{}, fmt.Errorf("a valid email address is required")
@@ -55,9 +81,9 @@ func CreateAccount(ctx context.Context, adminURL, email, password string) (Accou
 	defer conn.Close(ctx)
 	var a Account
 	err = conn.QueryRow(ctx,
-		`INSERT INTO control.accounts(id,email,password_hash) VALUES($1,$2,$3) RETURNING id,email,created_at`,
-		id, email, hash,
-	).Scan(&a.ID, &a.Email, &a.CreatedAt)
+		`INSERT INTO control.accounts(id,email,password_hash,organization) VALUES($1,$2,$3,$4) RETURNING id,email,organization,created_at`,
+		id, email, hash, organization,
+	).Scan(&a.ID, &a.Email, &a.Organization, &a.CreatedAt)
 	if err != nil {
 		if strings.Contains(err.Error(), "unique") || strings.Contains(err.Error(), "duplicate") {
 			return Account{}, ErrDuplicate
@@ -81,9 +107,9 @@ func AuthenticateAccount(ctx context.Context, adminURL, email, password string) 
 	var a Account
 	var hash string
 	err = conn.QueryRow(ctx,
-		`SELECT id,email,password_hash,created_at FROM control.accounts WHERE email=$1`,
+		`SELECT id,email,password_hash,organization,created_at FROM control.accounts WHERE email=$1`,
 		email,
-	).Scan(&a.ID, &a.Email, &hash, &a.CreatedAt)
+	).Scan(&a.ID, &a.Email, &hash, &a.Organization, &a.CreatedAt)
 	if err == pgx.ErrNoRows {
 		auth.VerifyPassword(password, auth.DummyPasswordHash())
 		return Account{}, fmt.Errorf("invalid credentials")
@@ -134,12 +160,12 @@ func ResolveSession(ctx context.Context, adminURL, token string) (Account, error
 	defer conn.Close(ctx)
 	var a Account
 	err = conn.QueryRow(ctx,
-		`SELECT a.id,a.email,a.created_at
+		`SELECT a.id,a.email,a.organization,a.created_at
 		 FROM control.sessions s
 		 JOIN control.accounts a ON a.id=s.account_id
 		 WHERE s.token_hash=$1 AND s.expires_at > now()`,
 		digest[:],
-	).Scan(&a.ID, &a.Email, &a.CreatedAt)
+	).Scan(&a.ID, &a.Email, &a.Organization, &a.CreatedAt)
 	if err != nil {
 		return Account{}, fmt.Errorf("invalid session")
 	}
@@ -297,4 +323,25 @@ func controlDBConn(ctx context.Context, adminURL string) (*pgx.Conn, error) {
 		return nil, fmt.Errorf("parse admin URL: %w", err)
 	}
 	return pgx.Connect(ctx, u)
+}
+
+// SetOrganization changes the organization name of an account.
+func SetOrganization(ctx context.Context, adminURL, accountID, organization string) (string, error) {
+	organization, err := ValidateOrganization(organization)
+	if err != nil {
+		return "", err
+	}
+	conn, err := controlDBConn(ctx, adminURL)
+	if err != nil {
+		return "", err
+	}
+	defer conn.Close(ctx)
+	tag, err := conn.Exec(ctx, `UPDATE control.accounts SET organization=$1 WHERE id=$2`, organization, accountID)
+	if err != nil {
+		return "", err
+	}
+	if tag.RowsAffected() == 0 {
+		return "", ErrNotFound
+	}
+	return organization, nil
 }

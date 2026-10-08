@@ -1,0 +1,285 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<title>pibase · Your own Postgres backend</title>
+<meta name="description" content="pibase gives every project a private Postgres database, user sign-in, file storage and live updates, with a dashboard that shows how it is used.">
+<link rel="icon" href="data:,">
+<style>
+:root{--ink:#14213d;--muted:#5d6985;--line:#dbe3f1;--tint:#eef3ff;--accent:#2557d6;--accent-dark:#173f9f;--surface:#fff;font:16px/1.55 system-ui,-apple-system,"Segoe UI",Roboto,sans-serif;color:var(--ink)}
+*{box-sizing:border-box}
+body{margin:0;background:linear-gradient(160deg,#f4f8ff 0%,#eaf1ff 45%,#f9fbff 100%);min-height:100vh;-webkit-tap-highlight-color:transparent}
+a{color:var(--accent)}
+button,input{font:inherit;color:inherit}
+button{cursor:pointer}
+a:focus-visible,button:focus-visible,input:focus-visible{outline:3px solid #bcd1ff;outline-offset:2px}
+.hidden{display:none!important}
+
+.top{display:flex;align-items:center;justify-content:space-between;gap:12px;max-width:1120px;margin:0 auto;padding:18px 20px}
+.logo{display:flex;align-items:center;gap:10px;font-weight:800;font-size:22px;letter-spacing:-.02em;color:var(--accent-dark);text-decoration:none}
+.logo svg{width:30px;height:30px}
+.top nav{display:flex;gap:8px}
+.btn{display:inline-block;border:1px solid #c5d3ee;background:#fff;border-radius:11px;padding:9px 18px;font-weight:600;text-decoration:none;color:var(--ink)}
+.btn:hover{border-color:var(--accent)}
+.btn.primary{background:var(--accent);border-color:var(--accent);color:#fff}
+.btn.primary:hover{background:var(--accent-dark)}
+.btn.block{display:block;width:100%;text-align:center;padding:12px 18px}
+.btn:disabled{opacity:.6;cursor:default}
+
+.hero{display:grid;grid-template-columns:minmax(0,1.15fr) minmax(0,.85fr);gap:48px;align-items:center;max-width:1120px;margin:0 auto;padding:36px 20px 64px}
+.eyebrow{display:inline-block;margin:0 0 16px;padding:5px 12px;border-radius:99px;background:#fff;border:1px solid var(--line);color:var(--accent-dark);font-size:13px;font-weight:700}
+.hero h1{margin:0 0 18px;font-size:clamp(34px,5.2vw,54px);line-height:1.08;letter-spacing:-.035em}
+.hero h1 em{font-style:normal;color:var(--accent)}
+.lead{margin:0 0 24px;max-width:34em;font-size:18px;color:var(--muted)}
+.checks{list-style:none;margin:0;padding:0;display:grid;gap:10px}
+.checks li{display:flex;gap:10px;align-items:flex-start}
+.checks svg{flex:0 0 20px;width:20px;height:20px;margin-top:3px;fill:none;stroke:var(--accent);stroke-width:2.4;stroke-linecap:round;stroke-linejoin:round}
+
+.card{background:var(--surface);border:1px solid var(--line);border-radius:20px;box-shadow:0 24px 60px rgba(31,58,120,.14);padding:26px}
+.tabs{display:grid;grid-template-columns:1fr 1fr;gap:4px;padding:4px;margin:0 0 20px;border-radius:12px;background:var(--tint)}
+.tabs button{border:0;border-radius:9px;background:transparent;padding:9px;font-weight:700;color:var(--muted)}
+.tabs button.active{background:#fff;color:var(--accent-dark);box-shadow:0 1px 4px rgba(31,58,120,.18)}
+.card h2{margin:0 0 4px;font-size:22px;letter-spacing:-.02em}
+.card .sub{margin:0 0 18px;color:var(--muted);font-size:14px}
+.field{margin:0 0 14px}
+.field label{display:block;margin:0 0 5px;font-size:14px;font-weight:650}
+.field input{width:100%;border:1px solid #c5d3ee;border-radius:10px;padding:11px 12px;background:#fff}
+.field input:focus{border-color:var(--accent)}
+.field .hint{display:block;margin-top:4px;color:var(--muted);font-size:12.5px}
+.err{margin:0 0 14px;padding:10px 12px;border-radius:10px;background:#fdecec;color:#9b2323;font-size:14px}
+.switch{margin:16px 0 0;text-align:center;font-size:14px;color:var(--muted)}
+.switch button{border:0;background:none;padding:0;color:var(--accent);font-weight:650;text-decoration:underline}
+
+.band{max-width:1120px;margin:0 auto;padding:8px 20px 56px}
+.band h2{margin:0 0 6px;font-size:28px;letter-spacing:-.025em}
+.band>p{margin:0 0 24px;color:var(--muted);max-width:40em}
+.features{display:grid;grid-template-columns:repeat(4,minmax(0,1fr));gap:16px}
+.feature{background:#fff;border:1px solid var(--line);border-radius:16px;padding:20px}
+.feature svg{width:28px;height:28px;margin-bottom:10px;fill:none;stroke:var(--accent);stroke-width:1.8;stroke-linecap:round;stroke-linejoin:round}
+.feature h3{margin:0 0 6px;font-size:17px}
+.feature p{margin:0;color:var(--muted);font-size:14.5px}
+.steps{counter-reset:s;display:grid;grid-template-columns:repeat(3,minmax(0,1fr));gap:16px;list-style:none;margin:0;padding:0}
+.steps li{counter-increment:s;background:#fff;border:1px solid var(--line);border-radius:16px;padding:20px}
+.steps li::before{content:counter(s);display:inline-grid;place-items:center;width:30px;height:30px;margin-bottom:10px;border-radius:50%;background:var(--accent);color:#fff;font-weight:800}
+.steps h3{margin:0 0 4px;font-size:17px}
+.steps p{margin:0;color:var(--muted);font-size:14.5px}
+
+footer{max-width:1120px;margin:0 auto;padding:24px 20px 40px;border-top:1px solid var(--line);display:flex;flex-wrap:wrap;gap:12px;justify-content:space-between;color:var(--muted);font-size:14px}
+footer a{color:var(--muted)}
+
+@media(max-width:900px){
+  .hero{grid-template-columns:minmax(0,1fr);gap:28px;padding:20px 16px 44px}
+  .features{grid-template-columns:repeat(2,minmax(0,1fr))}
+  .steps{grid-template-columns:minmax(0,1fr)}
+}
+@media(max-width:560px){
+  .top{padding:14px 16px}
+  .logo{font-size:20px}
+  .btn{padding:8px 14px}
+  .lead{font-size:16.5px}
+  .card{padding:20px 16px;border-radius:16px}
+  .band{padding:4px 16px 40px}
+  .band h2{font-size:24px}
+  .features{grid-template-columns:minmax(0,1fr)}
+  footer{padding:20px 16px 32px}
+  .field input{font-size:16px}
+}
+</style>
+</head>
+<body>
+<header class="top">
+  <a class="logo" href="/" aria-label="pibase home">
+    <svg viewBox="0 0 32 32" aria-hidden="true"><rect width="32" height="32" rx="9" fill="#2557d6"/><ellipse cx="16" cy="10.5" rx="8" ry="3.2" fill="none" stroke="#fff" stroke-width="2"/><path d="M8 10.5v11c0 1.8 3.6 3.2 8 3.2s8-1.4 8-3.2v-11M8 16c0 1.8 3.6 3.2 8 3.2s8-1.4 8-3.2" fill="none" stroke="#fff" stroke-width="2"/></svg>
+    pibase
+  </a>
+  <nav id="topNav">
+    <a class="btn" href="#login" data-tab="login">Log in</a>
+    <a class="btn primary" href="#signup" data-tab="signup">Sign up</a>
+  </nav>
+</header>
+
+<main>
+  <section class="hero">
+    <div>
+      <p class="eyebrow">Postgres, sign-in and file storage in one place</p>
+      <h1>Your own Postgres backend. <em>Up in minutes, yours to keep.</em></h1>
+      <p class="lead">pibase gives every project a private Postgres database, user sign-in, file storage and live updates, plus a dashboard that shows exactly how it is being used.</p>
+      <ul class="checks">
+        <li><svg viewBox="0 0 24 24" aria-hidden="true"><path d="M5 12.5l4.5 4.5L19 7.5"/></svg><span>Each project gets its own isolated Postgres database.</span></li>
+        <li><svg viewBox="0 0 24 24" aria-hidden="true"><path d="M5 12.5l4.5 4.5L19 7.5"/></svg><span>Keys for your app are ready the moment you create a project.</span></li>
+        <li><svg viewBox="0 0 24 24" aria-hidden="true"><path d="M5 12.5l4.5 4.5L19 7.5"/></svg><span>Live charts of requests, successes and errors for every project.</span></li>
+      </ul>
+    </div>
+
+    <section class="card" id="auth" aria-label="Log in or sign up">
+      <div id="authForms">
+        <div class="tabs" role="tablist">
+          <button type="button" role="tab" id="tab-login" data-tab="login">Log in</button>
+          <button type="button" role="tab" id="tab-signup" data-tab="signup">Create account</button>
+        </div>
+
+        <form id="form-login" novalidate>
+          <h2>Welcome back</h2>
+          <p class="sub">Log in to see your projects.</p>
+          <p class="err hidden" role="alert"></p>
+          <div class="field"><label for="login-email">Email</label><input id="login-email" name="email" type="email" autocomplete="email" required></div>
+          <div class="field"><label for="login-password">Password</label><input id="login-password" name="password" type="password" autocomplete="current-password" required></div>
+          <button class="btn primary block" type="submit">Log in</button>
+          <p class="switch">New here? <button type="button" data-tab="signup">Create an account</button></p>
+        </form>
+
+        <form id="form-signup" class="hidden" novalidate>
+          <h2>Create your account</h2>
+          <p class="sub">Free to start. Your first project is one click away.</p>
+          <p class="err hidden" role="alert"></p>
+          <div class="field"><label for="signup-org">Organization name</label><input id="signup-org" name="organization" type="text" autocomplete="organization" maxlength="100" required><span class="hint">Your company, team or personal name. You can change it later.</span></div>
+          <div class="field"><label for="signup-email">Email</label><input id="signup-email" name="email" type="email" autocomplete="email" required></div>
+          <div class="field"><label for="signup-password">Password</label><input id="signup-password" name="password" type="password" autocomplete="new-password" minlength="8" required><span class="hint">At least 8 characters.</span></div>
+          <div class="field"><label for="signup-password2">Enter the password again</label><input id="signup-password2" name="password_confirm" type="password" autocomplete="new-password" required></div>
+          <button class="btn primary block" type="submit">Create account</button>
+          <p class="switch">Already have an account? <button type="button" data-tab="login">Log in</button></p>
+        </form>
+      </div>
+
+      <div id="welcome" class="hidden">
+        <h2>You are signed in</h2>
+        <p class="sub" id="welcomeText"></p>
+        <a class="btn primary block" href="/app">Open my dashboard</a>
+      </div>
+    </section>
+  </section>
+
+  <section class="band" aria-labelledby="what">
+    <h2 id="what">Everything an app needs from its backend</h2>
+    <p>Create a project and your app can start storing data, signing people in and saving files right away.</p>
+    <div class="features">
+      <article class="feature">
+        <svg viewBox="0 0 24 24" aria-hidden="true"><ellipse cx="12" cy="6" rx="8" ry="3"/><path d="M4 6v12c0 1.7 3.6 3 8 3s8-1.3 8-3V6M4 12c0 1.7 3.6 3 8 3s8-1.3 8-3"/></svg>
+        <h3>A real Postgres database</h3>
+        <p>Your data lives in standard Postgres. Run SQL, add tables and take backups from the dashboard.</p>
+      </article>
+      <article class="feature">
+        <svg viewBox="0 0 24 24" aria-hidden="true"><circle cx="12" cy="8" r="4"/><path d="M4 21a8 8 0 0 1 16 0"/></svg>
+        <h3>Sign-in for your users</h3>
+        <p>Email and password accounts, confirmations and password recovery for the people who use your app.</p>
+      </article>
+      <article class="feature">
+        <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M4 7h16v12H4zM4 7l2-3h5l2 3"/></svg>
+        <h3>File storage</h3>
+        <p>Upload and serve images, documents and any other files, with public or private access.</p>
+      </article>
+      <article class="feature">
+        <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M4 20V10M10 20V4M16 20v-8M22 20H2"/></svg>
+        <h3>Usage you can see</h3>
+        <p>Charts of requests, success rate and errors for each part of your project, updated as it runs.</p>
+      </article>
+    </div>
+  </section>
+
+  <section class="band" aria-labelledby="how">
+    <h2 id="how">From sign-up to a working API in three steps</h2>
+    <p>No setup guide to read first.</p>
+    <ol class="steps">
+      <li><h3>Create your account</h3><p>Tell us your organization name and pick a password.</p></li>
+      <li><h3>Create a project</h3><p>Give it a name. Its database and keys are ready straight away.</p></li>
+      <li><h3>Connect your app</h3><p>Copy the project address and key from the dashboard into your app.</p></li>
+    </ol>
+  </section>
+</main>
+
+<footer>
+  <span>pibase · a private backend you run yourself</span>
+  <a href="/app#operator">Operator access</a>
+</footer>
+
+<script>
+(function () {
+  var $ = function (id) { return document.getElementById(id); };
+  var forms = { login: $('form-login'), signup: $('form-signup') };
+  var tabs = { login: $('tab-login'), signup: $('tab-signup') };
+
+  function show(which) {
+    for (var name in forms) {
+      var on = name === which;
+      forms[name].classList.toggle('hidden', !on);
+      tabs[name].classList.toggle('active', on);
+      tabs[name].setAttribute('aria-selected', String(on));
+      clearError(forms[name]);
+    }
+  }
+  function errorBox(form) { return form.querySelector('.err'); }
+  function clearError(form) { var e = errorBox(form); e.textContent = ''; e.classList.add('hidden'); }
+  function showError(form, message) { var e = errorBox(form); e.textContent = message; e.classList.remove('hidden'); }
+
+  async function post(path, payload) {
+    var r = await fetch(path, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(payload) });
+    var text = await r.text();
+    if (!r.ok) {
+      var message = text.trim();
+      if (r.status === 409) message = 'An account with this email already exists. Log in instead.';
+      if (r.status === 429) message = 'Too many attempts. Please wait a few minutes and try again.';
+      if (message === 'invalid credentials') message = 'That email and password do not match.';
+      throw new Error(message || 'Something went wrong (' + r.status + ').');
+    }
+    return text ? JSON.parse(text) : null;
+  }
+
+  function submit(form, work) {
+    form.addEventListener('submit', async function (event) {
+      event.preventDefault();
+      clearError(form);
+      var button = form.querySelector('button[type=submit]');
+      button.disabled = true;
+      try { await work(new FormData(form)); }
+      catch (e) { showError(form, e.message); button.disabled = false; }
+    });
+  }
+
+  submit(forms.login, async function (data) {
+    var email = String(data.get('email')).trim(), password = String(data.get('password'));
+    if (!email || !password) throw new Error('Enter your email and password.');
+    await post('/_pibase/auth/login', { email: email, password: password });
+    location.href = '/app';
+  });
+
+  submit(forms.signup, async function (data) {
+    var organization = String(data.get('organization')).trim();
+    var email = String(data.get('email')).trim();
+    var password = String(data.get('password')), again = String(data.get('password_confirm'));
+    if (!organization) throw new Error('Enter your organization name.');
+    if (!email || email.indexOf('@') < 1) throw new Error('Enter a valid email address.');
+    if (password.length < 8) throw new Error('The password must be at least 8 characters.');
+    if (password !== again) throw new Error('The two passwords do not match.');
+    await post('/_pibase/auth/signup', { organization: organization, email: email, password: password, password_confirm: again });
+    location.href = '/app';
+  });
+
+  document.querySelectorAll('[data-tab]').forEach(function (node) {
+    node.addEventListener('click', function (event) {
+      var which = node.getAttribute('data-tab');
+      if (node.tagName === 'A') { event.preventDefault(); $('auth').scrollIntoView(); }
+      show(which);
+      history.replaceState(null, '', '#' + which);
+    });
+  });
+
+  show(location.hash === '#signup' ? 'signup' : 'login');
+
+  // Already signed in: offer the dashboard instead of the forms.
+  fetch('/_pibase/auth/me').then(function (r) { return r.ok ? r.json() : null; }).then(function (account) {
+    if (!account) return;
+    $('authForms').classList.add('hidden');
+    $('welcome').classList.remove('hidden');
+    $('welcomeText').textContent = (account.organization ? account.organization + ' · ' : '') + account.email;
+    $('topNav').replaceChildren();
+    var open = document.createElement('a');
+    open.className = 'btn primary';
+    open.href = '/app';
+    open.textContent = 'Open dashboard';
+    $('topNav').append(open);
+  }).catch(function () {});
+})();
+</script>
+</body>
+</html>
