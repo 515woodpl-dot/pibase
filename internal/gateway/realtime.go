@@ -5,6 +5,7 @@ import (
 	"crypto/rand"
 	"encoding/hex"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"net/http"
 	"os"
@@ -90,7 +91,9 @@ func newRealtimeHub(server *Server) (*realtimeHub, error) {
 		maximum = parsed
 	}
 	ctx, cancel := context.WithCancel(context.Background())
-	return &realtimeHub{server: server, maxPerProject: maximum, ctx: ctx, cancel: cancel, clients: make(map[*realtimeClient]struct{}), listeners: make(map[string]struct{})}, nil
+	hub := &realtimeHub{server: server, maxPerProject: maximum, ctx: ctx, cancel: cancel, clients: make(map[*realtimeClient]struct{}), listeners: make(map[string]struct{})}
+	go hub.revalidateLoop()
+	return hub, nil
 }
 
 func (h *realtimeHub) websocket(w http.ResponseWriter, r *http.Request) {
@@ -143,6 +146,23 @@ func (c *realtimeClient) read() {
 			continue
 		}
 		if frame.event == "heartbeat" {
+			_ = c.reply(frame.joinRef, frame.ref, frame.topic, "ok", map[string]any{})
+			continue
+		}
+		if frame.event == "access_token" {
+			// supabase-js sends each refreshed token to the open connection.
+			var update struct {
+				AccessToken string `json:"access_token"`
+			}
+			_ = json.Unmarshal(frame.payload, &update)
+			who, err := c.hub.server.authenticate(context.Background(), realtimeTokenRequest(c.apiKey, update.AccessToken))
+			if update.AccessToken == "" || err != nil || who.project.id != c.projectID {
+				_ = c.reply(frame.joinRef, frame.ref, frame.topic, "error", map[string]string{"reason": "invalid access token"})
+				continue
+			}
+			c.mu.Lock()
+			c.principal = who
+			c.mu.Unlock()
 			_ = c.reply(frame.joinRef, frame.ref, frame.topic, "ok", map[string]any{})
 			continue
 		}
@@ -321,7 +341,7 @@ func (h *realtimeHub) closeSessions(projectID, userID string, rows []string) {
 			Subject   string `json:"sub"`
 			SessionID string `json:"session_id"`
 		}
-		_ = json.Unmarshal(client.principal.claims, &claims)
+		_ = json.Unmarshal(client.currentPrincipal().claims, &claims)
 		if claims.Subject == userID && (rows == nil || match[claims.SessionID]) {
 			ended = append(ended, client)
 		}
@@ -471,4 +491,65 @@ func (h *realtimeHub) Close() {
 	}
 	h.clients = make(map[*realtimeClient]struct{})
 	h.mu.Unlock()
+}
+
+func (c *realtimeClient) currentPrincipal() principal {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	return c.principal
+}
+
+// realtimeRevalidateEvery is how often open connections are checked against
+// their token's expiry and sign-in session.
+const realtimeRevalidateEvery = 30 * time.Second
+
+func (h *realtimeHub) revalidateLoop() {
+	ticker := time.NewTicker(realtimeRevalidateEvery)
+	defer ticker.Stop()
+	for {
+		select {
+		case <-h.ctx.Done():
+			return
+		case <-ticker.C:
+			h.revalidate()
+		}
+	}
+}
+
+// revalidate closes connections whose signed-in token has expired or whose
+// sign-in has ended in a way this gateway was not told about (expiry of the
+// refresh token, a ban written in SQL, another gateway). Clients reconnect
+// with a fresh token; one that has none is refused at the upgrade.
+func (h *realtimeHub) revalidate() {
+	h.mu.Lock()
+	clients := make([]*realtimeClient, 0, len(h.clients))
+	for client := range h.clients {
+		clients = append(clients, client)
+	}
+	h.mu.Unlock()
+	now := time.Now()
+	for _, client := range clients {
+		who := client.currentPrincipal()
+		var claims struct {
+			Role      string `json:"role"`
+			Subject   string `json:"sub"`
+			SessionID string `json:"session_id"`
+			Expires   int64  `json:"exp"`
+		}
+		_ = json.Unmarshal(who.claims, &claims)
+		if claims.Role != "authenticated" || who.project == nil {
+			continue
+		}
+		ended := claims.Expires != 0 && claims.Expires <= now.Unix()
+		if !ended && claims.SessionID != "" {
+			ctx, cancel := context.WithTimeout(h.ctx, 5*time.Second)
+			err := h.server.requireActiveSession(ctx, *who.project, claims.SessionID, claims.Subject)
+			cancel()
+			var refused requestError
+			ended = errors.As(err, &refused) && refused.status == http.StatusUnauthorized
+		}
+		if ended {
+			_ = client.conn.Close()
+		}
+	}
 }

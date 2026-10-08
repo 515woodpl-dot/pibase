@@ -217,6 +217,7 @@ func (s *Server) lightLoad(ctx context.Context) {
 func (s *Server) Handler() http.Handler {
 	mux := http.NewServeMux()
 	mux.HandleFunc("GET /metrics", s.metricsHandler)
+	mux.HandleFunc("GET /client/v1/pibase-auth.js", serveAuthClient)
 	mux.HandleFunc("GET /realtime/v1/websocket", s.realtime.websocket)
 	mux.HandleFunc("POST /auth/v1/signup", s.authSignup)
 	mux.HandleFunc("POST /auth/v1/token", s.authToken)

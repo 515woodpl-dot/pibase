@@ -89,9 +89,12 @@ func (s *Server) requireActiveSession(ctx context.Context, p project, sessionID,
 	}
 	var active bool
 	err := s.adminTx(ctx, p, func(tx pgx.Tx) error {
+		// A banned user's sessions count as ended, including bans written
+		// straight into auth.users.
 		return tx.QueryRow(ctx, `SELECT EXISTS(SELECT 1 FROM auth.refresh_tokens f
 WHERE f.user_id=$2::uuid AND f.revoked_at IS NULL AND f.expires_at>now()
-  AND COALESCE(f.session_id,f.id) = (SELECT COALESCE(r.session_id,r.id) FROM auth.refresh_tokens r WHERE r.id=$1::uuid AND r.user_id=$2::uuid))`, sessionID, userID).Scan(&active)
+  AND COALESCE(f.session_id,f.id) = (SELECT COALESCE(r.session_id,r.id) FROM auth.refresh_tokens r WHERE r.id=$1::uuid AND r.user_id=$2::uuid))
+  AND NOT EXISTS(SELECT 1 FROM auth.users u WHERE u.id=$2::uuid AND u.banned_until > now())`, sessionID, userID).Scan(&active)
 	})
 	if err != nil {
 		return err
