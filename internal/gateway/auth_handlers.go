@@ -308,8 +308,12 @@ FROM auth.refresh_tokens WHERE token_hash=$1 FOR UPDATE`, tokenHash(raw), s.refr
 		// Another tab refreshed with the same token moments ago. Give this
 		// caller its own token in the same session rather than ending it.
 	}
-	if err = tx.QueryRow(ctx, `SELECT email FROM auth.users WHERE id=$1`, user).Scan(&email); err != nil {
+	var userBanned bool
+	if err = tx.QueryRow(ctx, `SELECT email, coalesce(banned_until > now(), false) FROM auth.users WHERE id=$1`, user).Scan(&email, &userBanned); err != nil {
 		return err
+	}
+	if userBanned {
+		return httpError(400, "user is banned")
 	}
 	method := "password"
 	if aal == "aal2" {
@@ -634,6 +638,7 @@ func (s *Server) authAdminUpdate(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	id := r.PathValue("id")
+	banned := false
 	err = s.adminTx(r.Context(), p, func(tx pgx.Tx) error {
 		if req.Password != "" {
 			h, e := auth.HashPassword(req.Password)
@@ -667,6 +672,13 @@ func (s *Server) authAdminUpdate(w http.ResponseWriter, r *http.Request) {
 			if _, e := tx.Exec(r.Context(), `UPDATE auth.users SET banned_until=$1,updated_at=now() WHERE id=$2`, until, id); e != nil {
 				return e
 			}
+			if until != nil && until.After(time.Now()) {
+				// A ban ends the user's current sessions, not only future sign-ins.
+				if _, e := tx.Exec(r.Context(), `UPDATE auth.refresh_tokens SET revoked_at=COALESCE(revoked_at,now()) WHERE user_id=$1`, id); e != nil {
+					return e
+				}
+				banned = true
+			}
 		}
 		if req.UserMetadata != nil {
 			m, _ := json.Marshal(req.UserMetadata)
@@ -679,6 +691,9 @@ func (s *Server) authAdminUpdate(w http.ResponseWriter, r *http.Request) {
 	if err != nil {
 		writeAPIError(w, err)
 		return
+	}
+	if banned {
+		s.endSessions(p.id, id, nil)
 	}
 	writeJSON(w, http.StatusOK, map[string]any{"id": id})
 }

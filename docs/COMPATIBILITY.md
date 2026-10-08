@@ -88,6 +88,16 @@ through the storage API so their files are removed too.
   realtime connections are closed; they don't keep working until they expire.
   Deleting a user does the same. Project SQL no longer needs its own sign-out
   check. (`TestAuditLogoutEndsTheSessionsAccessTokens`)
+* Banning a user (`ban_duration` in the admin API) does the same for all of
+  their sign-ins, and refreshing is refused until the ban ends. A ban written
+  straight into `auth.users.banned_until` takes effect within 15 seconds.
+  (`TestBanEndsSessionsAndBlocksRefresh`)
+* Realtime connections follow the token they last presented. supabase-js sends
+  each refreshed token on open channels (`access_token` messages), and the
+  gateway uses it from then on. Every 30 seconds it closes connections whose
+  token has expired or whose sign-in has ended, including a connection opened
+  with the anon key that signed in through a channel join.
+  (`TestRealtimeAcceptsRefreshedTokensAndDropsEndedOnes`)
 * Two tabs that refresh the same sign-in within `PIBASE_REFRESH_REUSE_SECONDS`
   (default 10) both get working tokens. Reusing an old refresh token after that
   window is treated as theft and ends every session of the user, as before.
@@ -95,6 +105,48 @@ through the storage API so their files are removed too.
 * Access tokens last one hour. A token your own server mints with the JWT secret
   must use `"iss": "pibase"`. Without a `session_id` claim it isn't tied to a
   sign-in, so it stays valid until its `exp`.
+
+## Browser sign-in client
+
+A site that doesn't use supabase-js can load pibase's own sign-in client from
+the gateway. It has no dependencies and keeps one sign-in shared by every tab
+of the site:
+
+```html
+<script src="https://api.example.com/client/v1/pibase-auth.js"></script>
+<script>
+  const auth = PibaseAuth.createClient({ url: 'https://api.example.com', anonKey: ANON_KEY })
+  auth.onAuthStateChange((event, session) => { /* SIGNED_IN, SIGNED_OUT, TOKEN_REFRESHED */ })
+  await auth.signIn(email, password)
+  const res = await auth.fetch('/rest/v1/notes?select=*')
+</script>
+```
+
+| Call | Does |
+|---|---|
+| `signUp(email, password, data?)` | creates an account; the session is null until the email is confirmed |
+| `signIn(email, password)` | signs in every open tab |
+| `signOut()` | signs out every open tab at once, then ends the sign-in on the server |
+| `session()`, `user()` | the stored session and user, or null |
+| `accessToken()` | a valid access token, refreshed first when it is due; null when signed out |
+| `fetch(path, init?)` | calls the gateway with the key and token; on a 401 refreshes once and retries |
+| `refreshSession()` | refreshes now |
+| `onAuthStateChange(cb)` | calls `cb(event, session)` for changes made in any tab; returns an unsubscribe function |
+| `destroy()` | stops timers and cross-tab listening |
+
+* When the token is due, one tab refreshes it and the others wait for and use
+  its result (`navigator.locks`, or a lock in `localStorage` where that isn't
+  available; pass `locks: false` to force the fallback).
+* A refresh still running when the user signs out can't sign them back in.
+* If the server ends the sign-in (sign-out elsewhere, a ban, user deleted), the
+  next refresh is refused and every tab gets `SIGNED_OUT`.
+* The session is kept in `localStorage` (key `pibase.auth:<url>`, or
+  `storageKey`). Where `localStorage` is blocked it lives in memory and tabs
+  don't share it.
+* Checked in Chromium with two tabs, both lock kinds, and the page on a
+  different origin from the gateway (`TestBrowserAuthClient`, run with
+  `PIBASE_TEST_BROWSER=1` and Playwright installed). Not yet checked in Safari
+  or on phones.
 
 ## Concurrent editors
 
