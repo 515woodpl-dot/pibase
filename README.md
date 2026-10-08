@@ -108,6 +108,12 @@ The Supabase acceptance script creates a temporary isolated project, exercises
 M1 through the real `@supabase/supabase-js` client, and deletes that project.
 The M0 measurement harness remains available for reproducing Pi memory data.
 
+## Using it from websites
+
+`docs/COMPATIBILITY.md` covers using pibase with `@supabase/supabase-js`: what is
+supported, SQL helpers, role names, the storage upload hook, sign-out, concurrent
+editors and limits.
+
 ## Operations (M4)
 
 `/healthz` is the readiness check, `/metrics` exposes compact Prometheus text

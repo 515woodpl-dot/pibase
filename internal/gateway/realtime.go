@@ -304,6 +304,31 @@ func (c *realtimeClient) writeControl(kind int, data []byte, deadline time.Time)
 	return c.conn.WriteControl(kind, data, deadline)
 }
 
+// closeSessions disconnects the realtime clients of an ended session, or of
+// every session of the user when sessionID is empty.
+func (h *realtimeHub) closeSessions(projectID, userID, sessionID string) {
+	var ended []*realtimeClient
+	h.mu.Lock()
+	for client := range h.clients {
+		if client.projectID != projectID {
+			continue
+		}
+		var claims struct {
+			Subject   string `json:"sub"`
+			SessionID string `json:"session_id"`
+		}
+		_ = json.Unmarshal(client.principal.claims, &claims)
+		if claims.Subject == userID && (sessionID == "" || claims.SessionID == sessionID) {
+			ended = append(ended, client)
+		}
+	}
+	h.mu.Unlock()
+	// Closing the socket ends the client's read loop, which removes it.
+	for _, client := range ended {
+		_ = client.conn.Close()
+	}
+}
+
 func (h *realtimeHub) remove(client *realtimeClient) {
 	leaves := client.trackedPresences()
 	h.mu.Lock()

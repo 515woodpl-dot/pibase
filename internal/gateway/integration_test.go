@@ -184,6 +184,8 @@ CREATE POLICY owner_only ON public.private_rows FOR SELECT TO ` + pgx.Identifier
 	}
 	t.Setenv("PIBASE_AUTH_EXPOSE_TOKENS", "true")
 	t.Setenv("PIBASE_ENV", "test")
+	// Strict replay detection: no grace period for a second tab's refresh.
+	t.Setenv("PIBASE_REFRESH_REUSE_SECONDS", "0")
 	server, err := New(ctx, authURL, masterKey, 0, false)
 	if err != nil {
 		t.Fatal(err)

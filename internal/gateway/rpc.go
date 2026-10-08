@@ -41,6 +41,10 @@ func (s *Server) rpcHandler(w http.ResponseWriter, r *http.Request) {
 		writeAPIError(w, httpError(http.StatusBadRequest, "invalid function"))
 		return
 	}
+	if err := checkSchemaProfile(r); err != nil {
+		writeAPIError(w, err)
+		return
+	}
 	buffer := newResponseBuffer()
 	err = s.transaction(r.Context(), who, func(tx pgx.Tx) error {
 		if err := enforceDatabaseQuota(r.Context(), tx, who.project.maxDatabaseBytes); err != nil {
@@ -53,7 +57,7 @@ func (s *Server) rpcHandler(w http.ResponseWriter, r *http.Request) {
 		var supplied map[string]json.RawMessage
 		decoder := json.NewDecoder(r.Body)
 		if err := decoder.Decode(&supplied); err != nil {
-			return httpError(http.StatusBadRequest, "RPC body must be a JSON object")
+			return bodyError(err, "RPC body must be a JSON object")
 		}
 		arguments := append([]functionArgument(nil), function.arguments...)
 		sort.Slice(arguments, func(i, j int) bool { return arguments[i].name < arguments[j].name })

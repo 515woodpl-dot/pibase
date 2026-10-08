@@ -51,6 +51,8 @@ services:
       PIBASE_ENV: ${PIBASE_ENV:-production}
       PIBASE_AUTH_EXPOSE_TOKENS: ${PIBASE_AUTH_EXPOSE_TOKENS:-false}
       PIBASE_STORAGE_ROOT: /data/files
+      PIBASE_MAX_BODY_BYTES: ${PIBASE_MAX_BODY_BYTES:-1048576}
+      PIBASE_REFRESH_REUSE_SECONDS: ${PIBASE_REFRESH_REUSE_SECONDS:-10}
     depends_on:
       bootstrap:
         condition: service_completed_successfully

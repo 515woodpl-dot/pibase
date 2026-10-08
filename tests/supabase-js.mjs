@@ -93,7 +93,12 @@ assert.equal(result.data.currentLevel, "aal2");
 assert.equal(result.data.nextLevel, "aal2");
 result = await anon.auth.mfa.unenroll({ factorId: factor.id });
 assert.ifError(result.error);
+const endedToken = (await anon.auth.getSession()).data.session.access_token;
 await anon.auth.signOut();
+// Signing out ends the session: its access token is refused at once, not
+// only when it expires.
+const ended = await fetch(url + "/auth/v1/user", { headers: { apikey: anonKey, Authorization: "Bearer " + endedToken } });
+assert.equal(ended.status, 401);
 
 result = await service.from("groups").insert({ name: "work" }).select().single();
 assert.ifError(result.error);
@@ -122,6 +127,16 @@ result = await service.from("items").upsert(
   { onConflict: "name" },
 ).select();
 assert.ifError(result.error);
+// Without onConflict the primary key is the conflict target, as in PostgREST.
+result = await service.from("pages").upsert({ slug: "home", content: "first" });
+assert.ifError(result.error);
+result = await service.from("pages").upsert({ slug: "home", content: "second" }).select();
+assert.ifError(result.error);
+assert.deepEqual(result.data, [{ slug: "home", content: "second" }]);
+result = await service.from("pages").upsert({ slug: "home", content: "ignored" }, { ignoreDuplicates: true });
+assert.ifError(result.error);
+result = await service.from("pages").select("content").eq("slug", "home").single();
+assert.equal(result.data.content, "second");
 
 result = await anon.from("items").select("*", { count: "exact", head: true });
 assert.ifError(result.error);

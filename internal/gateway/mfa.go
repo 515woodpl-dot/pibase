@@ -238,7 +238,7 @@ FOR UPDATE OF c,f`, req.ChallengeID, factorID, claims.Subject).Scan(&encrypted, 
 		if _, err = tx.Exec(r.Context(), `UPDATE auth.mfa_factors SET status='verified',last_used_counter=$1,updated_at=now() WHERE id=$2`, counter, factorID); err != nil {
 			return err
 		}
-		session, err = s.issueSession(r.Context(), p, tx, claims.Subject, email, "aal2", "totp")
+		session, err = s.issueSession(r.Context(), p, tx, claims.Subject, email, "aal2", "totp", "")
 		if err != nil {
 			return err
 		}
@@ -247,13 +247,14 @@ FOR UPDATE OF c,f`, req.ChallengeID, factorID, claims.Subject).Scan(&encrypted, 
 		if sessionID == "" {
 			return httpError(http.StatusBadRequest, "invalid JWT session")
 		}
-		_, err = tx.Exec(r.Context(), `UPDATE auth.refresh_tokens SET revoked_at=COALESCE(revoked_at,now()) WHERE id=$1 AND user_id=$2`, sessionID, claims.Subject)
+		_, err = tx.Exec(r.Context(), `UPDATE auth.refresh_tokens SET revoked_at=COALESCE(revoked_at,now()) WHERE COALESCE(session_id,id)=$1::uuid AND user_id=$2`, sessionID, claims.Subject)
 		return err
 	})
 	if err != nil {
 		writeAPIError(w, err)
 		return
 	}
+	s.endSessions(p.id, claims.Subject, cSessionID(claims))
 	writeJSON(w, http.StatusOK, session)
 }
 
