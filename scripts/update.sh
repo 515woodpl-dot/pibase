@@ -10,6 +10,11 @@ cd "$(dirname "$0")/.."
 if [ -z "${COMPOSE_FILE:-}" ] && ! grep -q '^COMPOSE_FILE=' .env 2>/dev/null; then
   export COMPOSE_FILE=compose.yaml:compose.pi.yaml
 fi
+# The gateway listens where PIBASE_GATEWAY_BIND says (empty means loopback;
+# a Pi reached over Tailscale often sets its Tailscale address instead).
+gateway_host="$(sed -n 's/^PIBASE_GATEWAY_BIND=//p' .env | tail -1)"
+case "$gateway_host" in ""|0.0.0.0|"*") gateway_host=127.0.0.1 ;; esac
+gateway="http://$gateway_host:18080"
 echo "==> Backing up every project first"
 ./scripts/backup-all.sh
 echo "==> Fetching the latest version"
@@ -26,7 +31,7 @@ docker compose up --build -d
 docker compose --profile tools build ops
 docker image prune -f >/dev/null
 for _ in $(seq 1 60); do
-  if curl -fsS http://127.0.0.1:18080/healthz >/dev/null 2>&1; then echo "PIBASE is up."; exit 0; fi
+  if curl -fsS "$gateway/healthz" >/dev/null 2>&1; then echo "PIBASE is up."; exit 0; fi
   sleep 2
 done
 docker compose logs --tail 40 gateway >&2

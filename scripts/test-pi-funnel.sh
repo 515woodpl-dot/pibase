@@ -87,6 +87,13 @@ test ! -s "$test_root/broken/log/tailscale" || grep -qv '^funnel' "$test_root/br
 grep -q 'Funnel was left off' "$test_root/broken/stderr" || fail "no explanation when PIBASE does not start"
 grep -qx 'PIBASE_PUBLIC_URL=' "$test_root/broken/.env" || fail ".env changed although PIBASE did not start"
 
+new_case tailnet
+printf 'PIBASE_GATEWAY_BIND=100.64.0.5\n' >>"$test_root/tailnet/.env"
+run tailnet || fail "run with a Tailscale bind address failed: $(cat "$test_root/tailnet/stderr")"
+grep -qx 'funnel --bg --https=10000 http://100.64.0.5:18080' "$test_root/tailnet/log/tailscale" || fail "Funnel not pointed at the bound address"
+grep -q 'http://100.64.0.5:18080/healthz' "$test_root/tailnet/log/curl" || fail "health not checked at the bound address"
+grep -qx 'PIBASE_TRUSTED_PROXIES=172.18.0.0/16,100.64.0.5' "$test_root/tailnet/.env" || fail "the Pi's own address is not trusted"
+
 new_case off
 run off
 run off --off || fail "--off failed"
