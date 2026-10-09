@@ -112,7 +112,9 @@ The M0 measurement harness remains available for reproducing Pi memory data.
 
 `docs/COMPATIBILITY.md` covers using pibase with `@supabase/supabase-js`: what is
 supported, SQL helpers, role names, the storage upload hook, sign-out, concurrent
-editors and limits.
+editors, the browser sign-in client and limits. `docs/SERVER-SIDE-CODE.md` shows
+how to run server-side work (email, webhooks, scheduled jobs) in the site's own
+Next.js routes and call it through `/functions/v1`.
 
 ## Operations (M4)
 

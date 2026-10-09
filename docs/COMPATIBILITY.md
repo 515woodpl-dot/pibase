@@ -19,7 +19,8 @@ dashboard's **API keys** page shows it with the project's keys.
 | Area | Supported | Not supported |
 |---|---|---|
 | Data (`/rest/v1`) | select with filters, order, limit/offset and embedded relations; insert, update, delete; `upsert()` with or without `onConflict` (defaults to the primary key, like PostgREST) and with `ignoreDuplicates`; `Prefer: return=representation` and `count=exact`; `columns=` | schemas other than `public` (requests for them get 406), GraphQL |
-| Functions (`/rest/v1/rpc/<name>`) | calling SQL functions in `public` | Edge Functions |
+| Functions (`/rest/v1/rpc/<name>`) | calling SQL functions in `public` | |
+| Server-side code (`/functions/v1/<name>`) | forwarding to your site's own server routes, with `supabase.functions.invoke` unchanged (see below) | running code on the PIBASE machine (no Edge Functions runtime) |
 | Auth (`/auth/v1`) | email + password sign-up, confirmation, sign-in, refresh, sign-out, password recovery, `getUser`/`updateUser`, TOTP MFA, admin user management with the service key | OAuth/social providers, magic links, phone and OTP sign-in |
 | Storage (`/storage/v1`) | buckets; upload (POST and PUT, `upsert`), download, public and signed URLs, list, remove | image transformations |
 | Realtime (`/realtime/v1/websocket`) | table changes (after `realtime.enable_table`), broadcast, presence | |
@@ -147,6 +148,52 @@ of the site:
   different origin from the gateway (`TestBrowserAuthClient`, run with
   `PIBASE_TEST_BROWSER=1` and Playwright installed). Not yet checked in Safari
   or on phones.
+
+## Server-side code
+
+PIBASE doesn't run customer code, so there is no Edge Functions runtime. Work
+that needs a secret (an email or payment key, the service key) or must call an
+outside service lives in your site's own server, for example Next.js route
+handlers at `app/api/<name>/route.ts`. Plain reads and writes still go straight
+from the browser to `/rest/v1` under row level security. The guide
+[SERVER-SIDE-CODE.md](SERVER-SIDE-CODE.md) has the patterns: authenticated
+routes, email, webhooks, scheduled jobs.
+
+To keep `supabase.functions.invoke('send-quote', { body })` working unchanged,
+set the project's **Server-side code** address in the dashboard's Settings, for
+example `https://app.example.com/api`. The gateway then forwards
+`/functions/v1/<name>` to `<address>/<name>`:
+
+* It checks the project key and the caller's token first. A signed-out token
+  gets 401 and the site is never called. The anon key alone is accepted, as with
+  Supabase's default `verify_jwt`, so a route that needs a signed-in user must
+  check for one.
+* The site receives the method, query string, body and the `Authorization`
+  header, so the route can act as the user. The project's `apikey` header and
+  cookies are not forwarded.
+* It adds `X-Pibase-Role` (`anon`, `authenticated` or `service_role`),
+  `X-Pibase-Project-Id` and, for a signed-in user, `X-Pibase-User-Id`. Headers
+  with those names (or `X-Forwarded-*`) sent by the caller are dropped. Trust
+  them only if the site can be reached through the gateway alone; a site open
+  to the internet should call `getUser(token)` instead (next point).
+* Response status, body and headers come back, except cookies and CORS headers,
+  which the gateway controls. Redirects are returned to the caller, not followed.
+  Calls time out after 120 seconds. A failed or slow site gives 502 or 504.
+* A name is one or more `/`-separated parts of letters, digits, `.`, `_`, `~` and
+  `-` (each up to 128 characters, not starting with a dot); anything else is 404.
+* Public addresses can be set by the project owner. An address on the Pi's own
+  network, such as the Next.js app on the same machine, can only be set with
+  the operator token, and the gateway refuses to connect to a private address
+  that the operator didn't approve.
+* Calls count towards the project's 100 requests per second and its request
+  totals.
+
+**Checking a token in your own server.** Ask PIBASE (`GET /auth/v1/user` with the
+token, which is what `supabase.auth.getUser(token)` does). Don't check the
+signature locally: PIBASE ends every token of a sign-in at sign-out or ban, but
+a locally checked token stays valid until it expires, up to an hour.
+(`TestFunctionsProxyForwardsWithVerifiedIdentity`, `TestFunctionsProxyRefusesUnsafeTargetsAndNames`,
+`TestSupabaseFunctionsInvoke`)
 
 ## Concurrent editors
 

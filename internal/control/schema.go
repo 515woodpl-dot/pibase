@@ -54,6 +54,11 @@ ALTER TABLE control.projects ADD COLUMN IF NOT EXISTS owner_id uuid REFERENCES c
 -- again. NULL for keys issued before this column existed; rotating fills it.
 ALTER TABLE control.projects ADD COLUMN IF NOT EXISTS anon_key_encrypted bytea;
 ALTER TABLE control.projects ADD COLUMN IF NOT EXISTS service_key_encrypted bytea;
+-- Where /functions/v1/<name> is forwarded: the site's own server-side routes.
+-- functions_private is set only by the operator, who may point at a private
+-- address such as the Next.js app on the same machine.
+ALTER TABLE control.projects ADD COLUMN IF NOT EXISTS functions_url text;
+ALTER TABLE control.projects ADD COLUMN IF NOT EXISTS functions_private boolean NOT NULL DEFAULT false;
 -- Per-minute request counts by service and HTTP status class, written by the
 -- gateway in batches and pruned after 8 days.
 CREATE TABLE IF NOT EXISTS control.project_activity (
@@ -79,7 +84,7 @@ CREATE VIEW control.project_catalog AS
   SELECT id, database_name, anon_role, authenticated_role, service_role,
          admin_role, jwt_secret_encrypted, anon_key_hash, service_key_hash,
          max_database_bytes, name, created_at, schema_version, schema_error,
-         owner_id
+         owner_id, functions_url, functions_private
   FROM control.projects;
 GRANT USAGE ON SCHEMA control TO authenticator;
 GRANT SELECT ON control.project_catalog TO authenticator;

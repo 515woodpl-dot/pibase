@@ -411,11 +411,13 @@ function openExtensions(){
 
 /* ---------- settings and account ---------- */
 function openSettings(){
-  clearFrom(2);const x=selected;const p=pane('Settings','Rename this project, check its size limit, or delete it.');
+  clearFrom(2);const x=selected;const p=pane('Settings','Rename this project, check its size limit, set where server-side calls go, or delete it.');
   const name=input('text','',x.name),status=note('');
   p.append(group('Project name','Only changes the name shown in this dashboard. The project ID, address and keys stay the same.',field('Name',name),button('Save name',async()=>{try{await api(projectPath(),body({name:name.value},'PATCH'));await refreshProject(x);say('Saved');openSettings()}catch(e){status.textContent=e.message}},'primary'),status));
   if(account){p.append(group('Database size limit','The most data this project\'s database may hold.',el('p',x.max_database_bytes?bytes(x.max_database_bytes):'No limit set')),note('Only the server operator can change this limit.'))}
   else{const lim=input('number','Bytes',x.max_database_bytes||'');lim.min='1';const ls=note('');p.append(group('Database size limit','The most data this project\'s database may hold. Writes are refused above it.',field('Limit in bytes',lim,'For example 1073741824 is 1 GB.'),button('Save limit',async()=>{try{await api(projectPath()+'/limits',body({max_database_bytes:Number(lim.value)},'PATCH'));const f=await refreshProject(x);ls.textContent='Limit saved: '+bytes(f.max_database_bytes)}catch(e){ls.textContent=e.message}},'primary'),ls))}
+  const fn=input('text','https://your-site.example/api',x.functions_url||''),fs=note('');
+  p.append(group('Server-side code','Where this project forwards /functions/v1/<name> calls: your site\'s own server routes, for example a Next.js app. Leave empty to turn it off.',field('Address',fn,account?'A public address. The operator can allow one on your own network.':'Public, or a private address such as the site\'s server on this machine.'),button('Save address',async()=>{try{const r=await api(projectPath()+'/functions',body({url:fn.value},'PATCH'));await refreshProject(x);fs.textContent=r&&r.url?'Saved. Calls to /functions/v1/<name> go to '+r.url+'/<name>.':'Server-side code is turned off.'}catch(e){fs.textContent=e.message}},'primary'),fs));
   const sure=input('text','');const ds=note('');
   const dg=group('Delete this project','Permanently deletes the database, its users, files, backups and keys. This cannot be undone.',field('Type the project ID ('+x.id+') to confirm',sure),button('Delete project',async()=>{try{await api(projectPath(),body({confirm:sure.value},'DELETE'));selected=null;refreshNav();await load()}catch(e){ds.textContent=e.message}},'danger'),ds);
   dg.classList.add('danger');p.append(dg);add(p)

@@ -23,11 +23,18 @@ type hostResolver interface {
 // DialContext, not only during URL validation, so a DNS answer cannot be
 // swapped between validation and connect. Redirects are refused entirely.
 func webhookClient(resolver hostResolver) *http.Client {
+	return &http.Client{Transport: publicTransport(resolver, 10*time.Second), Timeout: 15 * time.Second, CheckRedirect: func(*http.Request, []*http.Request) error {
+		return errors.New("webhook redirects are not allowed")
+	}}
+}
+
+// publicTransport connects only to public addresses; see webhookClient.
+func publicTransport(resolver hostResolver, headerTimeout time.Duration) *http.Transport {
 	dialer := &net.Dialer{Timeout: 5 * time.Second}
-	transport := &http.Transport{
+	return &http.Transport{
 		Proxy:                 nil,
 		TLSHandshakeTimeout:   5 * time.Second,
-		ResponseHeaderTimeout: 10 * time.Second,
+		ResponseHeaderTimeout: headerTimeout,
 		DialContext: func(ctx context.Context, network, address string) (net.Conn, error) {
 			host, port, err := net.SplitHostPort(address)
 			if err != nil {
@@ -48,9 +55,6 @@ func webhookClient(resolver hostResolver) *http.Client {
 			return nil, last
 		},
 	}
-	return &http.Client{Transport: transport, Timeout: 15 * time.Second, CheckRedirect: func(*http.Request, []*http.Request) error {
-		return errors.New("webhook redirects are not allowed")
-	}}
 }
 
 func validateWebhookURL(ctx context.Context, resolver hostResolver, raw string) (*url.URL, error) {
