@@ -45,6 +45,12 @@ Never set `PIBASE_ADMIN_BIND=0.0.0.0` on a machine reachable from the internet,
 and never route the dashboard through the public gateway. Rotate the operator token after suspected browser
 or host compromise.
 
+The droplet helper scripts also work on the Pi, from the repository folder:
+`./scripts/backup-all.sh` backs up every project into `$PIBASE_DATA_ROOT/backups`
+(keeping 14 days), and `./scripts/update.sh` backs up, pulls `main`, rebuilds and
+restarts. Both use the same `compose.yaml` + `compose.pi.yaml` layout as the
+commands below.
+
 Backups are encrypted before they reach the operator-selected destination:
 
 ```sh

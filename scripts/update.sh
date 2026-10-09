@@ -3,6 +3,13 @@
 # that runs PIBASE:  sudo -u pibase ~pibase/pibase/scripts/update.sh
 set -euo pipefail
 cd "$(dirname "$0")/.."
+# Both the Pi and the droplet run the server layout: data under
+# PIBASE_DATA_ROOT and automatic restarts (compose.pi.yaml). The droplet setup
+# records that in .env; a Pi set up earlier passes -f flags instead, so use it
+# here unless .env or the environment says otherwise.
+if [ -z "${COMPOSE_FILE:-}" ] && ! grep -q '^COMPOSE_FILE=' .env 2>/dev/null; then
+  export COMPOSE_FILE=compose.yaml:compose.pi.yaml
+fi
 echo "==> Backing up every project first"
 ./scripts/backup-all.sh
 echo "==> Fetching the latest version"
