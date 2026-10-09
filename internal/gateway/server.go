@@ -4,7 +4,9 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"github.com/515woodpl-dot/pibase/internal/proxyip"
 	"log/slog"
+	"net"
 	"net/http"
 	"os"
 	"strconv"
@@ -45,6 +47,7 @@ type Server struct {
 	sessions           sessionCache
 	refreshReuse       time.Duration
 	maxBodyBytes       int64
+	trustedProxies     []*net.IPNet
 	activityStop       context.CancelFunc
 	activityWG         sync.WaitGroup
 }
@@ -104,6 +107,11 @@ func New(ctx context.Context, databaseURL string, masterKey []byte, activeProjec
 		controlPool.Close()
 		return nil, fmt.Errorf("PIBASE_MAX_BODY_BYTES must be between 65536 and 16777216")
 	}
+	trustedProxies, err := proxyip.Parse(os.Getenv("PIBASE_TRUSTED_PROXIES"))
+	if err != nil {
+		controlPool.Close()
+		return nil, fmt.Errorf("PIBASE_TRUSTED_PROXIES: %w", err)
+	}
 	maxProjectConnections, err := config.Int("PIBASE_MAX_PROJECT_CONNECTIONS", 30)
 	if err != nil || maxProjectConnections < 1 {
 		controlPool.Close()
@@ -112,6 +120,7 @@ func New(ctx context.Context, databaseURL string, masterKey []byte, activeProjec
 	s := &Server{
 		control:           controlPool,
 		databaseURL:       databaseURL,
+		trustedProxies:    trustedProxies,
 		masterKey:         append([]byte(nil), masterKey...),
 		pools:             make(map[string]*pgxpool.Pool),
 		databaseSlots:     make(chan struct{}, maxProjectConnections),

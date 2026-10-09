@@ -59,6 +59,9 @@ ALTER TABLE control.projects ADD COLUMN IF NOT EXISTS service_key_encrypted byte
 -- address such as the Next.js app on the same machine.
 ALTER TABLE control.projects ADD COLUMN IF NOT EXISTS functions_url text;
 ALTER TABLE control.projects ADD COLUMN IF NOT EXISTS functions_private boolean NOT NULL DEFAULT false;
+-- The address apps use for this project, such as https://pibase.client.com,
+-- shown in the dashboard. NULL means PIBASE_PUBLIC_URL (or a guess).
+ALTER TABLE control.projects ADD COLUMN IF NOT EXISTS public_url text;
 -- Per-minute request counts by service and HTTP status class, written by the
 -- gateway in batches and pruned after 8 days.
 CREATE TABLE IF NOT EXISTS control.project_activity (
@@ -84,7 +87,7 @@ CREATE VIEW control.project_catalog AS
   SELECT id, database_name, anon_role, authenticated_role, service_role,
          admin_role, jwt_secret_encrypted, anon_key_hash, service_key_hash,
          max_database_bytes, name, created_at, schema_version, schema_error,
-         owner_id, functions_url, functions_private
+         owner_id, functions_url, functions_private, public_url
   FROM control.projects;
 GRANT USAGE ON SCHEMA control TO authenticator;
 GRANT SELECT ON control.project_catalog TO authenticator;

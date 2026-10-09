@@ -53,6 +53,10 @@ services:
       PIBASE_STORAGE_ROOT: /data/files
       PIBASE_MAX_BODY_BYTES: ${PIBASE_MAX_BODY_BYTES:-1048576}
       PIBASE_REFRESH_REUSE_SECONDS: ${PIBASE_REFRESH_REUSE_SECONDS:-10}
+      # The reverse proxy in front of the gateway (Caddy on a droplet reaches it
+      # from the Docker network's gateway address). Only these peers may set
+      # X-Forwarded-For, which keys the per-visitor sign-in limit.
+      PIBASE_TRUSTED_PROXIES: ${PIBASE_TRUSTED_PROXIES:-}
     depends_on:
       bootstrap:
         condition: service_completed_successfully

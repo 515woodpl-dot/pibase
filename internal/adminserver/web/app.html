@@ -328,7 +328,7 @@ async function openKeys(message){
     p.replaceChildren(...h);
     if(message)p.append(note(message));
     p.append(group('Project address','Where your app sends its requests. Use it as the URL in supabase-js or any HTTP client.',copyField('API URL',url)));
-    if(!x.api_url)p.lastChild.append(note('This address is guessed from the page you are on. Set PIBASE_PUBLIC_URL to show a fixed one.'));
+    if(!x.api_url)p.lastChild.append(note('This address is guessed from the page you are on. Set it under Settings, API address.'));
     if(k.anon_key){p.append(group('Keys','Send a key in the apikey header of every request.',copyField('anon · public',k.anon_key,'Safe in a browser or mobile app as long as your tables use Row Level Security.'),secretField('service_role · secret',k.service_key,'Skips Row Level Security. Use it only on a server you control, never in an app or web page.')))}
     else{p.append(group('Keys','These keys were created before pibase kept a copy, so they cannot be shown. Rotate the keys once to get keys you can view here at any time.'))}
     p.append(group('JWT secret','The secret that signs the keys above and your app users\' access tokens (HS256). It is base64: decode it to bytes before verifying tokens on your own server. Rotating keys replaces it and signs every user out.',secretField('JWT secret',k.jwt_secret)));
@@ -411,11 +411,13 @@ function openExtensions(){
 
 /* ---------- settings and account ---------- */
 function openSettings(){
-  clearFrom(2);const x=selected;const p=pane('Settings','Rename this project, check its size limit, set where server-side calls go, or delete it.');
+  clearFrom(2);const x=selected;const p=pane('Settings','Rename this project, set its API address and where server-side calls go, check its size limit, or delete it.');
   const name=input('text','',x.name),status=note('');
   p.append(group('Project name','Only changes the name shown in this dashboard. The project ID, address and keys stay the same.',field('Name',name),button('Save name',async()=>{try{await api(projectPath(),body({name:name.value},'PATCH'));await refreshProject(x);say('Saved');openSettings()}catch(e){status.textContent=e.message}},'primary'),status));
   if(account){p.append(group('Database size limit','The most data this project\'s database may hold.',el('p',x.max_database_bytes?bytes(x.max_database_bytes):'No limit set')),note('Only the server operator can change this limit.'))}
   else{const lim=input('number','Bytes',x.max_database_bytes||'');lim.min='1';const ls=note('');p.append(group('Database size limit','The most data this project\'s database may hold. Writes are refused above it.',field('Limit in bytes',lim,'For example 1073741824 is 1 GB.'),button('Save limit',async()=>{try{await api(projectPath()+'/limits',body({max_database_bytes:Number(lim.value)},'PATCH'));const f=await refreshProject(x);ls.textContent='Limit saved: '+bytes(f.max_database_bytes)}catch(e){ls.textContent=e.message}},'primary'),ls))}
+  const pu=input('text','https://pibase.client.com',x.public_url||''),pus=note('');
+  p.append(group('API address','The address your app uses for this project, such as https://pibase.client.com. It changes what the API keys page shows; the address must also point to this server.',field('Address',pu,'Leave empty to use the server\'s default address.'),button('Save API address',async()=>{try{const r=await api(projectPath()+'/public-url',body({url:pu.value},'PATCH'));await refreshProject(x);pus.textContent=r&&r.url?'Saved. Apps use '+r.url+'.':(r&&r.api_url?'Using the server\'s default address: '+r.api_url+'.':'Using the address of this page.')}catch(e){pus.textContent=e.message}},'primary'),pus));
   const fn=input('text','https://your-site.example/api',x.functions_url||''),fs=note('');
   p.append(group('Server-side code','Where this project forwards /functions/v1/<name> calls: your site\'s own server routes, for example a Next.js app. Leave empty to turn it off.',field('Address',fn,account?'A public address. The operator can allow one on your own network.':'Public, or a private address such as the site\'s server on this machine.'),button('Save address',async()=>{try{const r=await api(projectPath()+'/functions',body({url:fn.value},'PATCH'));await refreshProject(x);fs.textContent=r&&r.url?'Saved. Calls to /functions/v1/<name> go to '+r.url+'/<name>.':'Server-side code is turned off.'}catch(e){fs.textContent=e.message}},'primary'),fs));
   const sure=input('text','');const ds=note('');

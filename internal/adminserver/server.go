@@ -12,6 +12,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"github.com/515woodpl-dot/pibase/internal/proxyip"
 	"net"
 	"net/http"
 	"net/url"
@@ -122,6 +123,7 @@ func (s *Server) Handler() http.Handler {
 	mux.HandleFunc("GET /_pibase/projects/{id}/keys", s.projectKeys)
 	mux.HandleFunc("PATCH /_pibase/projects/{id}/limits", s.setLimits)
 	mux.HandleFunc("PATCH /_pibase/projects/{id}/functions", s.setFunctions)
+	mux.HandleFunc("PATCH /_pibase/projects/{id}/public-url", s.setPublicURL)
 	mux.HandleFunc("POST /_pibase/projects/{id}/users", s.createUser)
 	mux.HandleFunc("DELETE /_pibase/projects/{id}/users/{user}", s.deleteUser)
 	// Auth endpoints — no token required.
@@ -651,10 +653,8 @@ func (s *Server) projects(w http.ResponseWriter, r *http.Request) {
 		fail(w, err)
 		return
 	}
-	if s.PublicURL != "" {
-		for i := range stats {
-			stats[i].APIURL = strings.TrimRight(s.PublicURL, "/")
-		}
+	for i := range stats {
+		stats[i].APIURL = s.apiURL(stats[i].PublicURL)
 	}
 	if stats == nil {
 		// An account with no projects gets [], not null, so clients can append.
@@ -830,11 +830,50 @@ func (s *Server) projectKeys(w http.ResponseWriter, r *http.Request) {
 		fail(w, err)
 		return
 	}
+	own, err := control.PublicURL(r.Context(), s.AdminURL, id)
+	if err != nil {
+		fail(w, err)
+		return
+	}
 	w.Header().Set("Cache-Control", "no-store")
 	writeJSON(w, 200, struct {
 		APIURL string `json:"api_url,omitempty"`
 		control.ProjectKeys
-	}{strings.TrimRight(s.PublicURL, "/"), k})
+	}{s.apiURL(own), k})
+}
+
+// apiURL is the address shown for a project: its own, else PIBASE_PUBLIC_URL,
+// else empty (the page then guesses from its own address).
+func (s *Server) apiURL(own string) string {
+	if own != "" {
+		return own
+	}
+	return strings.TrimRight(s.PublicURL, "/")
+}
+
+// setPublicURL sets the address the dashboard shows for the project, such as
+// https://pibase.client.com. It only changes what is displayed.
+func (s *Server) setPublicURL(w http.ResponseWriter, r *http.Request) {
+	id := r.PathValue("id")
+	if !s.checkOwner(w, r, id) {
+		return
+	}
+	var b struct {
+		URL string `json:"url"`
+	}
+	if !jsonBody(w, r, &b) {
+		return
+	}
+	url, err := control.SetPublicURL(r.Context(), s.AdminURL, id, b.URL)
+	if err != nil {
+		if errors.Is(err, control.ErrNotFound) {
+			http.NotFound(w, r)
+			return
+		}
+		http.Error(w, err.Error(), http.StatusBadRequest)
+		return
+	}
+	writeJSON(w, 200, map[string]string{"url": url, "api_url": s.apiURL(url)})
 }
 
 func (s *Server) setLimits(w http.ResponseWriter, r *http.Request) {
@@ -1056,75 +1095,11 @@ func writeJSON(w http.ResponseWriter, status int, v any) {
 func fail(w http.ResponseWriter, err error) { http.Error(w, err.Error(), http.StatusBadRequest) }
 
 // clientIP keys rate limits. X-Forwarded-For is honoured only from a loopback
-// peer (the local reverse proxy), and only its last entry, which that proxy
-// wrote; earlier entries are client-controlled.
-func (s *Server) clientIP(r *http.Request) string {
-	host, _, err := net.SplitHostPort(r.RemoteAddr)
-	if err != nil {
-		host = r.RemoteAddr
-	}
-	if !s.trustedPeer(net.ParseIP(host)) {
-		return host
-	}
-	// Walk the chain from the nearest hop; the first address that is not one of
-	// our own proxies is the client. Anything further left is client-supplied.
-	parts := strings.Split(r.Header.Get("X-Forwarded-For"), ",")
-	for i := len(parts) - 1; i >= 0; i-- {
-		ip := net.ParseIP(strings.TrimSpace(parts[i]))
-		if ip == nil {
-			break
-		}
-		host = ip.String()
-		if !s.trustedPeer(ip) {
-			break
-		}
-	}
-	return host
-}
-
-func (s *Server) trustedPeer(ip net.IP) bool {
-	if ip == nil {
-		return false
-	}
-	if ip.IsLoopback() {
-		return true
-	}
-	for _, n := range s.TrustedProxies {
-		if n.Contains(ip) {
-			return true
-		}
-	}
-	return false
-}
+// peer or a configured proxy; see proxyip.ClientIP.
+func (s *Server) clientIP(r *http.Request) string { return proxyip.ClientIP(r, s.TrustedProxies) }
 
 // ParseTrustedProxies parses a comma-separated list of IPs and CIDRs.
-func ParseTrustedProxies(v string) ([]*net.IPNet, error) {
-	var out []*net.IPNet
-	for _, f := range strings.Split(v, ",") {
-		f = strings.TrimSpace(f)
-		if f == "" {
-			continue
-		}
-		if !strings.Contains(f, "/") {
-			ip := net.ParseIP(f)
-			if ip == nil {
-				return nil, fmt.Errorf("invalid trusted proxy %q", f)
-			}
-			bits := 128
-			if ip.To4() != nil {
-				ip, bits = ip.To4(), 32
-			}
-			out = append(out, &net.IPNet{IP: ip, Mask: net.CIDRMask(bits, bits)})
-			continue
-		}
-		_, n, err := net.ParseCIDR(f)
-		if err != nil {
-			return nil, fmt.Errorf("invalid trusted proxy %q", f)
-		}
-		out = append(out, n)
-	}
-	return out, nil
-}
+func ParseTrustedProxies(v string) ([]*net.IPNet, error) { return proxyip.Parse(v) }
 
 const (
 	maxLoginFailures   = 10
