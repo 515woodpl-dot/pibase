@@ -72,6 +72,16 @@ The droplet helper scripts also work on the Pi, from the repository folder:
 restarts. Both use the same `compose.yaml` + `compose.pi.yaml` layout as the
 commands below.
 
+If bootstrap fails with `could not open file "global/pg_filenode.map": Permission denied`,
+the Postgres data folder's owner was changed (an older `setup-pi.sh` did that
+when run again). Give it back to Postgres, then start as usual:
+
+```sh
+docker compose -f compose.yaml -f compose.pi.yaml exec -u root postgres \
+  sh -c 'chown postgres:postgres "$PGDATA" && chmod 700 "$PGDATA"'
+docker compose -f compose.yaml -f compose.pi.yaml up --build -d
+```
+
 Backups are encrypted before they reach the operator-selected destination:
 
 ```sh
