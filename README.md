@@ -28,6 +28,10 @@ Create a project (the keys are printed once; store them securely):
 ./scripts/create-project.sh "My project"
 ```
 
+On a DigitalOcean droplet or any Ubuntu server, `scripts/setup-droplet.sh` does
+all of this plus HTTPS, swap, firewall and daily backups; see
+[docs/VPS.md](docs/VPS.md).
+
 The command creates an isolated database and four project-specific roles. It revokes public database access, creates protected `auth` and `storage` schemas, encrypts the JWT signing secret with AES-256-GCM, stores only SHA-256 API-key hashes, and returns distinct anon and service JWTs. The service key must never be shipped to browsers.
 
 Customer-authored `SECURITY DEFINER` functions can bypass intended policies if written incorrectly; their safety is the customer's responsibility.

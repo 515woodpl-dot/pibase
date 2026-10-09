@@ -1658,6 +1658,27 @@ func TestProjectManagement(t *testing.T) {
 		}
 		opCall("PATCH", "/_pibase/projects/"+opProjID+"/functions", `{"url":""}`, 200)
 	})
+	// P1-P3: each project can show its own API address.
+	t.Run("P1_owner_sets_project_api_address", func(t *testing.T) {
+		acctCall("PATCH", "/_pibase/projects/"+acctProjID+"/public-url", `{"url":"https://pibase.client.com/"}`, cookieA, 200)
+		_, listData := acctCall("GET", "/_pibase/projects", "", cookieA, 200)
+		if !strings.Contains(string(listData), `"api_url":"https://pibase.client.com"`) {
+			t.Fatalf("project address not used: %s", listData)
+		}
+		_, keys := acctCall("GET", "/_pibase/projects/"+acctProjID+"/keys", "", cookieA, 200)
+		if !strings.Contains(string(keys), `"api_url":"https://pibase.client.com"`) {
+			t.Fatal("keys page does not use the project's address")
+		}
+	})
+	t.Run("P2_bad_project_api_address_rejected", func(t *testing.T) {
+		for _, bad := range []string{`{"url":"ftp://x.example"}`, `{"url":"https://x.example/rest"}`, `{"url":"https://u:p@x.example"}`, `{"url":"x.example"}`} {
+			acctCall("PATCH", "/_pibase/projects/"+acctProjID+"/public-url", bad, cookieA, 400)
+		}
+	})
+	t.Run("P3_non_owner_project_api_address_forbidden", func(t *testing.T) {
+		acctCall("PATCH", "/_pibase/projects/"+acctProjID+"/public-url", `{"url":"https://evil.example"}`, cookieB, 403)
+		acctCall("PATCH", "/_pibase/projects/"+acctProjID+"/public-url", `{"url":""}`, cookieA, 200)
+	})
 	t.Run("F4_non_owner_functions_forbidden", func(t *testing.T) {
 		acctCall("PATCH", "/_pibase/projects/"+acctProjID+"/functions", `{"url":"https://evil.example.com"}`, cookieB, 403)
 	})

@@ -2,6 +2,7 @@ package gateway
 
 import (
 	"context"
+	"fmt"
 	"io"
 	"net/http"
 	"net/http/httptest"
@@ -274,5 +275,35 @@ func TestSupabaseFunctionsInvoke(t *testing.T) {
 	}
 	if site.count() != 2 || site.last().path != "/api/nested/route" || site.last().header.Get("X-Pibase-Role") != "authenticated" {
 		t.Fatalf("site saw %d calls, last %+v", site.count(), site.last())
+	}
+}
+
+// Behind a reverse proxy the gateway sees one peer address for everyone. The
+// sign-in limit (120 attempts per address per minute) must count each visitor
+// from X-Forwarded-For, which the gateway reads only from a trusted peer
+// (here loopback, as the test server's client connects from 127.0.0.1).
+func TestSignInLimitCountsEachVisitorBehindProxy(t *testing.T) {
+	e := newAuditEnv(t, nil)
+	attempt := func(i int, xff string) int {
+		resp, _ := e.call("POST", "/auth/v1/token?grant_type=password", map[string]string{
+			"apikey": e.p.AnonKey, "Content-Type": "application/json", "X-Forwarded-For": xff,
+		}, fmt.Sprintf(`{"email":"nobody%d@example.test","password":"wrong password"}`, i))
+		return resp.StatusCode
+	}
+	for i := 0; i < 120; i++ {
+		if got := attempt(i, "198.51.100.1"); got == http.StatusTooManyRequests {
+			t.Fatalf("visitor A limited after %d attempts", i)
+		}
+	}
+	if got := attempt(1000, "198.51.100.1"); got != http.StatusTooManyRequests {
+		t.Fatalf("visitor A's 121st attempt: %d", got)
+	}
+	// A spoofed left-hand entry doesn't escape the limit...
+	if got := attempt(1001, "203.0.113.50, 198.51.100.1"); got != http.StatusTooManyRequests {
+		t.Fatalf("spoofed entry escaped the limit: %d", got)
+	}
+	// ...but a different visitor has their own budget.
+	if got := attempt(1002, "198.51.100.2"); got == http.StatusTooManyRequests {
+		t.Fatal("visitor B was limited by visitor A's attempts")
 	}
 }

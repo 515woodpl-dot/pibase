@@ -4,7 +4,7 @@ import (
 	"context"
 	"crypto/sha256"
 	"fmt"
-	"net"
+	"github.com/515woodpl-dot/pibase/internal/proxyip"
 	"net/http"
 	"strings"
 	"time"
@@ -45,12 +45,9 @@ ON CONFLICT(project_id,day) DO UPDATE SET requests=control.project_usage.request
 
 func (s *Server) enforceAuthRate(who project, r *http.Request, email string) error {
 	// RemoteAddr is supplied by the HTTP server. X-Forwarded-For is caller
-	// controlled unless a trusted proxy is explicitly configured.
-	ip, _, err := net.SplitHostPort(r.RemoteAddr)
-	if err != nil {
-		ip = r.RemoteAddr
-	}
-	return s.authRate(who, email, ip)
+	// controlled, so it is read only when the peer is loopback or listed in
+	// PIBASE_TRUSTED_PROXIES (the reverse proxy in front of the gateway).
+	return s.authRate(who, email, proxyip.ClientIP(r, s.trustedProxies))
 }
 
 func (s *Server) enforceRefreshRate(who project, tokenDigest string) error {

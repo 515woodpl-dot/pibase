@@ -38,6 +38,8 @@ type ProjectSummary struct {
 	// FunctionsURL is where /functions/v1 calls are forwarded; empty when unset.
 	FunctionsURL     string `json:"functions_url,omitempty"`
 	FunctionsPrivate bool   `json:"functions_private,omitempty"`
+	// PublicURL is the project's own API address; empty means the server default.
+	PublicURL string `json:"public_url,omitempty"`
 }
 
 type ProjectUsage struct {
@@ -78,7 +80,7 @@ func projectStats(ctx context.Context, adminURL, storageRoot, ownerID string) ([
 		return nil, err
 	}
 	defer conn.Close(ctx)
-	const base = `SELECT p.id,p.name,p.database_name,p.created_at,p.max_database_bytes,p.schema_error,COALESCE(p.functions_url,''),p.functions_private,
+	const base = `SELECT p.id,p.name,p.database_name,p.created_at,p.max_database_bytes,p.schema_error,COALESCE(p.functions_url,''),p.functions_private,COALESCE(p.public_url,''),
 pg_database_size(p.database_name),COALESCE((SELECT sum(requests) FROM control.project_usage u WHERE u.project_id=p.id AND u.day>=current_date-29),0)
 	FROM control.project_catalog p`
 	var rows pgx.Rows
@@ -94,7 +96,7 @@ pg_database_size(p.database_name),COALESCE((SELECT sum(requests) FROM control.pr
 	var result []ProjectStat
 	for rows.Next() {
 		var item ProjectStat
-		if err := rows.Scan(&item.ID, &item.Name, &item.Database, &item.CreatedAt, &item.MaxDatabase, &item.SchemaError, &item.FunctionsURL, &item.FunctionsPrivate, &item.DatabaseBytes, &item.Requests30d); err != nil {
+		if err := rows.Scan(&item.ID, &item.Name, &item.Database, &item.CreatedAt, &item.MaxDatabase, &item.SchemaError, &item.FunctionsURL, &item.FunctionsPrivate, &item.PublicURL, &item.DatabaseBytes, &item.Requests30d); err != nil {
 			return nil, err
 		}
 		root := filepath.Join(storageRoot, item.ID)
