@@ -53,6 +53,17 @@ if [ "$off" -eq 1 ]; then
   exit 0
 fi
 
+# Share nothing until PIBASE itself starts cleanly.
+if ! docker compose up -d >/dev/null; then
+  die "PIBASE did not start, so Funnel was left off. See: docker compose logs bootstrap --tail 40"
+fi
+healthy=0
+for _ in $(seq 1 30); do
+  if curl -fsS --max-time 5 http://127.0.0.1:18080/healthz >/dev/null 2>&1; then healthy=1; break; fi
+  sleep 2
+done
+[ "$healthy" -eq 1 ] || die "PIBASE is not answering on 127.0.0.1:18080, so Funnel was left off. See: docker compose logs gateway --tail 40"
+
 name="$(tailscale status --json | python3 -c 'import json,sys; print(json.load(sys.stdin)["Self"]["DNSName"].rstrip("."))' 2>/dev/null || true)"
 [ -n "$name" ] || die "could not read this device's Tailscale name (is MagicDNS on?)"
 url="https://$name"

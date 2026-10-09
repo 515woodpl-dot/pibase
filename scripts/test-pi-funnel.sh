@@ -20,6 +20,7 @@ MOCK
 cat >"$bin/docker" <<'MOCK'
 #!/bin/sh
 printf '%s COMPOSE_FILE=%s\n' "$*" "${COMPOSE_FILE:-}" >>"$MOCK_LOG/docker"
+[ "$1 $2" = "compose up" ] && [ "${MOCK_UP_FAIL:-0}" = 1 ] && { echo 'service "bootstrap" did not complete successfully' >&2; exit 1; }
 case "$1 $2" in
   "compose ps") echo abc123 ;;
   "inspect -f") echo net456 ;;
@@ -79,6 +80,12 @@ new_case refused
 if MOCK_FUNNEL_FAIL=1 run refused; then fail "ignored a Funnel failure"; fi
 grep -q 'tailscale set --operator=' "$test_root/refused/stderr" || fail "no fix suggested when Funnel is refused"
 grep -qx 'PIBASE_PUBLIC_URL=' "$test_root/refused/.env" || fail ".env changed although Funnel failed"
+
+new_case broken
+if MOCK_UP_FAIL=1 run broken; then fail "turned on Funnel although PIBASE did not start"; fi
+test ! -s "$test_root/broken/log/tailscale" || grep -qv '^funnel' "$test_root/broken/log/tailscale" || fail "Funnel was touched although PIBASE did not start"
+grep -q 'Funnel was left off' "$test_root/broken/stderr" || fail "no explanation when PIBASE does not start"
+grep -qx 'PIBASE_PUBLIC_URL=' "$test_root/broken/.env" || fail ".env changed although PIBASE did not start"
 
 new_case off
 run off

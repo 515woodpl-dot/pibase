@@ -80,7 +80,13 @@ sudo usermod -aG docker "$(id -un)"
 # services run as this host operator under Compose, so bind mounts remain
 # operator-owned; repair old fixed-UID objects recursively on this one-time
 # setup/upgrade path.
-sudo install -d -m 0750 -o "$(id -un)" -g "$(id -gn)" "$data_root" "$data_root/postgres" "$data_root/files" "$data_root/backups"
+sudo install -d -m 0750 -o "$(id -un)" -g "$(id -gn)" "$data_root" "$data_root/files" "$data_root/backups"
+# Postgres takes ownership of its folder when it first starts. Create it only
+# when missing: resetting its owner or mode on a rerun locks Postgres out of
+# its own data ("could not open file global/pg_filenode.map").
+if ! sudo test -d "$data_root/postgres"; then
+  sudo install -d -m 0750 -o "$(id -un)" -g "$(id -gn)" "$data_root/postgres"
+fi
 sudo chown -R "$(id -un):$(id -gn)" "$data_root/files" "$data_root/backups"
 
 filesystem="$(findmnt -n -o FSTYPE --target "$data_root")"

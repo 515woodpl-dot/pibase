@@ -26,6 +26,8 @@ EOF
 cat >"$mock_bin/sudo" <<'EOF'
 #!/bin/sh
 printf '%s\n' "$*" >>"$MOCK_LOG/sudo"
+# "sudo test -d DIR": pretend the Postgres folder exists when asked to.
+if [ "$1" = test ]; then [ "${MOCK_PG_EXISTS:-0}" = 1 ]; exit; fi
 EOF
 
 cat >"$mock_bin/apt-cache" <<'EOF'
@@ -104,7 +106,8 @@ test ! -s "$invalid_root/log/sudo"
 
 run_case packaged /srv/pibase 2.26.1-4 1
 grep -q 'docker-compose' "$test_root/packaged/log/sudo"
-grep -q -- '-o operator -g operator /srv/pibase /srv/pibase/postgres /srv/pibase/files /srv/pibase/backups' "$test_root/packaged/log/sudo"
+grep -q -- '-o operator -g operator /srv/pibase /srv/pibase/files /srv/pibase/backups' "$test_root/packaged/log/sudo"
+grep -q -- 'install -d -m 0750 -o operator -g operator /srv/pibase/postgres' "$test_root/packaged/log/sudo"
 grep -q -- '-R operator:operator /srv/pibase/files /srv/pibase/backups' "$test_root/packaged/log/sudo"
 test ! -s "$test_root/packaged/log/curl"
 
@@ -115,6 +118,13 @@ if grep -q 'docker-compose' "$test_root/fallback/log/sudo"; then
 fi
 grep -q 'docker-compose-linux-aarch64' "$test_root/fallback/log/curl"
 test -x "$test_root/fallback/home/.docker/cli-plugins/docker-compose"
+
+# Rerunning setup never touches an existing Postgres folder.
+MOCK_PG_EXISTS=1 run_case rerun /srv/pibase 2.26.1-4 1
+if grep -v '^test ' "$test_root/rerun/log/sudo" | grep -q '/srv/pibase/postgres'; then
+  echo "setup changed an existing Postgres folder" >&2
+  exit 1
+fi
 
 # Without --funnel, Tailscale is left alone.
 if grep -q tailscale "$test_root/packaged/log/sudo"; then

@@ -139,7 +139,8 @@ chown -R "$user:$user" "$app"
 # ---------------------------------------------------------------- data
 say "Data in $data"
 install -d -m 0750 -o "$user" -g "$user" "$data" "$data/files" "$data/backups"
-install -d -m 0700 "$data/postgres"
+# Postgres owns this folder after its first start; never reset an existing one.
+[ -d "$data/postgres" ] || install -d -m 0700 "$data/postgres"
 
 # ---------------------------------------------------------------- settings
 say "Settings (.env, secrets generated on this server)"
