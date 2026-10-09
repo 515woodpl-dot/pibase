@@ -37,6 +37,12 @@ if [ -z "${COMPOSE_FILE:-}" ] && ! grep -q '^COMPOSE_FILE=' .env; then
   export COMPOSE_FILE=compose.yaml:compose.pi.yaml
 fi
 
+# The gateway listens where PIBASE_GATEWAY_BIND says (empty means loopback;
+# a Pi reached over Tailscale often sets its Tailscale address instead).
+gateway_host="$(sed -n 's/^PIBASE_GATEWAY_BIND=//p' .env | tail -1)"
+case "$gateway_host" in ""|0.0.0.0|"*") gateway_host=127.0.0.1 ;; esac
+gateway="http://$gateway_host:18080"
+
 set_env() { # set_env KEY VALUE: replace or add one line of .env, keeping the rest
   if grep -q "^$1=" .env; then
     sed -i "s|^$1=.*|$1=$2|" .env
@@ -59,10 +65,10 @@ if ! docker compose up -d >/dev/null; then
 fi
 healthy=0
 for _ in $(seq 1 30); do
-  if curl -fsS --max-time 5 http://127.0.0.1:18080/healthz >/dev/null 2>&1; then healthy=1; break; fi
+  if curl -fsS --max-time 5 "$gateway/healthz" >/dev/null 2>&1; then healthy=1; break; fi
   sleep 2
 done
-[ "$healthy" -eq 1 ] || die "PIBASE is not answering on 127.0.0.1:18080, so Funnel was left off. See: docker compose logs gateway --tail 40"
+[ "$healthy" -eq 1 ] || die "PIBASE is not answering on $gateway_host:18080, so Funnel was left off. See: docker compose logs gateway --tail 40"
 
 name="$(tailscale status --json | python3 -c 'import json,sys; print(json.load(sys.stdin)["Self"]["DNSName"].rstrip("."))' 2>/dev/null || true)"
 [ -n "$name" ] || die "could not read this device's Tailscale name (is MagicDNS on?)"
@@ -70,7 +76,7 @@ url="https://$name"
 [ "$port" = 443 ] || url="$url:$port"
 
 echo "==> Sharing the API at $url"
-if ! tailscale funnel --bg --https="$port" http://127.0.0.1:18080; then
+if ! tailscale funnel --bg --https="$port" "$gateway"; then
   cat >&2 <<EOF
 
 Tailscale did not turn Funnel on. Usually one of these, once:
@@ -93,7 +99,12 @@ docker compose up -d >/dev/null
 network="$(docker compose ps -q gateway | head -1 | xargs -r docker inspect -f '{{range .NetworkSettings.Networks}}{{.NetworkID}}{{end}}')"
 subnet="$( [ -n "$network" ] && docker network inspect -f '{{range .IPAM.Config}}{{.Subnet}} {{end}}' "$network" | awk '{print $1}' || true)"
 [ -n "$subnet" ] || die "could not find the gateway's Docker network; is PIBASE running?"
-set_env PIBASE_TRUSTED_PROXIES "$subnet"
+trusted="$subnet"
+# When the gateway listens on this Pi's own Tailscale address, Funnel's
+# requests may come from that address. Only this machine can use it as a
+# source, so trusting it is as safe as trusting loopback.
+[ "$gateway_host" = 127.0.0.1 ] || trusted="$trusted,$gateway_host"
+set_env PIBASE_TRUSTED_PROXIES "$trusted"
 docker compose up -d >/dev/null
 
 echo "==> Checking $url/healthz (the first certificate can take a minute)"
