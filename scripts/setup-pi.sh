@@ -1,7 +1,20 @@
 #!/bin/sh
 set -eu
 
+# --funnel also lets this account manage Tailscale Funnel, so
+# scripts/pi-funnel.sh can put the API on the internet without sudo later.
+funnel=0
+for arg in "$@"; do
+  case "$arg" in
+    --funnel) funnel=1 ;;
+    *) echo "unknown option: $arg (supported: --funnel)" >&2; exit 2 ;;
+  esac
+done
+
 if [ "$(id -u)" -eq 0 ]; then echo "run as the pibase operator account, not root" >&2; exit 1; fi
+if [ "$funnel" -eq 1 ] && ! command -v tailscale >/dev/null; then
+  echo "--funnel needs Tailscale installed and connected first (https://tailscale.com/download/linux)" >&2; exit 1
+fi
 if [ "$(uname -m)" != "aarch64" ]; then echo "warning: expected 64-bit Raspberry Pi OS (aarch64)" >&2; fi
 command -v sudo >/dev/null || { echo "sudo is required for host setup" >&2; exit 1; }
 
@@ -73,4 +86,12 @@ sudo chown -R "$(id -un):$(id -gn)" "$data_root/files" "$data_root/backups"
 filesystem="$(findmnt -n -o FSTYPE --target "$data_root")"
 case "$filesystem" in ext4|xfs|btrfs) ;; *) echo "warning: $data_root uses $filesystem; ext4 on a USB3 SSD is recommended" >&2;; esac
 
+if [ "$funnel" -eq 1 ]; then
+  sudo tailscale set --operator="$(id -un)"
+  echo "Tailscale: $(id -un) may now manage Funnel without sudo."
+fi
+
 echo "Host setup complete. Log out/in for Docker group membership, copy the repository to the SSD, run scripts/init-env.sh, then docker compose up --build -d."
+if [ "$funnel" -eq 1 ]; then
+  echo "Then run scripts/pi-funnel.sh to put the API on the internet (https://<pi>.<tailnet>.ts.net:10000)."
+fi

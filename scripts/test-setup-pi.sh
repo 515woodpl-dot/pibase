@@ -76,6 +76,7 @@ run_case() {
   data_root="$2"
   candidate="$3"
   compose_available="$4"
+  shift 4
   case_root="$test_root/$case_name"
   mkdir -p "$case_root/home" "$case_root/log"
   : >"$case_root/log/sudo"
@@ -85,8 +86,8 @@ run_case() {
     MOCK_COMPOSE_CANDIDATE="$candidate" \
     MOCK_COMPOSE_AVAILABLE="$compose_available" \
     PIBASE_DATA_ROOT="$data_root" \
-    PATH="$mock_bin:/usr/bin:/bin" \
-    "$setup_script" >"$case_root/stdout" 2>"$case_root/stderr"
+    PATH="${MOCK_PATH:-$mock_bin}:/usr/bin:/bin" \
+    "$setup_script" "$@" >"$case_root/stdout" 2>"$case_root/stderr"
 }
 
 invalid_root="$test_root/invalid-root"
@@ -114,5 +115,34 @@ if grep -q 'docker-compose' "$test_root/fallback/log/sudo"; then
 fi
 grep -q 'docker-compose-linux-aarch64' "$test_root/fallback/log/curl"
 test -x "$test_root/fallback/home/.docker/cli-plugins/docker-compose"
+
+# Without --funnel, Tailscale is left alone.
+if grep -q tailscale "$test_root/packaged/log/sudo"; then
+  echo "setup changed Tailscale without --funnel" >&2
+  exit 1
+fi
+
+# --funnel lets the operator manage Funnel later without sudo.
+funnel_bin="$test_root/funnel-bin"
+mkdir -p "$funnel_bin"
+cp "$mock_bin"/* "$funnel_bin/"
+printf '#!/bin/sh\nexit 0\n' >"$funnel_bin/tailscale"
+chmod +x "$funnel_bin/tailscale"
+MOCK_PATH="$funnel_bin" run_case funnel /srv/pibase 2.26.1-4 1 --funnel
+grep -q -- 'tailscale set --operator=operator' "$test_root/funnel/log/sudo"
+grep -q 'pi-funnel.sh' "$test_root/funnel/stdout"
+
+# --funnel without Tailscale stops before changing anything.
+if MOCK_PATH="$mock_bin" run_case funnel-missing /srv/pibase 2.26.1-4 1 --funnel; then
+  echo "setup accepted --funnel without Tailscale" >&2
+  exit 1
+fi
+test ! -s "$test_root/funnel-missing/log/sudo"
+
+# Unknown options are refused.
+if run_case bad-option /srv/pibase 2.26.1-4 1 --nope; then
+  echo "setup accepted an unknown option" >&2
+  exit 1
+fi
 
 echo "setup-pi regression checks passed"

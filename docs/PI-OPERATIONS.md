@@ -41,6 +41,27 @@ address will not load it. Two ways to reach it from another machine:
 - SSH tunnel, no configuration change: `ssh -L 18081:127.0.0.1:18081 pi@PI_HOST`,
   then open `http://127.0.0.1:18081/` on your own machine.
 
+### Public API address with Tailscale Funnel
+
+To let the internet reach the API (websites outside your tailnet, or webhooks
+from services such as Stripe and Resend) without opening ports on your router:
+
+```sh
+./scripts/setup-pi.sh --funnel     # once: lets this account manage Funnel (the one sudo step)
+./scripts/pi-funnel.sh             # after PIBASE is running
+```
+
+The API is then at `https://<pi>.<tailnet>.ts.net:10000`. Funnel only allows
+public ports 443, 8443 and 10000; `--port 443` gives an address with no port.
+The script shares only the API (port 18080), never the dashboard. It sets
+`PIBASE_PUBLIC_URL` and `PIBASE_TRUSTED_PROXIES` (so sign-in limits count each
+visitor) and restarts the stack. `./scripts/pi-funnel.sh --off` stops sharing.
+
+The first time, the tailnet must allow HTTPS certificates and Funnel for the
+Pi; Tailscale prints a link to the setting if not. Funnel serves only the
+`*.ts.net` name, so a client's own name such as `pibase.client.com` needs the
+droplet setup instead ([VPS.md](VPS.md)). Speed is limited by your home upload.
+
 Never set `PIBASE_ADMIN_BIND=0.0.0.0` on a machine reachable from the internet,
 and never route the dashboard through the public gateway. Rotate the operator token after suspected browser
 or host compromise.
