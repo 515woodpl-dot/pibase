@@ -1636,6 +1636,31 @@ func TestProjectManagement(t *testing.T) {
 		rb, _ := json.Marshal(map[string]int64{"max_database_bytes": 1 << 40})
 		acctCall("PATCH", "/_pibase/projects/"+acctProjID+"/limits", string(rb), cookieA, 403)
 	})
+
+	// F1-F4: where /functions/v1 calls go. An owner may set a public address;
+	// a private one needs the operator; other owners are refused.
+	t.Run("F1_owner_sets_public_functions_address", func(t *testing.T) {
+		acctCall("PATCH", "/_pibase/projects/"+acctProjID+"/functions", `{"url":"https://app.example.com/api/"}`, cookieA, 200)
+		_, listData := acctCall("GET", "/_pibase/projects", "", cookieA, 200)
+		if !strings.Contains(string(listData), `"functions_url":"https://app.example.com/api"`) {
+			t.Fatalf("functions address not shown: %s", listData)
+		}
+	})
+	t.Run("F2_owner_cannot_set_private_functions_address", func(t *testing.T) {
+		acctCall("PATCH", "/_pibase/projects/"+acctProjID+"/functions", `{"url":"http://127.0.0.1:3000/api"}`, cookieA, 400)
+		acctCall("PATCH", "/_pibase/projects/"+acctProjID+"/functions", `{"url":"http://192.168.1.20:3000"}`, cookieA, 400)
+	})
+	t.Run("F3_operator_sets_private_functions_address_and_owner_clears_it", func(t *testing.T) {
+		opCall("PATCH", "/_pibase/projects/"+opProjID+"/functions", `{"url":"http://127.0.0.1:3000/api"}`, 200)
+		listData := opCall("GET", "/_pibase/projects", "", 200)
+		if !strings.Contains(string(listData), `"functions_private":true`) {
+			t.Fatalf("private address not marked approved: %s", listData)
+		}
+		opCall("PATCH", "/_pibase/projects/"+opProjID+"/functions", `{"url":""}`, 200)
+	})
+	t.Run("F4_non_owner_functions_forbidden", func(t *testing.T) {
+		acctCall("PATCH", "/_pibase/projects/"+acctProjID+"/functions", `{"url":"https://evil.example.com"}`, cookieB, 403)
+	})
 }
 
 // TestAccountHardening covers the T2 review fixes: password change signs out

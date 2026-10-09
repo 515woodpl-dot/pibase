@@ -121,6 +121,7 @@ func (s *Server) Handler() http.Handler {
 	mux.HandleFunc("GET /_pibase/projects/{id}/activity", s.activity)
 	mux.HandleFunc("GET /_pibase/projects/{id}/keys", s.projectKeys)
 	mux.HandleFunc("PATCH /_pibase/projects/{id}/limits", s.setLimits)
+	mux.HandleFunc("PATCH /_pibase/projects/{id}/functions", s.setFunctions)
 	mux.HandleFunc("POST /_pibase/projects/{id}/users", s.createUser)
 	mux.HandleFunc("DELETE /_pibase/projects/{id}/users/{user}", s.deleteUser)
 	// Auth endpoints — no token required.
@@ -857,6 +858,34 @@ func (s *Server) setLimits(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	w.WriteHeader(http.StatusNoContent)
+}
+
+// setFunctions sets where the project's /functions/v1 calls are forwarded. An
+// owner may use a public address; a private one (the site's server on the same
+// machine or network) needs the operator token.
+func (s *Server) setFunctions(w http.ResponseWriter, r *http.Request) {
+	id := r.PathValue("id")
+	if !s.checkOwner(w, r, id) {
+		return
+	}
+	var b struct {
+		URL string `json:"url"`
+	}
+	if !jsonBody(w, r, &b) {
+		return
+	}
+	ident, ok := getIdentity(r.Context())
+	private := ok && ident.kind == opKind
+	url, err := control.SetFunctionsURL(r.Context(), s.AdminURL, id, b.URL, private)
+	if err != nil {
+		if errors.Is(err, control.ErrNotFound) {
+			http.NotFound(w, r)
+			return
+		}
+		http.Error(w, err.Error(), http.StatusBadRequest)
+		return
+	}
+	writeJSON(w, 200, map[string]string{"url": url})
 }
 
 func (s *Server) sql(w http.ResponseWriter, r *http.Request) {

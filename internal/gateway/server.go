@@ -218,6 +218,9 @@ func (s *Server) Handler() http.Handler {
 	mux := http.NewServeMux()
 	mux.HandleFunc("GET /metrics", s.metricsHandler)
 	mux.HandleFunc("GET /client/v1/pibase-auth.js", serveAuthClient)
+	for _, method := range []string{"GET", "POST", "PUT", "PATCH", "DELETE"} {
+		mux.HandleFunc(method+" /functions/v1/{name...}", s.functionsProxy)
+	}
 	mux.HandleFunc("GET /realtime/v1/websocket", s.realtime.websocket)
 	mux.HandleFunc("POST /auth/v1/signup", s.authSignup)
 	mux.HandleFunc("POST /auth/v1/token", s.authToken)
