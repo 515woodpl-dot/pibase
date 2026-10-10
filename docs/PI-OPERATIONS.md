@@ -104,6 +104,37 @@ hour) when email is set up: `PIBASE_SMTP_HOST`, `_PORT`, `_USER`, `_PASS`,
 
 Either way the account is signed out everywhere.
 
+### Moving a project to another server
+
+To move a project, for example from this Pi to a droplet:
+
+1. **Export.** In the dashboard, open the project's **Settings, Move to another
+   server**, choose a passphrase and download the file. For large projects use
+   `./scripts/export-project.sh <project-id>` instead. It saves the file in
+   the backups folder.
+2. **Copy the file** to the other server (for example with `scp`).
+3. **Import.** On the other server, go to **Projects, Import a project**, pick
+   the file and enter the passphrase. Or run
+   `./scripts/import-project.sh <file> [owner-email]` there.
+4. **Point your app** (or its `pibase.client.com` name) at the new server, then
+   delete the project from the old one.
+
+The file carries the tables and their data, policies and functions, the users
+and their sessions, 2FA, buckets and files, scheduled jobs, the project's
+settings, and its ID and keys. Apps keep working with the same keys, and
+signed-in users stay signed in. The file is encrypted with the passphrase, but
+it contains everything needed to run the project, so treat file and passphrase
+like the keys themselves.
+
+Some limits apply:
+
+* The other server must run the same or a newer PIBASE.
+* The project's ID must not already exist there.
+* Projects using PostGIS or pgvector can only be imported by the operator, who
+  uses the script or the operator view.
+* A server-side code address on a private network is dropped when an owner
+  imports the project; set it again in Settings.
+
 Backups are encrypted before they reach the operator-selected destination:
 
 ```sh

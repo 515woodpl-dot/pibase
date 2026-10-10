@@ -412,3 +412,6 @@ DROP POLICY IF EXISTS storage_object_admin_read ON storage.objects;
 CREATE POLICY storage_object_admin_read ON storage.objects FOR SELECT TO ` + q(admin) + ` USING (true);
 `
 }
+
+// CurrentProjectSchemaVersion is the managed schema version this build creates.
+func CurrentProjectSchemaVersion() int { return currentProjectSchemaVersion }

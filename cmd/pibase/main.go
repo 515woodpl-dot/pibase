@@ -210,6 +210,71 @@ func run() error {
 			return err
 		}
 		return adminsql.ApplyMigration(ctx, url, os.Args[2], os.Args[3], string(input))
+	case "project-export":
+		// Writes a passphrase-encrypted file that another PIBASE server can
+		// import. The passphrase comes from standard input.
+		if len(os.Args) != 4 {
+			return errors.New("usage: pibase project-export <project-id> <file> < passphrase")
+		}
+		url, err := config.Required("PIBASE_ADMIN_DATABASE_URL")
+		if err != nil {
+			return err
+		}
+		master, err := masterKeyFromEnv()
+		if err != nil {
+			return err
+		}
+		passphrase, err := passphraseFromStdin()
+		if err != nil {
+			return err
+		}
+		out, err := os.OpenFile(os.Args[3], os.O_CREATE|os.O_EXCL|os.O_WRONLY, 0o600)
+		if err != nil {
+			return err
+		}
+		if err := backup.ExportProject(ctx, url, os.Args[2], storageRootFromEnv(), master, passphrase, out); err != nil {
+			out.Close()
+			os.Remove(os.Args[3])
+			return err
+		}
+		if err := out.Close(); err != nil {
+			return err
+		}
+		fmt.Println(os.Args[3])
+		return nil
+	case "project-import":
+		// Creates a project from an export file, as the operator (database
+		// extensions and private server-side code addresses are allowed).
+		if len(os.Args) != 3 && len(os.Args) != 4 {
+			return errors.New("usage: pibase project-import <file> [owner-email] < passphrase")
+		}
+		url, err := config.Required("PIBASE_ADMIN_DATABASE_URL")
+		if err != nil {
+			return err
+		}
+		master, err := masterKeyFromEnv()
+		if err != nil {
+			return err
+		}
+		passphrase, err := passphraseFromStdin()
+		if err != nil {
+			return err
+		}
+		opts := backup.ImportOptions{Operator: true}
+		if len(os.Args) == 4 {
+			if opts.OwnerAccountID, err = control.AccountIDByEmail(ctx, url, os.Args[3]); err != nil {
+				return fmt.Errorf("no dashboard account with the email %s", os.Args[3])
+			}
+		}
+		result, err := backup.ImportProject(ctx, url, storageRootFromEnv(), master, os.Args[2], passphrase, opts)
+		if err != nil {
+			return err
+		}
+		fmt.Printf("Imported %s (%s).\n", result.Name, result.ProjectID)
+		for _, n := range result.Notes {
+			fmt.Println("Note: " + n)
+		}
+		return nil
 	case "account-create":
 		// Creates a dashboard account. The password comes from standard input.
 		if len(os.Args) != 4 {
@@ -413,4 +478,27 @@ func serve() error {
 		return nil
 	}
 	return err
+}
+
+func masterKeyFromEnv() ([]byte, error) {
+	raw, err := config.Required("PIBASE_MASTER_KEY")
+	if err != nil {
+		return nil, err
+	}
+	return secretbox.DecodeKey(raw)
+}
+
+func storageRootFromEnv() string {
+	if root := os.Getenv("PIBASE_STORAGE_ROOT"); root != "" {
+		return root
+	}
+	return "/data/files"
+}
+
+func passphraseFromStdin() (string, error) {
+	input, err := io.ReadAll(io.LimitReader(os.Stdin, 1024))
+	if err != nil {
+		return "", err
+	}
+	return strings.TrimRight(string(input), "\r\n"), nil
 }

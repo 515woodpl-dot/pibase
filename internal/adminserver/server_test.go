@@ -127,7 +127,7 @@ func TestDashboardWiresEveryEndpoint(t *testing.T) {
 		"'/_pibase/projects'",
 		"'/tables'", "'/tables/'+encodeURIComponent(t.name)+'/rows?offset='",
 		"'/users'", "'/sql'", "'/migrations'", "'/backup'", "'/backups'", "'/extensions/postgis'", "'/extensions/pgvector'",
-		"'/keys/rotate'", "'/usage'", "'/activity?window='", "'/keys'", "'/limits'", "'/functions'", "'/_pibase/operator/account-password'", "'/public-url'", "'/_pibase/auth/password'",
+		"'/keys/rotate'", "'/usage'", "'/activity?window='", "'/keys'", "'/limits'", "'/functions'", "'/export'", "'/_pibase/projects/import'", "'/_pibase/operator/account-password'", "'/public-url'", "'/_pibase/auth/password'",
 		"'/_pibase/auth/account'", "'/_pibase/auth/organization'", "'/_pibase/auth/me'", "'/_pibase/auth/logout'",
 	} {
 		if !strings.Contains(page, required) {

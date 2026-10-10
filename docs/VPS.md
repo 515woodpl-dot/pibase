@@ -107,6 +107,13 @@ project owner.
 * Restore steps are in [PI-OPERATIONS.md](PI-OPERATIONS.md); test one restore
   every few months.
 
+## Moving projects from a Pi
+
+Export each project on the Pi (Settings, Move to another server), then import
+the file on the droplet (Projects, Import a project). Keys and signed-in users
+come along, so the app only needs the new address. See "Moving a project to
+another server" in [PI-OPERATIONS.md](PI-OPERATIONS.md).
+
 ## 8. Update
 
 ```sh

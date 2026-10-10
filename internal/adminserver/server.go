@@ -130,6 +130,8 @@ func (s *Server) Handler() http.Handler {
 	mux.HandleFunc("PATCH /_pibase/projects/{id}/limits", s.setLimits)
 	mux.HandleFunc("PATCH /_pibase/projects/{id}/functions", s.setFunctions)
 	mux.HandleFunc("PATCH /_pibase/projects/{id}/public-url", s.setPublicURL)
+	mux.HandleFunc("POST /_pibase/projects/{id}/export", s.exportProject)
+	mux.HandleFunc("POST /_pibase/projects/import", s.importProject)
 	mux.HandleFunc("POST /_pibase/projects/{id}/users", s.createUser)
 	mux.HandleFunc("DELETE /_pibase/projects/{id}/users/{user}", s.deleteUser)
 	// Auth endpoints — no token required.
