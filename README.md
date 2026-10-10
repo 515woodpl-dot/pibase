@@ -124,13 +124,22 @@ Next.js routes and call it through `/functions/v1`.
 
 `/healthz` is the readiness check, `/metrics` exposes compact Prometheus text
 metrics, and the admin listener (port 18081) serves a static, no-Node web UI. `/` is a landing page
-with log in and sign up; signing up asks for an organization name and the password twice.
-After logging in, `/app` shows only that account's projects, with an icon menu that expands on tap,
+with log in, sign up and forgot password; signing up asks for an organization name and the password
+twice. The main login (`omnia@local.com` by default) is made with `./scripts/create-account.sh`, which
+asks for its password; `--reset <email>` gives an account a new one. Forgot password emails a
+one-hour, single-use link when `PIBASE_SMTP_*` and `PIBASE_DASHBOARD_URL` are set, and the operator
+view can set any account's password. After logging in, `/app` shows only that account's projects, with an icon menu that expands on tap,
 a per-project overview (database size, requests, success rate, warnings and errors by service, and daily
 requests), API keys, tables, users, the owner SQL editor, migrations, backups and settings.
 Every page explains what it does. `/app#operator` is the operator view of all projects and needs
 `PIBASE_OPERATOR_TOKEN`; owner SQL executes through
 the M1 authenticator boundary, with a 30-second timeout and 1,000-row cap.
+
+A project owner can move a project to another PIBASE server: **Settings, Move to another server**
+downloads one passphrase-encrypted file (data, users, files, settings and keys), and **Projects,
+Import a project** on the other server loads it under the same keys, so apps only change the URL.
+`scripts/export-project.sh` and `scripts/import-project.sh` do the same from the command line; see
+[docs/PI-OPERATIONS.md](docs/PI-OPERATIONS.md).
 
 The binary also provides encrypted per-project `backup` and guarded `restore`
 commands plus `project-branch`. Branches receive fresh roles and keys and copy
