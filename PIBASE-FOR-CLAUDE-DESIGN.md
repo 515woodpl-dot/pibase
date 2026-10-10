@@ -1,12 +1,13 @@
 # PIBASE: what it is, and a briefing for Claude Design
 
-Written from `main` at commit `e983dda` (PR #12). Sources: `README.md`, `PLAN.md`,
-`docs/COMPATIBILITY.md`, `docs/PI-OPERATIONS.md`.
+Written from `main` at commit `345afd0` (PR #24). Sources: `README.md`, `PLAN.md`,
+`docs/COMPATIBILITY.md`, `docs/PI-OPERATIONS.md`, `docs/VPS.md`,
+`docs/SERVER-SIDE-CODE.md`.
 
 ## 1. What PIBASE is
 
 PIBASE is our own small backend, shaped like Supabase, that runs on a Raspberry
-Pi 4. One Go gateway and one PostgreSQL 16 cluster give a website everything it
+Pi or on a DigitalOcean droplet. One Go gateway and one PostgreSQL 16 cluster give a website everything it
 needs from a backend, so a site doesn't depend on a hosted service.
 
 | Part | What a site gets |
@@ -15,8 +16,8 @@ needs from a backend, so a site doesn't depend on a hosted service.
 | Auth | Email + password sign-up, confirmation, sign-in, rotating refresh tokens, sign-out, password recovery, optional authenticator-app (TOTP) two-step sign-in. |
 | Storage | Buckets and files: upload, download, public and signed links, list, delete. |
 | Realtime | Live table changes, broadcast and presence over a WebSocket. |
-| Functions | SQL functions in `public`, called at `/rest/v1/rpc/<name>`. There are no Edge Functions. |
-| Dashboard | A web app on port 18081: sign up, then projects, API keys, tables, users, a SQL editor, migrations, backups and settings. |
+| Functions | SQL functions in `public`, called at `/rest/v1/rpc/<name>`. Server-side code (email, webhooks, scheduled jobs) lives in the site's own Next.js routes and is called through PIBASE at `/functions/v1/<name>`, like Supabase Edge Functions. |
+| Dashboard | A web app on port 18081: log in, sign up or reset a forgotten password, then projects, API keys, tables, users, a SQL editor, migrations, backups and settings. A project can be moved to another PIBASE server with the same keys. |
 
 Each customer project gets its own isolated database, its own roles and its own
 keys. PIBASE speaks the Supabase wire protocol, so the official
@@ -30,7 +31,8 @@ Standing rules: Postgres is the product, with no re-implementation of it; no
 
 Two values identify a project, both shown on the dashboard's **API keys** page:
 
-* **URL**: the gateway address (port 18080, or the public address if one is set).
+* **URL**: the project's API address, such as `https://pibase.client.com` on a
+  droplet, a Tailscale Funnel address on a Pi, or the gateway on port 18080.
 * **Anon key**: a public key, safe to ship in browser code.
 
 The **service key** bypasses row level security. It must never reach a browser,
@@ -79,7 +81,8 @@ client from the gateway. It shares one sign-in across browser tabs:
 
 ## 4. Not supported (don't design for these)
 
-OAuth/social sign-in, magic links, phone/OTP sign-in, Edge Functions, GraphQL,
+OAuth/social sign-in, magic links, phone/OTP sign-in, Edge Functions hosted by
+PIBASE itself (server code runs in the site's Next.js instead), GraphQL,
 image transformations, schemas other than `public`, DELETE events and wildcard
 subscriptions in realtime, private realtime channels, replay of missed realtime
 messages.
@@ -97,13 +100,26 @@ messages.
 
 ## 6. The project dashboard (the operator-facing product)
 
-* Port 18081. `/` is a landing page with log in and sign up. Sign-up asks for an
+* Port 18081, never public (reached over Tailscale or an SSH tunnel). `/` is a
+  landing page with log in, sign up and "Forgot password?". There are no
+  log in / sign up buttons in the top-right corner. Sign-up asks for an
   organization name and the password twice.
+* Forgot password emails a link valid for one hour, used once; it opens a
+  "choose a new password" form on the same page. Without email set up, the
+  operator sets a new password instead. Designs need "check your email",
+  "link expired or used" and "password changed, log in" states.
+* The main login is `omnia@local.com` by default, created at setup with a
+  password typed in the terminal.
 * After login, `/app` shows only that account's projects, with an icon menu that
   expands on tap (mobile is a first-class target).
 * Each project has an overview (database size, requests, success rate, warnings
   and errors by service, daily requests), API keys, tables, users, a SQL
   editor, migrations, backups and settings.
+* **Settings, Move to another server** downloads one file locked with a
+  passphrase (at least 12 characters). **Projects, Import a project** on the
+  other server loads it with the same keys, users and files, so the site only
+  changes its URL. Designs need a passphrase field, a long-upload progress
+  state and a "wrong passphrase" error.
 * Every page explains what it does, in plain language.
 * Visitor-facing copy talks about "Postgres" and the product, never about
   internal implementation names.
