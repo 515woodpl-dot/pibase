@@ -98,6 +98,7 @@ if [ "$funnel" -eq 1 ]; then
 fi
 
 echo "Host setup complete. Log out/in for Docker group membership, copy the repository to the SSD, run scripts/init-env.sh, then docker compose up --build -d."
+echo "Then create your dashboard login (it asks for the password): scripts/create-account.sh"
 if [ "$funnel" -eq 1 ]; then
   echo "Then run scripts/pi-funnel.sh to put the API on the internet (https://<pi>.<tailnet>.ts.net:10000)."
 fi

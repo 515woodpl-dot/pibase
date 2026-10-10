@@ -28,6 +28,15 @@ CREATE TABLE IF NOT EXISTS control.sessions (
 -- Organization the account belongs to, shown in the dashboard. Accounts created
 -- before this column existed have an empty name and are asked to add one.
 ALTER TABLE control.accounts ADD COLUMN IF NOT EXISTS organization text NOT NULL DEFAULT '';
+-- Single-use password reset links for dashboard accounts. Only a hash of the
+-- token is stored; a new request or a successful reset removes older ones.
+CREATE TABLE IF NOT EXISTS control.password_resets (
+  token_hash  bytea       PRIMARY KEY,
+  account_id  uuid        NOT NULL REFERENCES control.accounts(id) ON DELETE CASCADE,
+  expires_at  timestamptz NOT NULL,
+  created_at  timestamptz NOT NULL DEFAULT now()
+);
+CREATE INDEX IF NOT EXISTS password_resets_account_idx ON control.password_resets(account_id);
 CREATE INDEX IF NOT EXISTS sessions_account_idx ON control.sessions(account_id);
 CREATE INDEX IF NOT EXISTS sessions_expires_idx ON control.sessions(expires_at);
 CREATE TABLE IF NOT EXISTS control.projects (

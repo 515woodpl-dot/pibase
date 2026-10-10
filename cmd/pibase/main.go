@@ -9,8 +9,10 @@ import (
 	"log/slog"
 	"net"
 	"net/http"
+	"net/url"
 	"os"
 	"os/signal"
+	"strings"
 	"syscall"
 	"time"
 
@@ -20,6 +22,7 @@ import (
 	"github.com/515woodpl-dot/pibase/internal/config"
 	"github.com/515woodpl-dot/pibase/internal/control"
 	"github.com/515woodpl-dot/pibase/internal/gateway"
+	"github.com/515woodpl-dot/pibase/internal/mailer"
 	"github.com/515woodpl-dot/pibase/internal/secretbox"
 )
 
@@ -207,6 +210,52 @@ func run() error {
 			return err
 		}
 		return adminsql.ApplyMigration(ctx, url, os.Args[2], os.Args[3], string(input))
+	case "account-create":
+		// Creates a dashboard account. The password comes from standard input.
+		if len(os.Args) != 4 {
+			return errors.New("usage: pibase account-create <email> <organization> < password")
+		}
+		url, err := config.Required("PIBASE_ADMIN_DATABASE_URL")
+		if err != nil {
+			return err
+		}
+		input, err := io.ReadAll(io.LimitReader(os.Stdin, 2048))
+		if err != nil {
+			return err
+		}
+		password := strings.TrimRight(string(input), "\r\n")
+		account, err := control.CreateAccount(ctx, url, os.Args[2], password, os.Args[3])
+		if err != nil {
+			if errors.Is(err, control.ErrDuplicate) {
+				return fmt.Errorf("a dashboard account with that email already exists; change its password with account-password-reset")
+			}
+			return err
+		}
+		fmt.Printf("Created dashboard account %s.\n", account.Email)
+		return nil
+	case "account-password-reset":
+		// The new password comes from standard input so it never shows up in
+		// the process list or shell history.
+		if len(os.Args) != 3 {
+			return errors.New("usage: pibase account-password-reset <email> < new-password")
+		}
+		url, err := config.Required("PIBASE_ADMIN_DATABASE_URL")
+		if err != nil {
+			return err
+		}
+		input, err := io.ReadAll(io.LimitReader(os.Stdin, 2048))
+		if err != nil {
+			return err
+		}
+		password := strings.TrimRight(string(input), "\r\n")
+		if err := control.SetAccountPassword(ctx, url, os.Args[2], password); err != nil {
+			if errors.Is(err, control.ErrNotFound) {
+				return fmt.Errorf("no dashboard account with that email")
+			}
+			return err
+		}
+		fmt.Println("Password changed; the account was signed out everywhere.")
+		return nil
 	case "sql":
 		if len(os.Args) != 3 {
 			return errors.New("usage: pibase sql <project-id> < statement.sql")
@@ -278,7 +327,19 @@ func adminServe() error {
 	if err != nil {
 		return err
 	}
-	s, err := adminserver.New(adminserver.Config{AdminURL: adminURL, DatabaseURL: databaseURL, StorageRoot: os.Getenv("PIBASE_STORAGE_ROOT"), BackupRoot: os.Getenv("PIBASE_BACKUP_ROOT"), Token: token, MasterKey: master, BackupKey: backupKey, Env: os.Getenv("PIBASE_ADMIN_ENV"), PublicURL: os.Getenv("PIBASE_PUBLIC_URL"), MaxProjectsPerAccount: maxProjects, TrustedProxies: trusted})
+	// Reset emails need an SMTP server and the dashboard's own address; without
+	// both, "Forgot password?" sends people to the operator instead.
+	var sendMail func(to, subject, body string) error
+	if m := mailer.FromEnv(); m.Configured() {
+		sendMail = m.Send
+	}
+	dashboardURL := strings.TrimRight(strings.TrimSpace(os.Getenv("PIBASE_DASHBOARD_URL")), "/")
+	if dashboardURL != "" {
+		if u, err := url.Parse(dashboardURL); err != nil || (u.Scheme != "http" && u.Scheme != "https") || u.Host == "" {
+			return fmt.Errorf("PIBASE_DASHBOARD_URL must look like https://dashboard.example.com")
+		}
+	}
+	s, err := adminserver.New(adminserver.Config{AdminURL: adminURL, DatabaseURL: databaseURL, StorageRoot: os.Getenv("PIBASE_STORAGE_ROOT"), BackupRoot: os.Getenv("PIBASE_BACKUP_ROOT"), Token: token, MasterKey: master, BackupKey: backupKey, Env: os.Getenv("PIBASE_ADMIN_ENV"), PublicURL: os.Getenv("PIBASE_PUBLIC_URL"), MaxProjectsPerAccount: maxProjects, TrustedProxies: trusted, SendMail: sendMail, DashboardURL: dashboardURL})
 	if err != nil {
 		return err
 	}

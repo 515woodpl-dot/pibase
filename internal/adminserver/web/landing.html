@@ -47,6 +47,9 @@ a:focus-visible,button:focus-visible,input:focus-visible{outline:3px solid #bcd1
 .field input{width:100%;border:1px solid #c5d3ee;border-radius:10px;padding:11px 12px;background:#fff}
 .field input:focus{border-color:var(--accent)}
 .field .hint{display:block;margin-top:4px;color:var(--muted);font-size:12.5px}
+.ok{margin:0 0 14px;padding:10px 12px;border-radius:10px;background:#e8f6ee;color:#1d6b3d;font-size:14px}
+.forgot{margin:-6px 0 14px;text-align:right;font-size:13.5px}
+.forgot button{border:0;background:none;padding:0;color:var(--accent);font-weight:600;text-decoration:underline}
 .err{margin:0 0 14px;padding:10px 12px;border-radius:10px;background:#fdecec;color:#9b2323;font-size:14px}
 .switch{margin:16px 0 0;text-align:center;font-size:14px;color:var(--muted)}
 .switch button{border:0;background:none;padding:0;color:var(--accent);font-weight:650;text-decoration:underline}
@@ -93,10 +96,7 @@ footer a{color:var(--muted)}
     <svg viewBox="0 0 32 32" aria-hidden="true"><rect width="32" height="32" rx="9" fill="#2557d6"/><ellipse cx="16" cy="10.5" rx="8" ry="3.2" fill="none" stroke="#fff" stroke-width="2"/><path d="M8 10.5v11c0 1.8 3.6 3.2 8 3.2s8-1.4 8-3.2v-11M8 16c0 1.8 3.6 3.2 8 3.2s8-1.4 8-3.2" fill="none" stroke="#fff" stroke-width="2"/></svg>
     pibase
   </a>
-  <nav id="topNav">
-    <a class="btn" href="#login" data-tab="login">Log in</a>
-    <a class="btn primary" href="#signup" data-tab="signup">Sign up</a>
-  </nav>
+  <nav id="topNav"></nav>
 </header>
 
 <main>
@@ -122,9 +122,11 @@ footer a{color:var(--muted)}
         <form id="form-login" novalidate>
           <h2>Welcome back</h2>
           <p class="sub">Log in to see your projects.</p>
+          <p class="ok hidden" role="status"></p>
           <p class="err hidden" role="alert"></p>
           <div class="field"><label for="login-email">Email</label><input id="login-email" name="email" type="email" autocomplete="email" required></div>
           <div class="field"><label for="login-password">Password</label><input id="login-password" name="password" type="password" autocomplete="current-password" required></div>
+          <p class="forgot"><button type="button" data-tab="recover">Forgot password?</button></p>
           <button class="btn primary block" type="submit">Log in</button>
           <p class="switch">New here? <button type="button" data-tab="signup">Create an account</button></p>
         </form>
@@ -139,6 +141,28 @@ footer a{color:var(--muted)}
           <div class="field"><label for="signup-password2">Enter the password again</label><input id="signup-password2" name="password_confirm" type="password" autocomplete="new-password" required></div>
           <button class="btn primary block" type="submit">Create account</button>
           <p class="switch">Already have an account? <button type="button" data-tab="login">Log in</button></p>
+        </form>
+
+        <form id="form-recover" class="hidden" novalidate>
+          <h2>Reset your password</h2>
+          <p class="sub" id="recover-sub">Enter your account's email and we'll send you a link to choose a new password.</p>
+          <p class="ok hidden" role="status"></p>
+          <p class="err hidden" role="alert"></p>
+          <div id="recover-fields">
+            <div class="field"><label for="recover-email">Email</label><input id="recover-email" name="email" type="email" autocomplete="email" required></div>
+            <button class="btn primary block" type="submit">Email me a reset link</button>
+          </div>
+          <p class="switch">Remembered it? <button type="button" data-tab="login">Back to log in</button></p>
+        </form>
+
+        <form id="form-reset" class="hidden" novalidate>
+          <h2>Choose a new password</h2>
+          <p class="sub">This signs you out on every device. Then log in with the new password.</p>
+          <p class="err hidden" role="alert"></p>
+          <div class="field"><label for="reset-password">New password</label><input id="reset-password" name="password" type="password" autocomplete="new-password" minlength="8" required><span class="hint">At least 8 characters.</span></div>
+          <div class="field"><label for="reset-password2">Enter it again</label><input id="reset-password2" name="password_confirm" type="password" autocomplete="new-password" required></div>
+          <button class="btn primary block" type="submit">Save new password</button>
+          <p class="switch"><button type="button" data-tab="recover">Get a new link</button></p>
         </form>
       </div>
 
@@ -196,21 +220,27 @@ footer a{color:var(--muted)}
 <script>
 (function () {
   var $ = function (id) { return document.getElementById(id); };
-  var forms = { login: $('form-login'), signup: $('form-signup') };
+  var forms = { login: $('form-login'), signup: $('form-signup'), recover: $('form-recover'), reset: $('form-reset') };
   var tabs = { login: $('tab-login'), signup: $('tab-signup') };
+  var resetToken = '';
 
   function show(which) {
     for (var name in forms) {
       var on = name === which;
       forms[name].classList.toggle('hidden', !on);
-      tabs[name].classList.toggle('active', on);
-      tabs[name].setAttribute('aria-selected', String(on));
+      if (tabs[name]) {
+        tabs[name].classList.toggle('active', on);
+        tabs[name].setAttribute('aria-selected', String(on));
+      }
       clearError(forms[name]);
+      clearNote(forms[name]);
     }
   }
   function errorBox(form) { return form.querySelector('.err'); }
   function clearError(form) { var e = errorBox(form); e.textContent = ''; e.classList.add('hidden'); }
   function showError(form, message) { var e = errorBox(form); e.textContent = message; e.classList.remove('hidden'); }
+  function clearNote(form) { var n = form.querySelector('.ok'); if (n) { n.textContent = ''; n.classList.add('hidden'); } }
+  function showNote(form, message) { var n = form.querySelector('.ok'); n.textContent = message; n.classList.remove('hidden'); }
 
   async function post(path, payload) {
     var r = await fetch(path, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(payload) });
@@ -220,6 +250,7 @@ footer a{color:var(--muted)}
       if (r.status === 409) message = 'An account with this email already exists. Log in instead.';
       if (r.status === 429) message = 'Too many attempts. Please wait a few minutes and try again.';
       if (message === 'invalid credentials') message = 'That email and password do not match.';
+      if (message === 'too many requests') message = 'Too many attempts. Please wait a few minutes and try again.';
       throw new Error(message || 'Something went wrong (' + r.status + ').');
     }
     return text ? JSON.parse(text) : null;
@@ -255,16 +286,68 @@ footer a{color:var(--muted)}
     location.href = '/app';
   });
 
+  submit(forms.recover, async function (data) {
+    var email = String(data.get('email')).trim();
+    if (!email || email.indexOf('@') < 1) throw new Error('Enter a valid email address.');
+    var r = await post('/_pibase/auth/recover', { email: email });
+    showNote(forms.recover, r && r.email_sent
+      ? 'If ' + email + ' has an account, a reset link is on its way. It works once, for one hour. Check your spam folder too.'
+      : 'This server cannot send email. Ask the person who runs it to reset your password for you.');
+    forms.recover.querySelector('button[type=submit]').disabled = false;
+  });
+
+  submit(forms.reset, async function (data) {
+    var password = String(data.get('password')), again = String(data.get('password_confirm'));
+    if (password.length < 8) throw new Error('The password must be at least 8 characters.');
+    if (password !== again) throw new Error('The two passwords do not match.');
+    var r = await post('/_pibase/auth/reset', { token: resetToken, password: password, password_confirm: again });
+    resetToken = '';
+    history.replaceState(null, '', '#login');
+    forms.reset.reset();
+    forms.reset.querySelector('button[type=submit]').disabled = false;
+    show('login');
+    if (r && r.email) $('login-email').value = r.email;
+    showNote(forms.login, 'Your password was changed. Log in with the new one.');
+  });
+
+  // Whether this server can email reset links decides what the recover form offers.
+  function prepareRecover() {
+    fetch('/_pibase/auth/reset-info').then(function (r) { return r.ok ? r.json() : null; }).then(function (info) {
+      var canEmail = !!(info && info.email);
+      $('recover-fields').classList.toggle('hidden', !canEmail);
+      $('recover-sub').textContent = canEmail
+        ? "Enter your account's email and we'll send you a link to choose a new password."
+        : 'This server cannot send email, so ask the person who runs it to reset your password. They can do it from the operator view.';
+    }).catch(function () {});
+  }
+
   document.querySelectorAll('[data-tab]').forEach(function (node) {
     node.addEventListener('click', function (event) {
       var which = node.getAttribute('data-tab');
       if (node.tagName === 'A') { event.preventDefault(); $('auth').scrollIntoView(); }
       show(which);
+      if (which === 'recover') prepareRecover();
       history.replaceState(null, '', '#' + which);
     });
   });
 
-  show(location.hash === '#signup' ? 'signup' : 'login');
+  // A reset link opens the page at #reset=<token>. The token stays in the
+  // fragment, which browsers never send to a server.
+  // The same applies when the link opens in a tab already showing this page.
+  function route() {
+    if (location.hash.indexOf('#reset=') === 0) {
+      resetToken = decodeURIComponent(location.hash.slice('#reset='.length));
+      history.replaceState(null, '', '#reset');
+      show('reset');
+    } else if (location.hash === '#recover') {
+      show('recover');
+      prepareRecover();
+    } else if (location.hash !== '#reset') {
+      show(location.hash === '#signup' ? 'signup' : 'login');
+    }
+  }
+  window.addEventListener('hashchange', route);
+  route();
 
   // Already signed in: offer the dashboard instead of the forms.
   fetch('/_pibase/auth/me').then(function (r) { return r.ok ? r.json() : null; }).then(function (account) {

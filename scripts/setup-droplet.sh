@@ -25,9 +25,12 @@
 #   --tls-internal    use Caddy's own certificate authority instead of
 #                     Let's Encrypt (for testing without public DNS)
 #   --no-firewall     leave the firewall alone
+#   --account EMAIL   first dashboard account (default omnia@local.com); setup
+#                     asks for its password when run in a terminal
+#   --no-account      don't create a dashboard account
 set -euo pipefail
 
-domain="" email="" user="pibase" swap="2G" tls_internal=0 firewall=1
+domain="" email="" user="pibase" swap="2G" tls_internal=0 firewall=1 account="omnia@local.com" make_account=1
 while [ $# -gt 0 ]; do
   case "$1" in
     --domain) domain="${2:-}"; shift 2 ;;
@@ -36,6 +39,8 @@ while [ $# -gt 0 ]; do
     --swap) swap="${2:-}"; shift 2 ;;
     --tls-internal) tls_internal=1; shift ;;
     --no-firewall) firewall=0; shift ;;
+    --account) account="${2:-}"; shift 2 ;;
+    --no-account) make_account=0; shift ;;
     -h|--help) sed -n '2,30p' "$0"; exit 0 ;;
     *) echo "unknown option: $1 (see --help)" >&2; exit 2 ;;
   esac
@@ -235,6 +240,17 @@ WantedBy=timers.target
 EOF
 systemctl daemon-reload
 systemctl enable --now pibase-backup.timer >/dev/null
+
+# ---------------------------------------------------------------- account
+if [ "$make_account" -eq 1 ]; then
+  say "Main dashboard account"
+  if [ -t 0 ] && [ -t 1 ]; then
+    sudo -u "$user" -H env PIBASE_MAIN_ACCOUNT_EMAIL="$account" bash -c "cd '$app' && ./scripts/create-account.sh" \
+      || echo "No account created now. Later, as $user: cd $app && ./scripts/create-account.sh"
+  else
+    echo "Not in a terminal, so no password can be asked. Later, as $user: cd $app && ./scripts/create-account.sh"
+  fi
+fi
 
 # ---------------------------------------------------------------- check
 say "Checking https://$domain"

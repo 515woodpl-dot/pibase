@@ -82,6 +82,28 @@ docker compose -f compose.yaml -f compose.pi.yaml exec -u root postgres \
 docker compose -f compose.yaml -f compose.pi.yaml up --build -d
 ```
 
+### Dashboard accounts and forgotten passwords
+
+Create the main dashboard login after PIBASE starts; it asks for the password
+(the email defaults to `omnia@local.com`):
+
+```sh
+./scripts/create-account.sh
+```
+
+"Forgot password?" on the dashboard emails a reset link (valid once, for one
+hour) when email is set up: `PIBASE_SMTP_HOST`, `_PORT`, `_USER`, `_PASS`,
+`_FROM` and `PIBASE_DASHBOARD_URL` (the address you open the dashboard at) in
+`.env`. Without email, and for addresses that can't receive mail such as
+`omnia@local.com`, the operator sets a new password in the operator view
+(Dashboard accounts), or from the terminal:
+
+```sh
+./scripts/create-account.sh --reset omnia@local.com
+```
+
+Either way the account is signed out everywhere.
+
 Backups are encrypted before they reach the operator-selected destination:
 
 ```sh
