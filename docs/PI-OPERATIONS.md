@@ -72,6 +72,27 @@ The droplet helper scripts also work on the Pi, from the repository folder:
 restarts. Both use the same `compose.yaml` + `compose.pi.yaml` layout as the
 commands below.
 
+### Updating
+
+The simplest way is `./scripts/update.sh`, which backs up first. By hand:
+
+```sh
+git pull origin main
+docker compose -f compose.yaml -f compose.pi.yaml up --build -d
+docker compose -f compose.yaml -f compose.pi.yaml --profile tools build ops
+```
+
+* Go's build caches are kept between builds, so an update only recompiles what
+  changed (usually a few minutes on a Pi). The first build after installing,
+  or after `docker builder prune`, compiles everything once and can take
+  15 to 25 minutes on a Pi; leave it running.
+* The last line updates the tools image used by `create-account.sh`,
+  `export-project.sh` and `import-project.sh`. Those scripts also rebuild it
+  themselves, so skipping it is harmless.
+* Two packages compile at once. If a build runs out of memory, build with one
+  instead (`4` speeds it up on a Pi with 8 GB), then start as usual:
+  `docker compose -f compose.yaml -f compose.pi.yaml build --build-arg GO_BUILD_JOBS=1`
+
 If bootstrap fails with `could not open file "global/pg_filenode.map": Permission denied`,
 the Postgres data folder's owner was changed (an older `setup-pi.sh` did that
 when run again). Give it back to Postgres, then start as usual:
