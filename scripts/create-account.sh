@@ -35,6 +35,10 @@ while :; do
   if [ "$password" != "$again" ]; then echo "The two passwords differ; try again."; continue; fi
   break
 done
+# The ops image is only built on request (profile "tools"), so bring it up to
+# date first; after an update it would otherwise still be the old version.
+echo "Preparing the tools image (quick unless PIBASE was just updated)..."
+docker compose --profile tools build -q ops >/dev/null
 if [ "$reset" -eq 1 ]; then
   printf '%s' "$password" | docker compose --profile tools run --rm --no-deps -T ops account-password-reset "$email"
 else

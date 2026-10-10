@@ -25,6 +25,10 @@ while :; do
   break
 done
 name="pibase-$id-$(date -u +%Y%m%d-%H%M).pibx"
+# The ops image is only built on request (profile "tools"), so bring it up to
+# date first; after an update it would otherwise still be the old version.
+echo "Preparing the tools image (quick unless PIBASE was just updated)..."
+docker compose --profile tools build -q ops >/dev/null
 printf '%s' "$pass" | docker compose --profile tools run --rm --no-deps -T ops project-export "$id" "/data/backups/$name" >/dev/null
 echo "Exported to $root/backups/$name"
 echo "Copy it to the other server and run there: ./scripts/import-project.sh <file>"
