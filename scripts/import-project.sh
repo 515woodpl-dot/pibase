@@ -31,5 +31,9 @@ trap cleanup EXIT
 read -r -s -p "Passphrase of the file: " pass; echo
 args=(project-import "/data/backups/$name")
 [ -z "$owner" ] || args+=("$owner")
+# The ops image is only built on request (profile "tools"), so bring it up to
+# date first; after an update it would otherwise still be the old version.
+echo "Preparing the tools image (quick unless PIBASE was just updated)..."
+docker compose --profile tools build -q ops >/dev/null
 printf '%s' "$pass" | docker compose --profile tools run --rm --no-deps -T ops "${args[@]}"
 echo "Point the app (or its pibase.client.com name) at this server; its keys stay the same."
