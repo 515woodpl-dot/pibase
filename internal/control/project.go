@@ -10,6 +10,7 @@ import (
 	"io/fs"
 	"os"
 	"path/filepath"
+	"regexp"
 	"strings"
 	"time"
 
@@ -124,7 +125,7 @@ pg_database_size(p.database_name),COALESCE((SELECT sum(requests) FROM control.pr
 	return result, rows.Err()
 }
 
-func CreateProject(ctx context.Context, adminURL, name string, masterKey []byte) (_ Project, err error) {
+func CreateProject(ctx context.Context, adminURL, name string, masterKey []byte) (Project, error) {
 	if name == "" {
 		return Project{}, fmt.Errorf("project name is required")
 	}
@@ -132,7 +133,72 @@ func CreateProject(ctx context.Context, adminURL, name string, masterKey []byte)
 	if _, err := rand.Read(idBytes); err != nil {
 		return Project{}, err
 	}
-	id := hex.EncodeToString(idBytes)
+	jwtSecret := make([]byte, 32)
+	if _, err := rand.Read(jwtSecret); err != nil {
+		return Project{}, err
+	}
+	anonKey, err := keys.JWT(jwtSecret, "anon")
+	if err != nil {
+		return Project{}, err
+	}
+	serviceKey, err := keys.JWT(jwtSecret, "service_role")
+	if err != nil {
+		return Project{}, err
+	}
+	return createProject(ctx, adminURL, hex.EncodeToString(idBytes), name, masterKey, jwtSecret, anonKey, serviceKey)
+}
+
+// ProjectIdentity is what makes a project the same project on another
+// server: its ID (and so its database and role names), its JWT signing secret
+// and the API keys signed with it.
+type ProjectIdentity struct {
+	ID         string
+	JWTSecret  []byte
+	AnonKey    string
+	ServiceKey string
+}
+
+var projectIDPattern = regexp.MustCompile(`^[0-9a-f]{8}$`)
+
+// CreateProjectWithIdentity creates an empty project that keeps an existing
+// project's ID, signing secret and API keys, for moving a project between
+// servers. The keys must be signed by the secret with the right roles, and
+// neither the ID nor the keys may already be in use here, so an import can't
+// impersonate another project.
+func CreateProjectWithIdentity(ctx context.Context, adminURL, name string, masterKey []byte, id ProjectIdentity) (Project, error) {
+	if strings.TrimSpace(name) == "" {
+		return Project{}, fmt.Errorf("project name is required")
+	}
+	if !projectIDPattern.MatchString(id.ID) {
+		return Project{}, fmt.Errorf("invalid project id")
+	}
+	if len(id.JWTSecret) < 32 {
+		return Project{}, fmt.Errorf("invalid project signing secret")
+	}
+	for _, k := range []struct{ token, role string }{{id.AnonKey, "anon"}, {id.ServiceKey, "service_role"}} {
+		claims, err := keys.VerifyJWT(k.token, id.JWTSecret, time.Now())
+		if err != nil || claims.Role != k.role {
+			return Project{}, fmt.Errorf("the %s key is not signed by this project's secret", k.role)
+		}
+	}
+	conn, err := controlDBConn(ctx, adminURL)
+	if err != nil {
+		return Project{}, err
+	}
+	var taken bool
+	err = conn.QueryRow(ctx, `SELECT EXISTS(SELECT 1 FROM control.projects WHERE id=$1 OR anon_key_hash=ANY($2::bytea[]) OR service_key_hash=ANY($2::bytea[]))`,
+		id.ID, [][]byte{keys.Hash(id.AnonKey), keys.Hash(id.ServiceKey)}).Scan(&taken)
+	conn.Close(ctx)
+	if err != nil {
+		return Project{}, err
+	}
+	if taken {
+		return Project{}, ErrDuplicate
+	}
+	return createProject(ctx, adminURL, id.ID, name, masterKey, id.JWTSecret, id.AnonKey, id.ServiceKey)
+}
+
+func createProject(ctx context.Context, adminURL, id, name string, masterKey, jwtSecret []byte, anonKey, serviceKey string) (_ Project, err error) {
 	prefix := "p_" + id
 	database := prefix
 	anon, authenticated := prefix+"_anon", prefix+"_authenticated"
@@ -417,18 +483,6 @@ GRANT EXECUTE ON FUNCTION cron.enqueue_webhook() TO ` + pgx.Identifier{admin}.Sa
 		return Project{}, err
 	}
 
-	jwtSecret := make([]byte, 32)
-	if _, err = rand.Read(jwtSecret); err != nil {
-		return Project{}, err
-	}
-	anonKey, err := keys.JWT(jwtSecret, "anon")
-	if err != nil {
-		return Project{}, err
-	}
-	serviceKey, err := keys.JWT(jwtSecret, "service_role")
-	if err != nil {
-		return Project{}, err
-	}
 	encrypted, err := secretbox.Encrypt(masterKey, jwtSecret)
 	if err != nil {
 		return Project{}, err

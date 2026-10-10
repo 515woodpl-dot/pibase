@@ -345,3 +345,18 @@ func SetOrganization(ctx context.Context, adminURL, accountID, organization stri
 	}
 	return organization, nil
 }
+
+// AccountIDByEmail returns the ID of the dashboard account with this email.
+func AccountIDByEmail(ctx context.Context, adminURL, email string) (string, error) {
+	conn, err := controlDBConn(ctx, adminURL)
+	if err != nil {
+		return "", err
+	}
+	defer conn.Close(ctx)
+	var id string
+	err = conn.QueryRow(ctx, `SELECT id::text FROM control.accounts WHERE email=$1`, strings.ToLower(strings.TrimSpace(email))).Scan(&id)
+	if err == pgx.ErrNoRows {
+		return "", ErrNotFound
+	}
+	return id, err
+}

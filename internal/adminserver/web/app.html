@@ -261,12 +261,30 @@ function renderProjectList(list){
 function projectsPane(){
   const p=pane('Projects','Each project is its own Postgres database with its own API address and keys. Pick a project to see how it is being used and to manage it.');
   if(account&&!account.organization)p.append(orgPrompt());
-  if(!projects.length){p.append(createProjectForm(true));return p}
+  if(!projects.length){p.append(createProjectForm(true),importButton());return p}
   const list=el('div');list.id='projectList';renderProjectList(list);
   p.append(list);
   const more=button('+ New project',()=>{more.replaceWith(createProjectForm(false))});
-  p.append(more);
+  p.append(more,importButton());
   return p
+}
+// Import a project exported from another PIBASE server.
+function importButton(){const b=button('Import a project',()=>{b.replaceWith(importForm())});return b}
+function importForm(){
+  const file=input('file',''),pass=input('password',''),st=note('');file.accept='.pibx';pass.autocomplete='off';
+  return group('Import a project','Bring a project from another PIBASE server, using the file from its Settings, Move to another server. Its tables, users, files and keys come along, so apps only need the new address.',field('Export file',file),field('Passphrase',pass),button('Import',async()=>{
+    if(!file.files.length){st.textContent='Choose the export file.';return}
+    if(!pass.value){st.textContent='Enter the passphrase the file was exported with.';return}
+    const form=new FormData();form.append('passphrase',pass.value);form.append('file',file.files[0]);
+    const h=apiHeaders();delete h['Content-Type'];
+    st.textContent='Uploading and importing '+bytes(file.files[0].size)+'…';
+    try{const r=await fetch('/_pibase/projects/import',{method:'POST',headers:h,body:form});const t=await r.text();
+      if(!r.ok)throw Error(t.trim()||r.status);
+      const res=JSON.parse(t);pass.value='';projects=(await api('/_pibase/projects'))||[];
+      const x=projects.find(p=>p.id===res.project_id);
+      st.textContent='Imported '+res.name+'.'+(res.notes&&res.notes.length?' '+res.notes.join(' '):'');
+      if(x){refreshNav();setTimeout(()=>openProject(x),800)}}
+    catch(e){st.textContent=e.message}},'primary'),st)
 }
 async function load(){
   try{projects=(await api('/_pibase/projects'))||[];if(selected)selected=projects.find(x=>x.id===selected.id)||null;refreshNav();clearFrom(0);add(projectsPane());if(!account)add(accountsPane());setCurrent('projects');say(plural(projects.length,'project'))}
@@ -432,6 +450,17 @@ function openSettings(){
   p.append(group('API address','The address your app uses for this project, such as https://pibase.client.com. It changes what the API keys page shows; the address must also point to this server.',field('Address',pu,'Leave empty to use the server\'s default address.'),button('Save API address',async()=>{try{const r=await api(projectPath()+'/public-url',body({url:pu.value},'PATCH'));await refreshProject(x);pus.textContent=r&&r.url?'Saved. Apps use '+r.url+'.':(r&&r.api_url?'Using the server\'s default address: '+r.api_url+'.':'Using the address of this page.')}catch(e){pus.textContent=e.message}},'primary'),pus));
   const fn=input('text','https://your-site.example/api',x.functions_url||''),fs=note('');
   p.append(group('Server-side code','Where this project forwards /functions/v1/<name> calls: your site\'s own server routes, for example a Next.js app. Leave empty to turn it off.',field('Address',fn,account?'A public address. The operator can allow one on your own network.':'Public, or a private address such as the site\'s server on this machine.'),button('Save address',async()=>{try{const r=await api(projectPath()+'/functions',body({url:fn.value},'PATCH'));await refreshProject(x);fs.textContent=r&&r.url?'Saved. Calls to /functions/v1/<name> go to '+r.url+'/<name>.':'Server-side code is turned off.'}catch(e){fs.textContent=e.message}},'primary'),fs));
+  const ep=input('password',''),ep2=input('password',''),es=note('');ep.autocomplete='new-password';ep2.autocomplete='new-password';
+  p.append(group('Move to another server','Downloads one file with this project\'s tables, users, files, settings and keys. Import it on another PIBASE server and your app keeps working: only its address changes. The file is locked with the passphrase you choose here.',field('Passphrase',ep,'At least 12 characters. You need it to import the file, so keep it safe.'),field('Enter it again',ep2),button('Download export file',async()=>{
+    if(ep.value.length<12){es.textContent='The passphrase must be at least 12 characters.';return}
+    if(ep.value!==ep2.value){es.textContent='The two passphrases do not match.';return}
+    es.textContent='Preparing the file…';
+    try{const r=await fetch(projectPath()+'/export',{method:'POST',headers:apiHeaders(),body:JSON.stringify({passphrase:ep.value})});
+      if(!r.ok)throw Error((await r.text()).trim()||r.status);
+      const blob=await r.blob(),a=document.createElement('a'),name=(r.headers.get('Content-Disposition')||'').match(/filename="([^"]+)"/);
+      a.href=URL.createObjectURL(blob);a.download=name?name[1]:'pibase-export.pibx';document.body.append(a);a.click();a.remove();setTimeout(()=>URL.revokeObjectURL(a.href),60000);
+      ep.value='';ep2.value='';es.textContent='Downloaded ('+bytes(blob.size)+'). Keep the file and passphrase safe: together they open the whole project.'}
+    catch(e){es.textContent=e.message}},'primary'),es));
   const sure=input('text','');const ds=note('');
   const dg=group('Delete this project','Permanently deletes the database, its users, files, backups and keys. This cannot be undone.',field('Type the project ID ('+x.id+') to confirm',sure),button('Delete project',async()=>{try{await api(projectPath(),body({confirm:sure.value},'DELETE'));selected=null;refreshNav();await load()}catch(e){ds.textContent=e.message}},'danger'),ds);
   dg.classList.add('danger');p.append(dg);add(p)
