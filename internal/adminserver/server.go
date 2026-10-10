@@ -46,6 +46,11 @@ type Config struct {
 	// TrustedProxies are peers (besides loopback) whose X-Forwarded-For header
 	// is believed when working out the client address for rate limiting.
 	TrustedProxies []*net.IPNet
+	// SendMail delivers password reset emails; nil when no SMTP server is set.
+	SendMail func(to, subject, body string) error
+	// DashboardURL is this dashboard's address as people open it, used in
+	// reset links (PIBASE_DASHBOARD_URL). Never taken from request headers.
+	DashboardURL string
 }
 
 type Server struct {
@@ -54,6 +59,7 @@ type Server struct {
 	signupLimit   *rateLimiter
 	passwordLimit *rateLimiter
 	loginFailures *rateLimiter
+	recoverLimit  *rateLimiter
 	// accountProjectsMu serialises account-owned project creation and account
 	// deletion so the per-account cap cannot be raced and a delete cannot
 	// leave behind a project created while it ran.
@@ -73,7 +79,7 @@ func New(c Config) (*Server, error) {
 	if c.MaxProjectsPerAccount <= 0 {
 		c.MaxProjectsPerAccount = 2
 	}
-	return &Server{Config: c, loginLimit: newRateLimiter(), signupLimit: newRateLimiter(), passwordLimit: newRateLimiter(), loginFailures: newRateLimiter()}, nil
+	return &Server{Config: c, loginLimit: newRateLimiter(), signupLimit: newRateLimiter(), passwordLimit: newRateLimiter(), loginFailures: newRateLimiter(), recoverLimit: newRateLimiter()}, nil
 }
 
 // identityKind distinguishes operator-token auth from account-session auth.
@@ -134,6 +140,10 @@ func (s *Server) Handler() http.Handler {
 	mux.HandleFunc("POST /_pibase/auth/password", s.authPassword)
 	mux.HandleFunc("DELETE /_pibase/auth/account", s.authDeleteAccount)
 	mux.HandleFunc("PATCH /_pibase/auth/organization", s.authOrganization)
+	mux.HandleFunc("POST /_pibase/auth/recover", s.authRecover)
+	mux.HandleFunc("POST /_pibase/auth/reset", s.authReset)
+	mux.HandleFunc("GET /_pibase/auth/reset-info", s.authResetInfo)
+	mux.HandleFunc("POST /_pibase/operator/account-password", s.operatorSetPassword)
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		w.Header().Set("Cache-Control", "no-store")
 		// Page and auth endpoints need no operator credential.

@@ -220,6 +220,18 @@ async function init(){
   if(location.hash==='#operator'){operator=true;renderWho();refreshNav();q('opLoad').onclick=load;q('opToken').addEventListener('keydown',e=>{if(e.key==='Enter')load()});add(operatorPane());return}
   location.replace('/')
 }
+// Operator only: give a dashboard account a new password, for people who
+// can't receive a reset email.
+function accountsPane(){
+  const p=pane('Dashboard accounts','Reset the password of anyone who signs in to this dashboard. They are signed out everywhere and log in with the new password.');
+  const em=input('email','name@example.com'),pw=input('password',''),pw2=input('password',''),st=note('');
+  pw.autocomplete='new-password';pw2.autocomplete='new-password';
+  p.append(group('Reset a password','Use this when someone forgot their password and this server cannot email them a link.',field('Account email',em),field('New password',pw,'At least 8 characters. Tell it to them privately.'),field('Enter it again',pw2),button('Set new password',async()=>{
+    if(pw.value.length<8){st.textContent='The password must be at least 8 characters.';return}
+    if(pw.value!==pw2.value){st.textContent='The two passwords do not match.';return}
+    try{await api('/_pibase/operator/account-password',body({email:em.value.trim(),password:pw.value}));st.textContent='Password changed for '+em.value.trim()+'. They were signed out everywhere.';pw.value='';pw2.value=''}catch(e){st.textContent=e.message}},'primary'),st));
+  return p
+}
 function operatorPane(){return pane('Operator access','Enter the operator token above and press Load to see every project on this server.')}
 async function logout(){try{await fetch('/_pibase/auth/logout',{method:'POST'})}catch(_){}location.replace('/')}
 
@@ -257,7 +269,7 @@ function projectsPane(){
   return p
 }
 async function load(){
-  try{projects=(await api('/_pibase/projects'))||[];if(selected)selected=projects.find(x=>x.id===selected.id)||null;refreshNav();clearFrom(0);add(projectsPane());setCurrent('projects');say(plural(projects.length,'project'))}
+  try{projects=(await api('/_pibase/projects'))||[];if(selected)selected=projects.find(x=>x.id===selected.id)||null;refreshNav();clearFrom(0);add(projectsPane());if(!account)add(accountsPane());setCurrent('projects');say(plural(projects.length,'project'))}
   catch(e){say(e.message)}
 }
 function refreshProject(x){return api('/_pibase/projects').then(all=>{projects=all||[];const fresh=projects.find(p=>p.id===x.id)||x;selected=fresh;refreshNav();const list=q('projectList');if(list)renderProjectList(list);return fresh})}

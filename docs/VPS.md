@@ -53,6 +53,8 @@ It takes about 5 to 15 minutes, most of it building PIBASE. It:
 * serves `https://api.yourname.com` through Caddy, which renews the certificate
   by itself;
 * schedules an encrypted backup of every project at 03:30 each day.
+* asks for the password of your main dashboard login, `omnia@local.com` by
+  default (`--account you@example.com` to change it, `--no-account` to skip).
 
 Running it again is safe; it skips what is already done.
 
@@ -64,7 +66,9 @@ The dashboard never faces the internet. From your own computer:
 ssh -L 18081:127.0.0.1:18081 pibase@DROPLET_IP
 ```
 
-Then open http://127.0.0.1:18081/, sign up and create a project. For the
+Then open http://127.0.0.1:18081/, log in and create a project. Forgot the
+password? `./scripts/create-account.sh --reset omnia@local.com` as `pibase`
+in `/home/pibase/pibase`, or see PI-OPERATIONS.md for email reset links. For the
 operator view (`/app#operator`), the token is the `PIBASE_OPERATOR_TOKEN` line
 in `/home/pibase/pibase/.env`.
 

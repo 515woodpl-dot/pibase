@@ -57,6 +57,14 @@ services:
       # from the Docker network's gateway address). Only these peers may set
       # X-Forwarded-For, which keys the per-visitor sign-in limit.
       PIBASE_TRUSTED_PROXIES: ${PIBASE_TRUSTED_PROXIES:-}
+      # Optional email (sign-up confirmation and password recovery for your
+      # apps' users). Any SMTP service works, for example smtp.resend.com.
+      PIBASE_SMTP_HOST: ${PIBASE_SMTP_HOST:-}
+      PIBASE_SMTP_PORT: ${PIBASE_SMTP_PORT:-587}
+      PIBASE_SMTP_USER: ${PIBASE_SMTP_USER:-}
+      PIBASE_SMTP_PASS: ${PIBASE_SMTP_PASS:-}
+      PIBASE_SMTP_FROM: ${PIBASE_SMTP_FROM:-}
+      PIBASE_SITE_URL: ${PIBASE_SITE_URL:-}
     depends_on:
       bootstrap:
         condition: service_completed_successfully
@@ -88,6 +96,16 @@ services:
       PIBASE_MAX_PROJECTS_PER_ACCOUNT: ${PIBASE_MAX_PROJECTS_PER_ACCOUNT:-2}
       PIBASE_PUBLIC_URL: ${PIBASE_PUBLIC_URL:-}
       PIBASE_TRUSTED_PROXIES: ${PIBASE_TRUSTED_PROXIES:-}
+      # "Forgot password?" for dashboard accounts emails a link when SMTP is
+      # set and PIBASE_DASHBOARD_URL is the dashboard's address as people open
+      # it (for example http://100.x.y.z:18081). Otherwise the operator resets
+      # passwords from the operator view.
+      PIBASE_SMTP_HOST: ${PIBASE_SMTP_HOST:-}
+      PIBASE_SMTP_PORT: ${PIBASE_SMTP_PORT:-587}
+      PIBASE_SMTP_USER: ${PIBASE_SMTP_USER:-}
+      PIBASE_SMTP_PASS: ${PIBASE_SMTP_PASS:-}
+      PIBASE_SMTP_FROM: ${PIBASE_SMTP_FROM:-}
+      PIBASE_DASHBOARD_URL: ${PIBASE_DASHBOARD_URL:-}
     depends_on:
       bootstrap:
         condition: service_completed_successfully

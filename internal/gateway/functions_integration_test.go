@@ -284,26 +284,64 @@ func TestSupabaseFunctionsInvoke(t *testing.T) {
 // (here loopback, as the test server's client connects from 127.0.0.1).
 func TestSignInLimitCountsEachVisitorBehindProxy(t *testing.T) {
 	e := newAuditEnv(t, nil)
+	// attempt is safe to call from any goroutine; 0 means the request failed.
 	attempt := func(i int, xff string) int {
-		resp, _ := e.call("POST", "/auth/v1/token?grant_type=password", map[string]string{
-			"apikey": e.p.AnonKey, "Content-Type": "application/json", "X-Forwarded-For": xff,
-		}, fmt.Sprintf(`{"email":"nobody%d@example.test","password":"wrong password"}`, i))
+		req, err := http.NewRequest("POST", e.h.URL+"/auth/v1/token?grant_type=password",
+			strings.NewReader(fmt.Sprintf(`{"email":"nobody%d@example.test","password":"wrong password"}`, i)))
+		if err != nil {
+			return 0
+		}
+		req.Header.Set("apikey", e.p.AnonKey)
+		req.Header.Set("Content-Type", "application/json")
+		req.Header.Set("X-Forwarded-For", xff)
+		resp, err := e.h.Client().Do(req)
+		if err != nil {
+			return 0
+		}
+		_, _ = io.Copy(io.Discard, resp.Body)
+		resp.Body.Close()
 		return resp.StatusCode
 	}
-	for i := 0; i < 120; i++ {
-		if got := attempt(i, "198.51.100.1"); got == http.StatusTooManyRequests {
-			t.Fatalf("visitor A limited after %d attempts", i)
+	// Attempts are counted when they arrive, but the gateway then handles one
+	// project's sign-ins one at a time, which can take longer than the
+	// one-minute window on a slow (race-checking) build. So everything is sent
+	// in one burst: 121 attempts from visitor A, one more from A with a spoofed
+	// left-hand X-Forwarded-For entry, and one from visitor B.
+	type shot struct{ xff, who string }
+	var shots []shot
+	for i := 0; i < 121; i++ {
+		shots = append(shots, shot{"198.51.100.1", "A"})
+	}
+	shots = append(shots, shot{"203.0.113.50, 198.51.100.1", "A"}, shot{"198.51.100.2", "B"})
+	codes := make([]int, len(shots))
+	var wg sync.WaitGroup
+	for i, sh := range shots {
+		wg.Add(1)
+		go func(i int, sh shot) {
+			defer wg.Done()
+			codes[i] = attempt(i, sh.xff)
+		}(i, sh)
+	}
+	wg.Wait()
+	limitedA, limitedB := 0, 0
+	for i, code := range codes {
+		if code == 0 {
+			t.Fatalf("attempt %d failed to send", i)
+		}
+		if code == http.StatusTooManyRequests {
+			if shots[i].who == "A" {
+				limitedA++
+			} else {
+				limitedB++
+			}
 		}
 	}
-	if got := attempt(1000, "198.51.100.1"); got != http.StatusTooManyRequests {
-		t.Fatalf("visitor A's 121st attempt: %d", got)
+	// 122 attempts from A against a limit of 120: exactly 2 refused, so the
+	// spoofed entry did not buy an extra attempt. B was not affected.
+	if limitedA != 2 {
+		t.Fatalf("visitor A: %d of 122 attempts limited, want 2", limitedA)
 	}
-	// A spoofed left-hand entry doesn't escape the limit...
-	if got := attempt(1001, "203.0.113.50, 198.51.100.1"); got != http.StatusTooManyRequests {
-		t.Fatalf("spoofed entry escaped the limit: %d", got)
-	}
-	// ...but a different visitor has their own budget.
-	if got := attempt(1002, "198.51.100.2"); got == http.StatusTooManyRequests {
+	if limitedB != 0 {
 		t.Fatal("visitor B was limited by visitor A's attempts")
 	}
 }
