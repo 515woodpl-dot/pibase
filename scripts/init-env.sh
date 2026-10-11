@@ -3,6 +3,16 @@ set -eu
 
 cd "$(dirname "$0")/.."
 if [ "$(id -u)" -eq 0 ]; then echo "run init-env.sh as the non-root pibase operator" >&2; exit 1; fi
+
+# On a Pi or droplet (setup-pi.sh or setup-droplet.sh created the data
+# folders), record the server layout so plain `docker compose ...` uses the
+# data under PIBASE_DATA_ROOT instead of the development volumes.
+record_server_layout() {
+  root="$(sed -n 's/^PIBASE_DATA_ROOT=//p' .env | tail -1)"
+  if [ -d "${root:-/srv/pibase}/files" ] && ! grep -q '^COMPOSE_FILE=' .env; then
+    printf 'COMPOSE_FILE=compose.yaml:compose.pi.yaml\n' >> .env
+  fi
+}
 if [ -e .env ]; then
   umask 077
   if ! grep -q '^PIBASE_BACKUP_KEY=' .env; then
@@ -12,6 +22,7 @@ if [ -e .env ]; then
     printf 'PIBASE_OPERATOR_TOKEN=%s\n' "$(head -c 32 /dev/urandom | base64 | tr -d '\n')" >> .env
   fi
   if ! grep -q '^PIBASE_UID=' .env; then printf 'PIBASE_UID=%s\nPIBASE_GID=%s\n' "$(id -u)" "$(id -g)" >> .env; fi
+  record_server_layout
   exit 0
 fi
 
@@ -41,3 +52,4 @@ sed \
   -e "s|^PIBASE_GID=.*|PIBASE_GID=$operator_gid|" \
   .env.example > .env
 chmod 600 .env
+record_server_layout

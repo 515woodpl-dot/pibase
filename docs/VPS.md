@@ -120,7 +120,8 @@ another server" in [PI-OPERATIONS.md](PI-OPERATIONS.md).
 sudo -u pibase /home/pibase/pibase/scripts/update.sh
 ```
 
-It backs everything up, pulls the latest `main`, rebuilds, restarts and checks
+It backs everything up, pulls the latest version of the branch the server
+is on (`main` normally), rebuilds, restarts and checks
 the gateway answers.
 
 ### Updates from a private repository
