@@ -3,6 +3,12 @@ services:
     restart: unless-stopped
     volumes:
       - ${PIBASE_DATA_ROOT:-/srv/pibase}/postgres:/var/lib/postgresql/data
+  # Align ownership of the host folders the services really use, not the
+  # named volumes of the development layout.
+  storage-init:
+    volumes:
+      - ${PIBASE_DATA_ROOT:-/srv/pibase}/files:/data/files
+      - ${PIBASE_DATA_ROOT:-/srv/pibase}/backups:/data/backups
   gateway:
     user: "${PIBASE_UID:?set PIBASE_UID in .env to the output of id -u}:${PIBASE_GID:?set PIBASE_GID in .env to the output of id -g}"
     restart: unless-stopped

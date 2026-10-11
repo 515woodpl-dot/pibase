@@ -33,8 +33,8 @@ certificate can be issued.
 
 ```sh
 ssh root@DROPLET_IP
-git clone https://github.com/515woodpl-dot/datbase.git
-cd datbase
+git clone https://github.com/515woodpl-dot/pibase.git
+cd pibase
 ./scripts/setup-droplet.sh --domain api.yourname.com --email you@yourname.com
 ```
 
@@ -120,7 +120,8 @@ another server" in [PI-OPERATIONS.md](PI-OPERATIONS.md).
 sudo -u pibase /home/pibase/pibase/scripts/update.sh
 ```
 
-It backs everything up, pulls the latest `main`, rebuilds, restarts and checks
+It backs everything up, pulls the latest version of the branch the server
+is on (`main` normally), rebuilds, restarts and checks
 the gateway answers.
 
 ### Updates from a private repository
@@ -137,7 +138,7 @@ In GitHub, the repository's **Settings, Deploy keys, Add deploy key**: paste it
 and leave "Allow write access" off. Then:
 
 ```sh
-sudo -u pibase git -C /home/pibase/pibase remote set-url origin git@github.com:515woodpl-dot/datbase.git
+sudo -u pibase git -C /home/pibase/pibase remote set-url origin git@github.com:515woodpl-dot/pibase.git
 sudo -u pibase ssh -o StrictHostKeyChecking=accept-new -T git@github.com   # says "successfully authenticated"
 ```
 

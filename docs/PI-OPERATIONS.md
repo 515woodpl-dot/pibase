@@ -15,6 +15,11 @@ curl --fail http://127.0.0.1:18080/healthz
 curl --fail http://127.0.0.1:18080/metrics
 ```
 
+`init-env.sh` also writes `COMPOSE_FILE=compose.yaml:compose.pi.yaml` into
+`.env` once the data folders exist (as do `update.sh` on an older install), so
+plain `docker compose ...` uses the SSD layout too. The `-f` flags in this
+guide stay correct either way.
+
 The application services run as the non-root host operator's UID and GID under
 Compose. `init-env.sh` writes those IDs into `.env`, so the mounted `files` and
 `backups` directories remain operator-owned: uploads and encrypted backups work
@@ -35,7 +40,7 @@ never persisted by the page. By default it answers only on the Pi itself, so the
 address will not load it. Two ways to reach it from another machine:
 
 - Tailscale: add `PIBASE_ADMIN_BIND=<Pi Tailscale IP>` to `.env` (find the IP
-  with `tailscale ip -4`), run `docker compose up -d admin`, then open
+  with `tailscale ip -4`), run `docker compose -f compose.yaml -f compose.pi.yaml up -d admin`, then open
   `http://<Pi Tailscale IP>:18081/`. Only devices on your tailnet can
   connect, and every action still needs a login or the operator token.
 - SSH tunnel, no configuration change: `ssh -L 18081:127.0.0.1:18081 pi@PI_HOST`,
@@ -68,7 +73,7 @@ or host compromise.
 
 The droplet helper scripts also work on the Pi, from the repository folder:
 `./scripts/backup-all.sh` backs up every project into `$PIBASE_DATA_ROOT/backups`
-(keeping 14 days), and `./scripts/update.sh` backs up, pulls `main`, rebuilds and
+(keeping 14 days), and `./scripts/update.sh` backs up, pulls the branch it is on (`main` normally), rebuilds and
 restarts. Both use the same `compose.yaml` + `compose.pi.yaml` layout as the
 commands below.
 

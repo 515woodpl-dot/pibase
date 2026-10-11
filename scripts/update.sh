@@ -9,6 +9,8 @@ cd "$(dirname "$0")/.."
 # here unless .env or the environment says otherwise.
 if [ -z "${COMPOSE_FILE:-}" ] && ! grep -q '^COMPOSE_FILE=' .env 2>/dev/null; then
   export COMPOSE_FILE=compose.yaml:compose.pi.yaml
+  # Record it, so plain `docker compose ...` by hand uses the same layout.
+  [ ! -f .env ] || printf 'COMPOSE_FILE=%s\n' "$COMPOSE_FILE" >> .env
 fi
 # The gateway listens where PIBASE_GATEWAY_BIND says (empty means loopback;
 # a Pi reached over Tailscale often sets its Tailscale address instead).
@@ -17,8 +19,11 @@ case "$gateway_host" in ""|0.0.0.0|"*") gateway_host=127.0.0.1 ;; esac
 gateway="http://$gateway_host:18080"
 echo "==> Backing up every project first"
 ./scripts/backup-all.sh
-echo "==> Fetching the latest version"
-if ! git pull --ff-only origin main; then
+# Follow the branch this copy is on (main unless it was set up from another).
+branch="$(git rev-parse --abbrev-ref HEAD)"
+[ "$branch" != HEAD ] || branch=main
+echo "==> Fetching the latest version of $branch"
+if ! git pull --ff-only origin "$branch"; then
   cat >&2 <<'MSG'
 Could not fetch the latest version. If the repository is private, give this
 account a read-only deploy key (see "Updates from a private repository" in

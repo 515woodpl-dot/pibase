@@ -35,7 +35,7 @@ func main() {
 
 func run() error {
 	if len(os.Args) < 2 {
-		return errors.New("usage: pibase <bootstrap|project-create|project-branch|project-delete|project-list|project-usage|pgvector-enable|postgis-enable|backup|restore|migration-apply|sql|serve|admin-serve>")
+		return errors.New("usage: pibase <bootstrap|project-create|project-branch|project-delete|project-list|project-usage|pgvector-enable|postgis-enable|backup|restore|migration-apply|sql|project-export|project-import|account-create|account-password-reset|serve|admin-serve>")
 	}
 	ctx := context.Background()
 	switch os.Args[1] {
