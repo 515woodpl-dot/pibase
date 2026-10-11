@@ -336,7 +336,7 @@ func ImportProject(ctx context.Context, adminURL, storageRoot string, masterKey 
 	}
 	var extensions []string
 	for _, e := range m.Extensions {
-		if e != "plpgsql" {
+		if e != "plpgsql" && e != "pgcrypto" {
 			extensions = append(extensions, e)
 		}
 	}

@@ -86,7 +86,7 @@ func (s *Server) authMFAEnroll(w http.ResponseWriter, r *http.Request) {
 	var email string
 	err = s.adminTx(r.Context(), p, func(tx pgx.Tx) error {
 		var count int
-		if err := tx.QueryRow(r.Context(), `SELECT email FROM auth.users WHERE id=$1`, claims.Subject).Scan(&email); err != nil {
+		if err := tx.QueryRow(r.Context(), `SELECT COALESCE(email,username,'') FROM auth.users WHERE id=$1`, claims.Subject).Scan(&email); err != nil {
 			return err
 		}
 		if err := tx.QueryRow(r.Context(), `SELECT count(*) FROM auth.mfa_factors WHERE user_id=$1`, claims.Subject).Scan(&count); err != nil {
@@ -216,7 +216,7 @@ func (s *Server) authMFAVerify(w http.ResponseWriter, r *http.Request) {
 		var verified *time.Time
 		var lastCounter *int64
 		var email string
-		err := tx.QueryRow(r.Context(), `SELECT f.secret_encrypted,c.expires_at,c.verified_at,f.last_used_counter,u.email
+		err := tx.QueryRow(r.Context(), `SELECT f.secret_encrypted,c.expires_at,c.verified_at,f.last_used_counter,COALESCE(u.email,'')
 FROM auth.mfa_challenges c
 JOIN auth.mfa_factors f ON f.id=c.factor_id
 JOIN auth.users u ON u.id=f.user_id

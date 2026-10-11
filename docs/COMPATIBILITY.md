@@ -18,15 +18,22 @@ dashboard's **API keys** page shows it with the project's keys.
 
 | Area | Supported | Not supported |
 |---|---|---|
-| Data (`/rest/v1`) | select with filters, order, limit/offset and embedded relations; insert, update, delete; `upsert()` with or without `onConflict` (defaults to the primary key, like PostgREST) and with `ignoreDuplicates`; `Prefer: return=representation` and `count=exact`; `columns=` | schemas other than `public` (requests for them get 406), GraphQL |
-| Functions (`/rest/v1/rpc/<name>`) | calling SQL functions in `public` | |
+| Data (`/rest/v1`) | select with filters, order, limit/offset and embedded relations; count/sum/avg/min/max aggregates; insert, update, delete; `upsert()` with or without `onConflict` (defaults to the primary key, like PostgREST) and with `ignoreDuplicates`; `Prefer: return=representation` and `count=exact`; `columns=` | schemas other than `public` (requests for them get 406), GraphQL |
+| Functions (`/rest/v1/rpc/<name>`) | calling SQL functions in `public`, including omitted named arguments with SQL defaults | overloaded functions |
 | Server-side code (`/functions/v1/<name>`) | forwarding to your site's own server routes, with `supabase.functions.invoke` unchanged (see below) | running code on the PIBASE machine (no Edge Functions runtime) |
-| Auth (`/auth/v1`) | email + password sign-up, confirmation, sign-in, refresh, sign-out, password recovery, `getUser`/`updateUser`, TOTP MFA, admin user management with the service key | OAuth/social providers, magic links, phone and OTP sign-in |
+| Auth (`/auth/v1`) | email or username + password sign-in, email sign-up and confirmation, refresh, scoped sign-out, password recovery and verified password change, `getUser`/`updateUser`, TOTP MFA, admin user management and session termination with the service key, bcrypt hash import | OAuth/social providers, magic links, phone and OTP sign-in |
 | Storage (`/storage/v1`) | buckets; upload (POST and PUT, `upsert`), download, public and signed URLs, list, remove | image transformations |
 | Realtime (`/realtime/v1/websocket`) | table changes (after `realtime.enable_table`), broadcast, presence | |
 
 Browsers: the gateway allows every request header these clients send
 (`TestCORSPreflightAllowsSupabaseClientHeaders`).
+
+Aggregate selects accept `count()`, `amount.sum()`, `amount.avg()`,
+`amount.min()`, `amount.max()` and aliases such as `total:amount.sum()`.
+Plain selected columns group the result, for example
+`select=category,count(),total:amount.sum()`. Filters and RLS apply before
+aggregation. Aggregate selects do not yet accept `order` or relation embeds.
+(`TestDataAPIAggregatesRespectRLS`)
 
 ## SQL helpers
 
@@ -42,9 +49,11 @@ Browsers: the gateway allows every request header these clients send
 
 Each project has its own database roles, named after the project ID
 (`p_<id>_anon`, `p_<id>_authenticated`, `p_<id>_service_role`, `p_<id>_admin`).
-Supabase SQL that says `TO authenticated` must use the project's role name
-instead. For SQL that works on both, leave the `TO` clause out and check the
-caller in the policy:
+The request roles are members of stable, cluster-wide `anon`, `authenticated`
+and `service_role` NOLOGIN roles. Migrations can use `GRANT ... TO
+authenticated` and policies can use `TO authenticated`, as on Supabase. The
+stable roles cannot sign in to PostgreSQL directly. Projects still use separate
+databases and project-specific gateway roles. For policies based on identity:
 
 ```sql
 create policy "owners edit" on notes for all
@@ -69,7 +78,7 @@ returns boolean language sql stable security definer set search_path = public as
       or ((storage.foldername(name))[1] = 'inline'
           and exists (select 1 from public.editors where user_id = auth.uid()))
 $$;
-grant execute on function public.storage_write_allowed(text, text) to p_<id>_authenticated;
+grant execute on function public.storage_write_allowed(text, text) to authenticated;
 ```
 
 Returning false or NULL refuses the write (403). An error in the function also
@@ -89,9 +98,49 @@ through the storage API so their files are removed too.
   realtime connections are closed; they don't keep working until they expire.
   Deleting a user does the same. Project SQL no longer needs its own sign-out
   check. (`TestAuditLogoutEndsTheSessionsAccessTokens`)
+* `POST /auth/v1/logout?scope=local|others|global` accepts an authenticated
+  access token. The default is `local`; `others` keeps the caller's sign-in;
+  `global` ends all of the user's sign-ins. A service-key caller can end all
+  sessions of a target user with `POST /auth/v1/admin/users/{id}/logout`.
+  Neither action bans the user, so a new sign-in remains possible.
+* `POST /auth/v1/user/password` with `current_password` and `new_password`
+  checks the old password, sets the new one, and ends the user's other
+  sessions in one transaction. `PATCH /auth/v1/user` with `password` now also
+  requires `current_password`; a recovery-token session may set a password
+  without it. Admin password updates end all sessions. The admin create and
+  update endpoints accept `password_hash` instead of `password` for importing
+  an existing bcrypt hash (cost 4–16). Never expose that field to a browser.
+  (`TestInventorySessionScopesAndPasswordChange`,
+  `TestInventoryAdminPasswordImportEndsSessions`)
+* The service-key admin create/update endpoints accept `app_metadata`. It is
+  returned as part of the user object and included in newly issued access
+  tokens. A signed-in user may edit `user_metadata` but cannot set
+  `app_metadata`. (`TestServerOnlyAppMetadata`)
+* Password sign-in success and failure are written to `auth.sign_in_events`.
+  A service-key caller can read the latest 1–500 events at
+  `GET /auth/v1/admin/signin-events?limit=100`. Events include email, optional
+  user ID, result, reason, client IP and timestamp. Passwords and tokens are
+  never logged. (`TestSignInAuditRecordsSuccessAndFailure`)
+* Admins may create a user with `username` and no email. Such users are
+  confirmed immediately and can sign in by posting `{ "username": "crew.lead",
+  "password": "..." }` to `/auth/v1/token?grant_type=password`, or with
+  `PibaseAuth.signInUsername(username, password)`. Usernames are case
+  insensitive, 3–64 characters, and may contain letters, digits, dots,
+  underscores and hyphens. Password recovery by email needs an email address.
+  (`TestUsernameOnlySignIn`)
+
+Project admin SQL can call `auth.admin_create_user(username,email,password,
+app_metadata)`, `auth.admin_set_password(user_id,password)`, and
+`auth.admin_end_sessions(user_id,keep_session DEFAULT NULL)`. These helpers
+are private to the project admin role. An application RPC can wrap them in a
+`SECURITY DEFINER` function after checking its own staff permissions. Password
+setting and application-row writes can then commit together. SQL session
+revocation is checked against PostgreSQL on the next HTTP request and closes
+live realtime connections through a database notification.
+(`TestSQLAuthAdminHelpers`)
 * Banning a user (`ban_duration` in the admin API) does the same for all of
   their sign-ins, and refreshing is refused until the ban ends. A ban written
-  straight into `auth.users.banned_until` takes effect within 15 seconds.
+  straight into `auth.users.banned_until` takes effect on the next request.
   (`TestBanEndsSessionsAndBlocksRefresh`)
 * Realtime connections follow the token they last presented. supabase-js sends
   each refreshed token on open channels (`access_token` messages), and the
@@ -106,6 +155,13 @@ through the storage API so their files are removed too.
 * Access tokens last one hour. A token your own server mints with the JWT secret
   must use `"iss": "pibase"`. Without a `session_id` claim it isn't tied to a
   sign-in, so it stays valid until its `exp`.
+
+## SQL-selected HTTP status
+
+A SQL function can raise a `PTxxx` SQLSTATE to select an HTTP error status
+from 400 through 599. For example, `RAISE EXCEPTION 'order changed' USING
+ERRCODE = 'PT409', HINT = 'reload the order'` returns HTTP 409 with the
+message and hint in the JSON error body. (`TestSQLChosenHTTPStatus`)
 
 ## Browser sign-in client
 
@@ -144,6 +200,17 @@ of the site:
 * The session is kept in `localStorage` (key `pibase.auth:<url>`, or
   `storageKey`). Where `localStorage` is blocked it lives in memory and tabs
   don't share it.
+* For an httpOnly refresh-token cookie, use
+  `PibaseAuth.createCookieClient({ url, anonKey })`. Call
+  `await auth.refreshSession()` on page load to restore the session. Its access
+  token stays in memory, and its refresh token is never returned to JavaScript
+  or written to `localStorage`. Sign-in, username sign-in, refresh, fetch,
+  sign-out and auth events use the same method names. The gateway sets a
+  host-only, httpOnly cookie scoped to `/auth/v1`; production cookies are
+  `Secure`. For a different browser origin, list that exact HTTPS origin in
+  `PIBASE_COOKIE_ORIGINS`. Same-site deployment is recommended because browsers
+  may block third-party cookies. (`TestHttpOnlyCookieSession`,
+  `TestCookieBrowserClientRestoresWithoutLocalStorage`)
 * Checked in Chromium with two tabs, both lock kinds, and the page on a
   different origin from the gateway (`TestBrowserAuthClient`, run with
   `PIBASE_TEST_BROWSER=1` and Playwright installed). Not yet checked in Safari

@@ -301,6 +301,9 @@ func filterExpression(column columnInfo, expression string, firstArg int) (strin
 }
 
 func selectRows(ctx context.Context, w http.ResponseWriter, r *http.Request, tx pgx.Tx, table tableInfo) error {
+	if aggregateSelection(r.URL.Query().Get("select")) {
+		return selectAggregates(ctx, w, r, tx, table)
+	}
 	baseSelection, embeds, err := parseSelection(r.URL.Query().Get("select"))
 	if err != nil {
 		return err
@@ -712,6 +715,7 @@ func writeAPIError(w http.ResponseWriter, err error) {
 		var pgErr *pgconn.PgError
 		if errors.As(err, &pgErr) {
 			code = pgErr.Code
+			customStatusCode := false
 			switch pgErr.Code {
 			case "23505":
 				status = http.StatusConflict
@@ -724,6 +728,12 @@ func writeAPIError(w http.ResponseWriter, err error) {
 				w.Header().Set("Retry-After", "1")
 			default:
 				status = http.StatusBadRequest
+			}
+			if len(pgErr.Code) == 5 && strings.HasPrefix(pgErr.Code, "PT") {
+				if customStatus, parseErr := strconv.Atoi(pgErr.Code[2:]); parseErr == nil && customStatus >= 400 && customStatus <= 599 {
+					status = customStatus
+					customStatusCode = true
+				}
 			}
 			message = "database request failed"
 			switch pgErr.Code {
@@ -738,6 +748,12 @@ func writeAPIError(w http.ResponseWriter, err error) {
 			case "P0001":
 				// Raised on purpose by the project's own SQL (RAISE EXCEPTION),
 				// so the text is meant for the caller, as in PostgREST.
+				message = pgErr.Message
+				if len(message) > 300 {
+					message = message[:300]
+				}
+			}
+			if customStatusCode {
 				message = pgErr.Message
 				if len(message) > 300 {
 					message = message[:300]

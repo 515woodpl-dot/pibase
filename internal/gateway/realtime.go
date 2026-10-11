@@ -112,6 +112,7 @@ func (h *realtimeHub) websocket(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	client := &realtimeClient{hub: h, conn: conn, principal: who, projectID: who.project.id, id: realtimeID(), apiKey: r.Header.Get("apikey"), channels: make(map[string]*realtimeTopic)}
+	h.ensureListener(who.project)
 	h.mu.Lock()
 	count := 0
 	for existing := range h.clients {
@@ -399,10 +400,21 @@ func (h *realtimeHub) listen(p *project) {
 					if _, err := conn.Exec(h.ctx, "LISTEN "+pgx.Identifier{realtimeChannel}.Sanitize()); err != nil {
 						return err
 					}
+					if _, err := conn.Exec(h.ctx, `LISTEN pibase_sessions`); err != nil {
+						return err
+					}
 					for {
 						notification, err := conn.WaitForNotification(h.ctx)
 						if err != nil {
 							return err
+						}
+						if notification.Channel == "pibase_sessions" {
+							if uuidPattern.MatchString(notification.Payload) {
+								// The notification may end only other sessions. Check
+								// each socket's actual session before closing it.
+								h.revalidate()
+							}
+							continue
 						}
 						var change struct{ Table, Op, ID string }
 						if json.Unmarshal([]byte(notification.Payload), &change) == nil && change.Table != "" && change.ID != "" {

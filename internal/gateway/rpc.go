@@ -16,6 +16,7 @@ type functionArgument struct {
 	name       string
 	typeSchema string
 	typeName   string
+	optional   bool
 }
 
 type functionInfo struct {
@@ -66,6 +67,9 @@ func (s *Server) rpcHandler(w http.ResponseWriter, r *http.Request) {
 		for _, argument := range arguments {
 			value, ok := supplied[argument.name]
 			if !ok {
+				if argument.optional {
+					continue
+				}
 				return httpError(http.StatusBadRequest, fmt.Sprintf("missing RPC argument %q", argument.name))
 			}
 			delete(supplied, argument.name)
@@ -100,7 +104,7 @@ func (s *Server) rpcHandler(w http.ResponseWriter, r *http.Request) {
 }
 
 func loadFunction(ctx context.Context, tx pgx.Tx, name string) (functionInfo, error) {
-	rows, err := tx.Query(ctx, `SELECT p.oid,p.proretset,
+	rows, err := tx.Query(ctx, `SELECT p.oid,p.proretset,p.pronargdefaults,
 COALESCE(jsonb_agg(jsonb_build_object('name',p.proargnames[a.ordinality],
   'type_schema',tn.nspname,'type_name',t.typname) ORDER BY a.ordinality)
   FILTER (WHERE a.oid IS NOT NULL),'[]'::jsonb)
@@ -118,9 +122,10 @@ GROUP BY p.oid,p.proretset`, name)
 	var matches []functionInfo
 	for rows.Next() {
 		var oid uint32
+		var defaultCount int
 		var raw []byte
 		function := functionInfo{name: name}
-		if err := rows.Scan(&oid, &function.returnsSet, &raw); err != nil {
+		if err := rows.Scan(&oid, &function.returnsSet, &defaultCount, &raw); err != nil {
 			return functionInfo{}, err
 		}
 		var arguments []struct {
@@ -132,12 +137,12 @@ GROUP BY p.oid,p.proretset`, name)
 			return functionInfo{}, err
 		}
 		valid := true
-		for _, argument := range arguments {
+		for i, argument := range arguments {
 			if argument.Name == nil || *argument.Name == "" {
 				valid = false
 				break
 			}
-			function.arguments = append(function.arguments, functionArgument{name: *argument.Name, typeSchema: argument.TypeSchema, typeName: argument.TypeName})
+			function.arguments = append(function.arguments, functionArgument{name: *argument.Name, typeSchema: argument.TypeSchema, typeName: argument.TypeName, optional: i >= len(arguments)-defaultCount})
 		}
 		if valid {
 			matches = append(matches, function)

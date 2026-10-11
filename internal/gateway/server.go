@@ -44,7 +44,6 @@ type Server struct {
 	schedulerWG        sync.WaitGroup
 	smtp               smtpConfig
 	activity           *activityRecorder
-	sessions           sessionCache
 	refreshReuse       time.Duration
 	maxBodyBytes       int64
 	trustedProxies     []*net.IPNet
@@ -234,6 +233,7 @@ func (s *Server) Handler() http.Handler {
 	mux.HandleFunc("POST /auth/v1/signup", s.authSignup)
 	mux.HandleFunc("POST /auth/v1/token", s.authToken)
 	mux.HandleFunc("POST /auth/v1/logout", s.authLogout)
+	mux.HandleFunc("POST /auth/v1/user/password", s.authChangePassword)
 	mux.HandleFunc("GET /auth/v1/verify", s.authVerify)
 	mux.HandleFunc("POST /auth/v1/verify", s.authVerify)
 	mux.HandleFunc("POST /auth/v1/recover", s.authRecover)
@@ -244,8 +244,10 @@ func (s *Server) Handler() http.Handler {
 	mux.HandleFunc("POST /auth/v1/factors/{id}/verify", s.authMFAVerify)
 	mux.HandleFunc("DELETE /auth/v1/factors/{id}", s.authMFAUnenroll)
 	mux.HandleFunc("GET /auth/v1/admin/users", s.authAdminList)
+	mux.HandleFunc("GET /auth/v1/admin/signin-events", s.authAdminSignInEvents)
 	mux.HandleFunc("POST /auth/v1/admin/users", s.authAdminCreate)
 	mux.HandleFunc("PUT /auth/v1/admin/users/{id}", s.authAdminUpdate)
+	mux.HandleFunc("POST /auth/v1/admin/users/{id}/logout", s.authAdminLogout)
 	mux.HandleFunc("DELETE /auth/v1/admin/users/{id}", s.authAdminDelete)
 	mux.HandleFunc("GET /storage/v1/bucket", s.storageListBuckets)
 	mux.HandleFunc("POST /storage/v1/bucket", s.storageCreateBucket)
@@ -314,11 +316,17 @@ func bodyError(err error, invalid string) error {
 // storage (x-upsert, x-metadata, cache-control). A browser refuses the whole
 // request when any header it sends is missing here.
 const corsAllowHeaders = "authorization, apikey, content-type, prefer, range, range-unit, x-client-info, " +
-	"x-supabase-api-version, accept-profile, content-profile, x-retry-count, x-upsert, x-metadata, cache-control"
+	"x-supabase-api-version, accept-profile, content-profile, x-retry-count, x-upsert, x-metadata, cache-control, x-pibase-session-mode"
 
 func cors(next http.Handler) http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		w.Header().Set("Access-Control-Allow-Origin", "*")
+		if origin := r.Header.Get("Origin"); origin != "" && allowedCookieOrigin(origin) {
+			w.Header().Set("Access-Control-Allow-Origin", origin)
+			w.Header().Set("Access-Control-Allow-Credentials", "true")
+			w.Header().Add("Vary", "Origin")
+		} else {
+			w.Header().Set("Access-Control-Allow-Origin", "*")
+		}
 		w.Header().Set("Access-Control-Allow-Headers", corsAllowHeaders)
 		w.Header().Set("Access-Control-Allow-Methods", "GET, HEAD, POST, PUT, PATCH, DELETE, OPTIONS")
 		w.Header().Set("Access-Control-Expose-Headers", "Content-Range, Range-Unit, X-Affected-Rows")

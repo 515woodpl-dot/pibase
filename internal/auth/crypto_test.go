@@ -1,6 +1,25 @@
 package auth
 
-import "testing"
+import (
+	"golang.org/x/crypto/bcrypt"
+	"testing"
+)
+
+func TestImportedBcryptPassword(t *testing.T) {
+	hash, err := bcrypt.GenerateFromPassword([]byte("imported secret"), bcrypt.MinCost)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !ValidImportedPasswordHash(string(hash)) || !VerifyPassword("imported secret", string(hash)) {
+		t.Fatal("valid bcrypt hash refused")
+	}
+	if VerifyPassword("wrong", string(hash)) {
+		t.Fatal("wrong bcrypt password accepted")
+	}
+	if ValidImportedPasswordHash("$2b$10$invalid") {
+		t.Fatal("invalid bcrypt hash accepted")
+	}
+}
 
 func TestPasswordHash(t *testing.T) {
 	hash, err := HashPassword("correct horse battery staple")

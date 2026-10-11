@@ -6,6 +6,7 @@ import (
 	"encoding/hex"
 	"encoding/json"
 	"net/http"
+	"regexp"
 	"strings"
 	"time"
 
@@ -15,13 +16,38 @@ import (
 )
 
 type authRequest struct {
-	Email        string         `json:"email"`
-	Password     string         `json:"password"`
-	Data         map[string]any `json:"data"`
-	RefreshToken string         `json:"refresh_token"`
-	EmailConfirm bool           `json:"email_confirm"`
-	UserMetadata map[string]any `json:"user_metadata"`
-	BanDuration  string         `json:"ban_duration"`
+	Email           string         `json:"email"`
+	Username        string         `json:"username"`
+	Password        string         `json:"password"`
+	PasswordHash    string         `json:"password_hash"`
+	Data            map[string]any `json:"data"`
+	RefreshToken    string         `json:"refresh_token"`
+	EmailConfirm    bool           `json:"email_confirm"`
+	UserMetadata    map[string]any `json:"user_metadata"`
+	AppMetadata     map[string]any `json:"app_metadata"`
+	BanDuration     string         `json:"ban_duration"`
+	CurrentPassword string         `json:"current_password"`
+	NewPassword     string         `json:"new_password"`
+}
+
+var usernamePattern = regexp.MustCompile(`^[a-z0-9][a-z0-9_.-]{2,63}$`)
+
+func normalizedUsername(raw string) (string, error) {
+	name := strings.ToLower(strings.TrimSpace(raw))
+	if !usernamePattern.MatchString(name) {
+		return "", httpError(400, "username must be 3-64 characters using letters, digits, dot, underscore or hyphen")
+	}
+	return name, nil
+}
+
+func adminPasswordHash(req authRequest) (string, error) {
+	if req.PasswordHash != "" {
+		if req.Password != "" || !auth.ValidImportedPasswordHash(req.PasswordHash) {
+			return "", httpError(400, "provide either password or a valid bcrypt password_hash")
+		}
+		return req.PasswordHash, nil
+	}
+	return auth.HashPassword(req.Password)
 }
 
 func writeJSON(w http.ResponseWriter, status int, value any) {
@@ -83,26 +109,31 @@ func (s *Server) adminTx(ctx context.Context, p project, fn func(pgx.Tx) error) 
 	return tx.Commit(ctx)
 }
 
-func userJSON(id, email string, confirmed bool, metadata []byte, created, updated time.Time) map[string]any {
+func userJSON(id, email, username string, confirmed bool, metadata, appMetadata []byte, created, updated time.Time) map[string]any {
 	var data any = map[string]any{}
 	_ = json.Unmarshal(metadata, &data)
-	return map[string]any{"id": id, "aud": "authenticated", "role": "authenticated", "email": email,
+	var appData any = map[string]any{}
+	_ = json.Unmarshal(appMetadata, &appData)
+	return map[string]any{"id": id, "aud": "authenticated", "role": "authenticated", "email": email, "username": username,
 		"email_confirmed_at": func() any {
 			if confirmed {
 				return true
 			}
 			return nil
 		}(),
-		"user_metadata": data, "created_at": created.UTC().Format(time.RFC3339Nano), "updated_at": updated.UTC().Format(time.RFC3339Nano)}
+		"user_metadata": data, "app_metadata": appData, "created_at": created.UTC().Format(time.RFC3339Nano), "updated_at": updated.UTC().Format(time.RFC3339Nano)}
 }
 
-func accessToken(p project, id, email, session, aal, method string) (string, error) {
+func accessToken(p project, id, email, session, aal, method string, appMetadata []byte) (string, error) {
 	now := time.Now()
+	var appData any = map[string]any{}
+	_ = json.Unmarshal(appMetadata, &appData)
 	return keys.SignJWT(p.secret, map[string]any{
 		"iss": "pibase", "aud": "authenticated", "role": "authenticated",
 		"sub": id, "email": email, "session_id": session, "aal": aal,
-		"amr": []map[string]any{{"method": method, "timestamp": now.Unix()}},
-		"iat": now.Unix(), "exp": now.Add(time.Hour).Unix(),
+		"app_metadata": appData,
+		"amr":          []map[string]any{{"method": method, "timestamp": now.Unix()}},
+		"iat":          now.Unix(), "exp": now.Add(time.Hour).Unix(),
 	})
 }
 
@@ -123,12 +154,17 @@ func (s *Server) issueSession(ctx context.Context, p project, tx pgx.Tx, id, ema
 	if _, err = tx.Exec(ctx, `INSERT INTO auth.refresh_tokens(id,user_id,token_hash,expires_at,aal,session_id) VALUES($1,$2,$3,now()+interval '30 days',$4,$5)`, row, id, digest, aal, session); err != nil {
 		return nil, err
 	}
-	access, err := accessToken(p, id, email, row, aal, method)
+	var userMeta, appMeta []byte
+	var username string
+	var created, updated time.Time
+	if err = tx.QueryRow(ctx, `SELECT COALESCE(username,''),raw_user_meta_data,raw_app_meta_data,created_at,updated_at FROM auth.users WHERE id=$1`, id).Scan(&username, &userMeta, &appMeta, &created, &updated); err != nil {
+		return nil, err
+	}
+	access, err := accessToken(p, id, email, row, aal, method, appMeta)
 	if err != nil {
 		return nil, err
 	}
-	now := time.Now()
-	return map[string]any{"access_token": access, "refresh_token": refresh, "expires_in": 3600, "token_type": "bearer", "user": userJSON(id, email, true, []byte(`{}`), now, now)}, nil
+	return map[string]any{"access_token": access, "refresh_token": refresh, "expires_in": 3600, "token_type": "bearer", "user": userJSON(id, email, username, true, userMeta, appMeta, created, updated)}, nil
 }
 
 func (s *Server) authSignup(w http.ResponseWriter, r *http.Request) {
@@ -140,6 +176,15 @@ func (s *Server) authSignup(w http.ResponseWriter, r *http.Request) {
 	if req.Email == "" || req.Password == "" {
 		writeAPIError(w, httpError(400, "email and password are required"))
 		return
+	}
+	username := ""
+	if req.Username != "" {
+		var nameErr error
+		username, nameErr = normalizedUsername(req.Username)
+		if nameErr != nil {
+			writeAPIError(w, nameErr)
+			return
+		}
 	}
 	p, err := s.resolveAuthProject(r)
 	if err != nil {
@@ -173,11 +218,11 @@ func (s *Server) authSignup(w http.ResponseWriter, r *http.Request) {
 	var user map[string]any
 	err = s.adminTx(r.Context(), p, func(tx pgx.Tx) error {
 		var created, updated time.Time
-		err := tx.QueryRow(r.Context(), `INSERT INTO auth.users(id,email,password_hash,confirmation_token_hash,confirmation_expires_at,raw_user_meta_data) VALUES($1,$2,$3,$4,now()+interval '24 hours',$5) RETURNING created_at,updated_at`, id, strings.ToLower(strings.TrimSpace(req.Email)), password, digest, metadata).Scan(&created, &updated)
+		err := tx.QueryRow(r.Context(), `INSERT INTO auth.users(id,email,username,password_hash,confirmation_token_hash,confirmation_expires_at,raw_user_meta_data) VALUES($1,$2,NULLIF($3,''),$4,$5,now()+interval '24 hours',$6) RETURNING created_at,updated_at`, id, strings.ToLower(strings.TrimSpace(req.Email)), username, password, digest, metadata).Scan(&created, &updated)
 		if err != nil {
 			return err
 		}
-		user = userJSON(id, strings.ToLower(strings.TrimSpace(req.Email)), false, metadata, created, updated)
+		user = userJSON(id, strings.ToLower(strings.TrimSpace(req.Email)), username, false, metadata, []byte(`{}`), created, updated)
 		return nil
 	})
 	if err != nil {
@@ -219,12 +264,37 @@ func (s *Server) authToken(w http.ResponseWriter, r *http.Request) {
 		writeAPIError(w, err)
 		return
 	}
-	refresh := r.URL.Query().Get("grant_type") == "refresh_token" || req.RefreshToken != ""
+	useCookie := cookieMode(r)
+	refreshGrant := r.URL.Query().Get("grant_type") == "refresh_token"
+	if useCookie {
+		if !cookieOriginAllowed(r) {
+			writeAPIError(w, httpError(403, "cookie origin is not allowed"))
+			return
+		}
+		if refreshGrant && req.RefreshToken == "" {
+			req.RefreshToken = refreshCookie(r, p)
+		}
+	}
+	refresh := refreshGrant || req.RefreshToken != ""
+	username := ""
+	identity := req.Email
+	if !refresh && req.Username != "" {
+		if req.Email != "" {
+			writeAPIError(w, httpError(400, "provide email or username, not both"))
+			return
+		}
+		username, err = normalizedUsername(req.Username)
+		if err != nil {
+			writeAPIError(w, err)
+			return
+		}
+		identity = "username:" + username
+	}
 	var rateErr error
 	if refresh {
 		rateErr = s.enforceRefreshRate(p, hex.EncodeToString(tokenHash(req.RefreshToken)))
 	} else {
-		rateErr = s.enforceAuthRate(p, r, req.Email)
+		rateErr = s.enforceAuthRate(p, r, identity)
 	}
 	if rateErr != nil {
 		writeAPIError(w, rateErr)
@@ -233,6 +303,7 @@ func (s *Server) authToken(w http.ResponseWriter, r *http.Request) {
 	s.recordRequest(r.Context(), p.id)
 	var out map[string]any
 	var replayed bool
+	var auditUser string
 	err = s.adminTx(r.Context(), p, func(tx pgx.Tx) error {
 		if refresh {
 			return s.refreshTx(r.Context(), p, tx, req.RefreshToken, &out, &replayed)
@@ -240,11 +311,12 @@ func (s *Server) authToken(w http.ResponseWriter, r *http.Request) {
 		var id, email, hash string
 		var confirmed *time.Time
 		var banned *time.Time
-		err := tx.QueryRow(r.Context(), `SELECT id,email,password_hash,email_confirmed_at,banned_until FROM auth.users WHERE email=$1`, strings.ToLower(strings.TrimSpace(req.Email))).Scan(&id, &email, &hash, &confirmed, &banned)
+		err := tx.QueryRow(r.Context(), `SELECT id,COALESCE(email,''),password_hash,email_confirmed_at,banned_until FROM auth.users WHERE ($2='' AND email=$1) OR ($2<>'' AND username=$2)`, strings.ToLower(strings.TrimSpace(req.Email)), username).Scan(&id, &email, &hash, &confirmed, &banned)
 		if err != nil {
 			_ = auth.VerifyPassword(req.Password, auth.DummyPasswordHash())
 			return httpError(400, "invalid login credentials")
 		}
+		auditUser = id
 		if !auth.VerifyPassword(req.Password, hash) {
 			return httpError(400, "invalid login credentials")
 		}
@@ -261,13 +333,26 @@ func (s *Server) authToken(w http.ResponseWriter, r *http.Request) {
 		out = session
 		return nil
 	})
+	if !refresh {
+		s.recordSignInEvent(p, r, identity, auditUser, signInReason(err))
+	}
 	if err != nil {
+		if useCookie && refresh {
+			clearRefreshCookie(w, r, p)
+		}
 		writeAPIError(w, err)
 		return
 	}
 	if replayed {
+		if useCookie {
+			clearRefreshCookie(w, r, p)
+		}
 		writeAPIError(w, httpError(400, "invalid refresh token"))
 		return
+	}
+	if useCookie {
+		setRefreshCookie(w, r, p, out["refresh_token"].(string))
+		delete(out, "refresh_token")
 	}
 	writeJSON(w, 200, out)
 }
@@ -309,7 +394,7 @@ FROM auth.refresh_tokens WHERE token_hash=$1 FOR UPDATE`, tokenHash(raw), s.refr
 		// caller its own token in the same session rather than ending it.
 	}
 	var userBanned bool
-	if err = tx.QueryRow(ctx, `SELECT email, coalesce(banned_until > now(), false) FROM auth.users WHERE id=$1`, user).Scan(&email, &userBanned); err != nil {
+	if err = tx.QueryRow(ctx, `SELECT COALESCE(email,''), coalesce(banned_until > now(), false) FROM auth.users WHERE id=$1`, user).Scan(&email, &userBanned); err != nil {
 		return err
 	}
 	if userBanned {
@@ -353,10 +438,15 @@ func (s *Server) authVerify(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	if r.URL.Query().Get("type") == "recovery" {
+		useCookie := cookieMode(r)
+		if useCookie && !cookieOriginAllowed(r) {
+			writeAPIError(w, httpError(http.StatusForbidden, "origin is not allowed for cookie sessions"))
+			return
+		}
 		var id, email string
 		var out map[string]any
 		err = s.adminTx(r.Context(), p, func(tx pgx.Tx) error {
-			if err := tx.QueryRow(r.Context(), `SELECT id,email FROM auth.users WHERE reset_token_hash=$1 AND reset_expires_at>now()`, tokenHash(token)).Scan(&id, &email); err != nil {
+			if err := tx.QueryRow(r.Context(), `SELECT id,COALESCE(email,'') FROM auth.users WHERE reset_token_hash=$1 AND reset_expires_at>now()`, tokenHash(token)).Scan(&id, &email); err != nil {
 				return err
 			}
 			var e error
@@ -370,6 +460,10 @@ func (s *Server) authVerify(w http.ResponseWriter, r *http.Request) {
 		if err != nil {
 			writeAPIError(w, httpError(400, "invalid or expired recovery token"))
 			return
+		}
+		if useCookie {
+			setRefreshCookie(w, r, p, out["refresh_token"].(string))
+			delete(out, "refresh_token")
 		}
 		writeJSON(w, 200, out)
 		return
@@ -447,13 +541,78 @@ func (s *Server) authLogout(w http.ResponseWriter, r *http.Request) {
 		writeAPIError(w, err)
 		return
 	}
+	scope := r.URL.Query().Get("scope")
+	if scope == "" {
+		scope = "local"
+	}
+	if scope != "local" && scope != "others" && scope != "global" {
+		writeAPIError(w, httpError(400, "invalid logout scope"))
+		return
+	}
 	var ended []string
 	err = s.adminTx(r.Context(), p, func(tx pgx.Tx) error {
 		if cSessionID(c) == "" {
 			return httpError(http.StatusUnauthorized, "invalid JWT session")
 		}
 		var e error
-		ended, e = revokeSession(r.Context(), tx, cSessionID(c), c.Subject)
+		if scope == "local" {
+			ended, e = revokeSession(r.Context(), tx, cSessionID(c), c.Subject)
+		} else {
+			ended, e = revokeUserSessions(r.Context(), tx, c.Subject, cSessionID(c), scope == "others")
+		}
+		return e
+	})
+	if err != nil {
+		writeAPIError(w, err)
+		return
+	}
+	s.endSessions(p.id, c.Subject, ended)
+	if cookieMode(r) {
+		clearRefreshCookie(w, r, p)
+	}
+	w.WriteHeader(http.StatusNoContent)
+}
+
+// authChangePassword verifies the caller's current password in the same
+// transaction that replaces it and ends every other sign-in.
+func (s *Server) authChangePassword(w http.ResponseWriter, r *http.Request) {
+	p, c, err := s.bearerUser(r)
+	if err != nil {
+		writeAPIError(w, err)
+		return
+	}
+	if cSessionID(c) == "" {
+		writeAPIError(w, httpError(http.StatusUnauthorized, "a sign-in session is required"))
+		return
+	}
+	var req authRequest
+	if err = decodeJSON(r, &req); err != nil {
+		writeAPIError(w, err)
+		return
+	}
+	if req.CurrentPassword == "" || req.NewPassword == "" {
+		writeAPIError(w, httpError(400, "current_password and new_password are required"))
+		return
+	}
+	h, err := auth.HashPassword(req.NewPassword)
+	if err != nil {
+		writeAPIError(w, httpError(400, err.Error()))
+		return
+	}
+	var ended []string
+	err = s.adminTx(r.Context(), p, func(tx pgx.Tx) error {
+		var oldHash string
+		if e := tx.QueryRow(r.Context(), `SELECT password_hash FROM auth.users WHERE id=$1 FOR UPDATE`, c.Subject).Scan(&oldHash); e != nil {
+			return e
+		}
+		if !auth.VerifyPassword(req.CurrentPassword, oldHash) {
+			return httpError(400, "invalid current password")
+		}
+		if _, e := tx.Exec(r.Context(), `UPDATE auth.users SET password_hash=$1,updated_at=now() WHERE id=$2`, h, c.Subject); e != nil {
+			return e
+		}
+		var e error
+		ended, e = revokeUserSessions(r.Context(), tx, c.Subject, cSessionID(c), true)
 		return e
 	})
 	if err != nil {
@@ -464,6 +623,30 @@ func (s *Server) authLogout(w http.ResponseWriter, r *http.Request) {
 	w.WriteHeader(http.StatusNoContent)
 }
 
+// authAdminLogout ends a target user's sessions without preventing new sign-ins.
+func (s *Server) authAdminLogout(w http.ResponseWriter, r *http.Request) {
+	p, err := s.serviceProject(r.Context(), r)
+	if err != nil {
+		writeAPIError(w, err)
+		return
+	}
+	id := r.PathValue("id")
+	if !uuidPattern.MatchString(id) {
+		writeAPIError(w, httpError(400, "invalid user id"))
+		return
+	}
+	err = s.adminTx(r.Context(), p, func(tx pgx.Tx) error {
+		_, e := revokeUserSessions(r.Context(), tx, id, "", false)
+		return e
+	})
+	if err != nil {
+		writeAPIError(w, err)
+		return
+	}
+	s.endSessions(p.id, id, nil)
+	w.WriteHeader(http.StatusNoContent)
+}
+
 func cSessionID(c keys.Claims) string {
 	var claims struct {
 		SessionID string `json:"session_id"`
@@ -471,19 +654,33 @@ func cSessionID(c keys.Claims) string {
 	_ = json.Unmarshal(c.JSON, &claims)
 	return claims.SessionID
 }
+func isRecoverySession(c keys.Claims) bool {
+	var claims struct {
+		AMR []struct {
+			Method string `json:"method"`
+		} `json:"amr"`
+	}
+	_ = json.Unmarshal(c.JSON, &claims)
+	for _, method := range claims.AMR {
+		if method.Method == "recovery" {
+			return true
+		}
+	}
+	return false
+}
 func (s *Server) authUser(w http.ResponseWriter, r *http.Request) {
 	p, c, err := s.bearerUser(r)
 	if err != nil {
 		writeAPIError(w, err)
 		return
 	}
-	var id, email string
+	var id, email, username string
 	var confirmed *time.Time
-	var meta []byte
+	var meta, appMeta []byte
 	var created, updated time.Time
 	var factors []mfaFactor
 	err = s.adminTx(r.Context(), p, func(tx pgx.Tx) error {
-		if err := tx.QueryRow(r.Context(), `SELECT id,email,email_confirmed_at,raw_user_meta_data,created_at,updated_at FROM auth.users WHERE id=$1`, c.Subject).Scan(&id, &email, &confirmed, &meta, &created, &updated); err != nil {
+		if err := tx.QueryRow(r.Context(), `SELECT id,COALESCE(email,''),COALESCE(username,''),email_confirmed_at,raw_user_meta_data,raw_app_meta_data,created_at,updated_at FROM auth.users WHERE id=$1`, c.Subject).Scan(&id, &email, &username, &confirmed, &meta, &appMeta, &created, &updated); err != nil {
 			return err
 		}
 		var err error
@@ -494,7 +691,7 @@ func (s *Server) authUser(w http.ResponseWriter, r *http.Request) {
 		writeAPIError(w, httpError(404, "user not found"))
 		return
 	}
-	user := userJSON(id, email, confirmed != nil, meta, created, updated)
+	user := userJSON(id, email, username, confirmed != nil, meta, appMeta, created, updated)
 	user["factors"] = factors
 	writeJSON(w, 200, user)
 }
@@ -510,13 +707,28 @@ func (s *Server) authUpdateUser(w http.ResponseWriter, r *http.Request) {
 		writeAPIError(w, err)
 		return
 	}
+	var ended []string
 	err = s.adminTx(r.Context(), p, func(tx pgx.Tx) error {
 		if req.Password != "" {
+			if cSessionID(c) == "" {
+				return httpError(401, "a sign-in session is required")
+			}
+			var currentHash string
+			if e := tx.QueryRow(r.Context(), `SELECT password_hash FROM auth.users WHERE id=$1 FOR UPDATE`, c.Subject).Scan(&currentHash); e != nil {
+				return e
+			}
+			if !isRecoverySession(c) && (req.CurrentPassword == "" || !auth.VerifyPassword(req.CurrentPassword, currentHash)) {
+				return httpError(400, "invalid current password")
+			}
 			h, e := auth.HashPassword(req.Password)
 			if e != nil {
 				return e
 			}
 			if _, e = tx.Exec(r.Context(), `UPDATE auth.users SET password_hash=$1,updated_at=now() WHERE id=$2`, h, c.Subject); e != nil {
+				return e
+			}
+			ended, e = revokeUserSessions(r.Context(), tx, c.Subject, cSessionID(c), true)
+			if e != nil {
 				return e
 			}
 		}
@@ -530,6 +742,9 @@ func (s *Server) authUpdateUser(w http.ResponseWriter, r *http.Request) {
 		writeAPIError(w, err)
 		return
 	}
+	if req.Password != "" {
+		s.endSessions(p.id, c.Subject, ended)
+	}
 	s.authUser(w, r)
 }
 
@@ -541,20 +756,20 @@ func (s *Server) authAdminList(w http.ResponseWriter, r *http.Request) {
 	}
 	var users []map[string]any
 	err = s.adminTx(r.Context(), p, func(tx pgx.Tx) error {
-		rows, e := tx.Query(r.Context(), `SELECT id,email,email_confirmed_at,raw_user_meta_data,created_at,updated_at FROM auth.users ORDER BY created_at`)
+		rows, e := tx.Query(r.Context(), `SELECT id,COALESCE(email,''),COALESCE(username,''),email_confirmed_at,raw_user_meta_data,raw_app_meta_data,created_at,updated_at FROM auth.users ORDER BY created_at`)
 		if e != nil {
 			return e
 		}
 		defer rows.Close()
 		for rows.Next() {
-			var id, email string
+			var id, email, username string
 			var c *time.Time
-			var m []byte
+			var m, appMeta []byte
 			var a, b time.Time
-			if e = rows.Scan(&id, &email, &c, &m, &a, &b); e != nil {
+			if e = rows.Scan(&id, &email, &username, &c, &m, &appMeta, &a, &b); e != nil {
 				return e
 			}
-			users = append(users, userJSON(id, email, c != nil, m, a, b))
+			users = append(users, userJSON(id, email, username, c != nil, m, appMeta, a, b))
 		}
 		return rows.Err()
 	})
@@ -576,15 +791,31 @@ func (s *Server) authAdminCreate(w http.ResponseWriter, r *http.Request) {
 		writeAPIError(w, err)
 		return
 	}
-	h, err := auth.HashPassword(req.Password)
+	h, err := adminPasswordHash(req)
 	if err != nil {
 		writeAPIError(w, err)
+		return
+	}
+	username := ""
+	if req.Username != "" {
+		username, err = normalizedUsername(req.Username)
+		if err != nil {
+			writeAPIError(w, err)
+			return
+		}
+	}
+	if strings.TrimSpace(req.Email) == "" && username == "" {
+		writeAPIError(w, httpError(400, "email or username is required"))
 		return
 	}
 	id, _ := auth.UUID()
 	m, _ := json.Marshal(req.UserMetadata)
 	if req.UserMetadata == nil {
 		m = []byte(`{}`)
+	}
+	appMeta, _ := json.Marshal(req.AppMetadata)
+	if req.AppMetadata == nil {
+		appMeta = []byte(`{}`)
 	}
 	var u map[string]any
 	err = s.adminTx(r.Context(), p, func(tx pgx.Tx) error {
@@ -594,12 +825,12 @@ func (s *Server) authAdminCreate(w http.ResponseWriter, r *http.Request) {
 			c = time.Now()
 		}
 		email := strings.ToLower(strings.TrimSpace(req.Email))
-		e := tx.QueryRow(r.Context(), `INSERT INTO auth.users(id,email,password_hash,email_confirmed_at,raw_user_meta_data) VALUES($1,$2,$3,$4,$5) RETURNING created_at,updated_at`, id, email, h, func() any {
-			if req.EmailConfirm {
+		e := tx.QueryRow(r.Context(), `INSERT INTO auth.users(id,email,username,password_hash,email_confirmed_at,raw_user_meta_data,raw_app_meta_data) VALUES($1,NULLIF($2,''),NULLIF($3,''),$4,$5,$6,$7) RETURNING created_at,updated_at`, id, email, username, h, func() any {
+			if req.EmailConfirm || email == "" {
 				return c
 			}
 			return nil
-		}(), m).Scan(&a, &b)
+		}(), m, appMeta).Scan(&a, &b)
 		if e == nil {
 			if req.BanDuration != "" {
 				var until *time.Time
@@ -615,7 +846,7 @@ func (s *Server) authAdminCreate(w http.ResponseWriter, r *http.Request) {
 					return banErr
 				}
 			}
-			u = userJSON(id, email, req.EmailConfirm, m, a, b)
+			u = userJSON(id, email, username, req.EmailConfirm || email == "", m, appMeta, a, b)
 		}
 		return e
 	})
@@ -639,18 +870,32 @@ func (s *Server) authAdminUpdate(w http.ResponseWriter, r *http.Request) {
 	}
 	id := r.PathValue("id")
 	banned := false
+	passwordChanged := false
 	err = s.adminTx(r.Context(), p, func(tx pgx.Tx) error {
-		if req.Password != "" {
-			h, e := auth.HashPassword(req.Password)
+		if req.Password != "" || req.PasswordHash != "" {
+			h, e := adminPasswordHash(req)
 			if e != nil {
 				return e
 			}
 			if _, e = tx.Exec(r.Context(), `UPDATE auth.users SET password_hash=$1,updated_at=now() WHERE id=$2`, h, id); e != nil {
 				return e
 			}
+			if _, e = revokeUserSessions(r.Context(), tx, id, "", false); e != nil {
+				return e
+			}
+			passwordChanged = true
 		}
 		if req.Email != "" {
 			if _, e := tx.Exec(r.Context(), `UPDATE auth.users SET email=$1,updated_at=now() WHERE id=$2`, strings.ToLower(strings.TrimSpace(req.Email)), id); e != nil {
+				return e
+			}
+		}
+		if req.Username != "" {
+			name, e := normalizedUsername(req.Username)
+			if e != nil {
+				return e
+			}
+			if _, e := tx.Exec(r.Context(), `UPDATE auth.users SET username=$1,updated_at=now() WHERE id=$2`, name, id); e != nil {
 				return e
 			}
 		}
@@ -686,13 +931,19 @@ func (s *Server) authAdminUpdate(w http.ResponseWriter, r *http.Request) {
 				return e
 			}
 		}
+		if req.AppMetadata != nil {
+			m, _ := json.Marshal(req.AppMetadata)
+			if _, e := tx.Exec(r.Context(), `UPDATE auth.users SET raw_app_meta_data=$1,updated_at=now() WHERE id=$2`, m, id); e != nil {
+				return e
+			}
+		}
 		return nil
 	})
 	if err != nil {
 		writeAPIError(w, err)
 		return
 	}
-	if banned {
+	if banned || passwordChanged {
 		s.endSessions(p.id, id, nil)
 	}
 	writeJSON(w, http.StatusOK, map[string]any{"id": id})

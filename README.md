@@ -22,6 +22,11 @@ curl --fail http://localhost:18080/healthz
 
 `scripts/init-env.sh` creates local development secrets in the ignored `.env` file. Do not commit it.
 
+Compose runs `storage-init` before the gateway and dashboard. It aligns the
+storage and backup volume ownership with `PIBASE_UID` and `PIBASE_GID`, including
+volumes created by an earlier run with a different UID. This may take longer
+when an existing volume contains many files.
+
 Create a project (the keys are printed once; store them securely):
 
 ```sh
@@ -118,7 +123,9 @@ The M0 measurement harness remains available for reproducing Pi memory data.
 supported, SQL helpers, role names, the storage upload hook, sign-out, concurrent
 editors, the browser sign-in client and limits. `docs/SERVER-SIDE-CODE.md` shows
 how to run server-side work (email, webhooks, scheduled jobs) in the site's own
-Next.js routes and call it through `/functions/v1`.
+Next.js routes and call it through `/functions/v1`. The
+[Inventory compatibility checklist](docs/INVENTORY-COMPATIBILITY.md) maps the
+12 migration gaps to their new pibase features.
 
 ## Operations (M4)
 

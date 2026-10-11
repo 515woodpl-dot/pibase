@@ -16,14 +16,39 @@ import (
 // 10 adds public-table API defaults and RLS for owner-created tables; version
 // 11 keeps one session ID across refresh-token rotation, adds auth.jwt(),
 // auth.role(), the storage path helpers and write hook, and lets the project
-// admin create and update buckets.
-const currentProjectSchemaVersion = 11
+// admin create and update buckets; version 12 adds server-owned app metadata;
+// version 13 adds sign-in audit events; version 14 adds username sign-in;
+// version 15 adds SQL-callable auth administration helpers.
+const currentProjectSchemaVersion = 15
 
 // sessionUpgradeSQL records which sign-in session each refresh token belongs
 // to. Rows written before this column existed are their own session.
 const sessionUpgradeSQL = `
 ALTER TABLE auth.refresh_tokens ADD COLUMN IF NOT EXISTS session_id uuid;
 CREATE INDEX IF NOT EXISTS refresh_tokens_session_idx ON auth.refresh_tokens ((COALESCE(session_id,id)));
+ALTER TABLE auth.users ADD COLUMN IF NOT EXISTS raw_app_meta_data jsonb NOT NULL DEFAULT '{}'::jsonb;
+ALTER TABLE auth.users ADD COLUMN IF NOT EXISTS username text;
+ALTER TABLE auth.users ALTER COLUMN email DROP NOT NULL;
+CREATE UNIQUE INDEX IF NOT EXISTS users_username_key ON auth.users(username);
+DO $$ BEGIN
+  IF NOT EXISTS (SELECT 1 FROM pg_constraint WHERE conname='users_identifier_required' AND conrelid='auth.users'::regclass) THEN
+    ALTER TABLE auth.users ADD CONSTRAINT users_identifier_required CHECK (email IS NOT NULL OR username IS NOT NULL);
+  END IF;
+END $$;
+`
+
+const signInAuditUpgradeSQL = `
+CREATE TABLE IF NOT EXISTS auth.sign_in_events (
+  id uuid PRIMARY KEY DEFAULT gen_random_uuid(),
+  email text NOT NULL,
+  user_id uuid,
+  success boolean NOT NULL,
+  reason text NOT NULL,
+  client_ip text,
+  created_at timestamptz NOT NULL DEFAULT now()
+);
+CREATE INDEX IF NOT EXISTS sign_in_events_created_idx ON auth.sign_in_events(created_at DESC);
+REVOKE ALL ON auth.sign_in_events FROM PUBLIC;
 `
 
 var managedSchemas = []string{"auth", "storage", "realtime", "cron"}
@@ -239,13 +264,14 @@ GRANT SELECT,INSERT,UPDATE,DELETE ON cron.jobs,cron.webhook_outbox TO ` + q(admi
 REVOKE TRIGGER,REFERENCES,TRUNCATE ON cron.jobs,cron.webhook_outbox FROM ` + q(admin) + `;
 GRANT USAGE,SELECT ON ALL SEQUENCES IN SCHEMA cron TO ` + q(admin) + `;
 GRANT EXECUTE ON FUNCTION cron.enqueue_webhook() TO ` + q(admin) + `;
-` + mfaUpgradeSQL + sessionUpgradeSQL + compatibilitySQL(admin, anon, authenticated, service) + `
+` + mfaUpgradeSQL + sessionUpgradeSQL + signInAuditUpgradeSQL + compatibilitySQL(admin, anon, authenticated, service) + authAdminHelpersSQL(admin) + `
 
 ALTER SCHEMA auth OWNER TO CURRENT_USER;
 ALTER SCHEMA storage OWNER TO CURRENT_USER;
 ALTER SCHEMA realtime OWNER TO CURRENT_USER;
 ALTER SCHEMA cron OWNER TO CURRENT_USER;
 GRANT USAGE ON SCHEMA auth,storage TO ` + q(anon) + `, ` + q(authenticated) + `, ` + q(service) + `, ` + q(admin) + `;
+GRANT SELECT,INSERT ON auth.sign_in_events TO ` + q(admin) + `;
 GRANT USAGE ON SCHEMA realtime,cron TO ` + q(admin) + `;
 ALTER DEFAULT PRIVILEGES FOR ROLE ` + q(admin) + ` IN SCHEMA public
 GRANT SELECT,INSERT,UPDATE,DELETE ON TABLES TO ` + q(anon) + `, ` + q(authenticated) + `, ` + q(service) + `;

@@ -234,6 +234,11 @@ func createProject(ctx context.Context, adminURL, id, name string, masterKey, jw
 			return Project{}, err
 		}
 	}
+	for _, membership := range [][2]string{{"anon", anon}, {"authenticated", authenticated}, {"service_role", service}} {
+		if _, err = root.Exec(ctx, `GRANT `+pgx.Identifier{membership[0]}.Sanitize()+` TO `+pgx.Identifier{membership[1]}.Sanitize()); err != nil {
+			return Project{}, err
+		}
+	}
 	if _, err = root.Exec(ctx, `CREATE DATABASE `+pgx.Identifier{database}.Sanitize()+` OWNER `+pgx.Identifier{admin}.Sanitize()); err != nil {
 		return Project{}, err
 	}
@@ -261,7 +266,8 @@ REVOKE ALL ON SCHEMA auth, storage FROM PUBLIC;
 GRANT USAGE ON SCHEMA public TO ` + pgx.Identifier{anon}.Sanitize() + `, ` + pgx.Identifier{authenticated}.Sanitize() + `, ` + pgx.Identifier{service}.Sanitize() + `;
 CREATE TABLE auth.users (
   id uuid PRIMARY KEY,
-  email text NOT NULL UNIQUE,
+  email text UNIQUE,
+  username text UNIQUE,
   password_hash text NOT NULL,
   email_confirmed_at timestamptz,
   confirmation_token_hash bytea,
@@ -269,6 +275,8 @@ CREATE TABLE auth.users (
   reset_token_hash bytea,
   reset_expires_at timestamptz,
   raw_user_meta_data jsonb NOT NULL DEFAULT '{}'::jsonb,
+  raw_app_meta_data jsonb NOT NULL DEFAULT '{}'::jsonb,
+  CONSTRAINT users_identifier_required CHECK (email IS NOT NULL OR username IS NOT NULL),
   banned_until timestamptz,
   created_at timestamptz NOT NULL DEFAULT now(),
   updated_at timestamptz NOT NULL DEFAULT now()
@@ -284,6 +292,16 @@ CREATE TABLE auth.refresh_tokens (
   created_at timestamptz NOT NULL DEFAULT now()
 );
 CREATE INDEX refresh_tokens_user_idx ON auth.refresh_tokens(user_id);
+CREATE TABLE auth.sign_in_events (
+  id uuid PRIMARY KEY DEFAULT gen_random_uuid(),
+  email text NOT NULL,
+  user_id uuid,
+  success boolean NOT NULL,
+  reason text NOT NULL,
+  client_ip text,
+  created_at timestamptz NOT NULL DEFAULT now()
+);
+CREATE INDEX sign_in_events_created_idx ON auth.sign_in_events(created_at DESC);
 CREATE TABLE auth.mfa_factors (
   id uuid PRIMARY KEY,
   user_id uuid NOT NULL REFERENCES auth.users(id) ON DELETE CASCADE,

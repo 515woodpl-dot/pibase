@@ -156,6 +156,31 @@ func Bootstrap(ctx context.Context, adminURL, password string) error {
 			return err
 		}
 	}
+	// These cluster-wide NOLOGIN roles are stable targets for customer SQL
+	// policies and GRANT statements. Each project's isolated request role is
+	// made a member below; database CONNECT remains project-specific.
+	for _, name := range []string{"anon", "authenticated", "service_role"} {
+		var roleExists bool
+		if err := conn.QueryRow(ctx, `SELECT EXISTS(SELECT 1 FROM pg_roles WHERE rolname=$1)`, name).Scan(&roleExists); err != nil {
+			return err
+		}
+		if !roleExists {
+			if _, err := conn.Exec(ctx, `CREATE ROLE `+pgx.Identifier{name}.Sanitize()+` NOLOGIN NOSUPERUSER NOCREATEDB NOCREATEROLE NOBYPASSRLS`); err != nil {
+				return err
+			}
+			if _, err := conn.Exec(ctx, `COMMENT ON ROLE `+pgx.Identifier{name}.Sanitize()+` IS 'pibase compatibility role'`); err != nil {
+				return err
+			}
+		} else {
+			var safe bool
+			if err := conn.QueryRow(ctx, `SELECT NOT rolcanlogin AND NOT rolsuper AND NOT rolbypassrls AND NOT rolcreatedb AND NOT rolcreaterole AND COALESCE(shobj_description(oid,'pg_authid'),'')='pibase compatibility role' FROM pg_roles WHERE rolname=$1`, name).Scan(&safe); err != nil {
+				return err
+			}
+			if !safe {
+				return fmt.Errorf("compatibility role %s already exists but is not a safe pibase-managed role", name)
+			}
+		}
+	}
 	var dbExists bool
 	if err := conn.QueryRow(ctx, `SELECT EXISTS (SELECT 1 FROM pg_database WHERE datname='_control')`).Scan(&dbExists); err != nil {
 		return err
@@ -209,6 +234,11 @@ func upgradeProjectSchemas(ctx context.Context, controlConn *pgx.Conn, adminURL 
 		return err
 	}
 	rows.Close()
+	root, err := pgx.Connect(ctx, adminURL)
+	if err != nil {
+		return fmt.Errorf("connect for compatibility roles: %w", err)
+	}
+	defer root.Close(ctx)
 	failures := 0
 	recordFailure := func(item projectUpgradeTarget, projectErr error) error {
 		failures++
@@ -218,6 +248,12 @@ func upgradeProjectSchemas(ctx context.Context, controlConn *pgx.Conn, adminURL 
 		return err
 	}
 	for _, item := range targets {
+		if err := grantStableProjectRoles(ctx, root, item.anon, item.authenticated, item.service); err != nil {
+			if recordErr := recordFailure(item, err); recordErr != nil {
+				return recordErr
+			}
+			continue
+		}
 		version, err := applyProjectSchemaUpgrade(ctx, adminURL, item)
 		if err != nil {
 			if recordErr := recordFailure(item, err); recordErr != nil {
@@ -231,6 +267,15 @@ func upgradeProjectSchemas(ctx context.Context, controlConn *pgx.Conn, adminURL 
 	}
 	if failures > 0 {
 		slog.Warn("project schema upgrades completed with skipped projects", "failures", failures)
+	}
+	return nil
+}
+
+func grantStableProjectRoles(ctx context.Context, root *pgx.Conn, anon, authenticated, service string) error {
+	for _, membership := range [][2]string{{"anon", anon}, {"authenticated", authenticated}, {"service_role", service}} {
+		if _, err := root.Exec(ctx, `GRANT `+pgx.Identifier{membership[0]}.Sanitize()+` TO `+pgx.Identifier{membership[1]}.Sanitize()); err != nil {
+			return fmt.Errorf("grant compatibility role %s: %w", membership[0], err)
+		}
 	}
 	return nil
 }

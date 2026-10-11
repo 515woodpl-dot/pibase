@@ -100,11 +100,15 @@ ORDER BY n.nspname,p.oid::regprocedure::text`, managedSchemas)
 	}
 	defer rows.Close()
 	wantSearchPath := map[string]string{
-		"auth.uid()":                      "search_path=pg_catalog, auth",
-		"cron.enforce_outbox_limit()":     "search_path=pg_catalog, cron",
-		"cron.enqueue_webhook()":          "search_path=pg_catalog, cron",
-		"realtime.enable_table(regclass)": "search_path=pg_catalog",
-		"realtime.notify_change()":        "search_path=pg_catalog",
+		"auth.uid()":                                   "search_path=pg_catalog, auth",
+		"auth.notify_session_revocation()":             "search_path=pg_catalog",
+		"auth.admin_create_user(text,text,text,jsonb)": "search_path=pg_catalog",
+		"auth.admin_end_sessions(uuid,uuid)":           "search_path=pg_catalog",
+		"auth.admin_set_password(uuid,text)":           "search_path=pg_catalog",
+		"cron.enforce_outbox_limit()":                  "search_path=pg_catalog, cron",
+		"cron.enqueue_webhook()":                       "search_path=pg_catalog, cron",
+		"realtime.enable_table(regclass)":              "search_path=pg_catalog",
+		"realtime.notify_change()":                     "search_path=pg_catalog",
 	}
 	seen := 0
 	for rows.Next() {

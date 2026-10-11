@@ -5,11 +5,13 @@ import (
 	"crypto/sha256"
 	"crypto/subtle"
 	"encoding/base64"
+	"errors"
 	"fmt"
 	"strings"
 	"sync"
 
 	"golang.org/x/crypto/argon2"
+	"golang.org/x/crypto/bcrypt"
 )
 
 const (
@@ -46,6 +48,9 @@ func HashPassword(password string) (string, error) {
 }
 
 func VerifyPassword(password, encoded string) bool {
+	if strings.HasPrefix(encoded, "$2a$") || strings.HasPrefix(encoded, "$2b$") || strings.HasPrefix(encoded, "$2y$") {
+		return bcrypt.CompareHashAndPassword([]byte(encoded), []byte(password)) == nil
+	}
 	parts := strings.Split(encoded, "$")
 	if len(parts) != 7 || parts[1] != "pibase" || parts[2] != "argon2id" || parts[3] != "v=19" {
 		return false
@@ -70,6 +75,20 @@ func VerifyPassword(password, encoded string) bool {
 		}
 		return "false"
 	}) == "true"
+}
+
+// ValidImportedPasswordHash accepts bcrypt hashes from existing applications.
+// Imported hashes are only set through the service-key admin API.
+func ValidImportedPasswordHash(encoded string) bool {
+	if !strings.HasPrefix(encoded, "$2a$") && !strings.HasPrefix(encoded, "$2b$") && !strings.HasPrefix(encoded, "$2y$") {
+		return false
+	}
+	cost, err := bcrypt.Cost([]byte(encoded))
+	if err != nil || cost < bcrypt.MinCost || cost > 16 || len(encoded) != 60 {
+		return false
+	}
+	err = bcrypt.CompareHashAndPassword([]byte(encoded), []byte("pibase-import-validation"))
+	return err == nil || errors.Is(err, bcrypt.ErrMismatchedHashAndPassword)
 }
 
 // DummyPasswordHash returns a stable valid hash for equal-cost verification

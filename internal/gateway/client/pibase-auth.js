@@ -271,6 +271,12 @@
         write(s);
         return s;
       },
+      signInUsername: async function (username, password) {
+        var body = await post("/auth/v1/token?grant_type=password", { username: username, password: password });
+        var s = sessionFrom(body);
+        write(s);
+        return s;
+      },
 
       // signOut ends the sign-in in every tab at once, then on the server,
       // which stops every token of it working and closes its realtime
@@ -374,5 +380,129 @@
     return client;
   }
 
-  return { createClient: createClient, version: "1" };
+  // Cookie mode keeps the refresh token in an httpOnly cookie and the access
+  // token only in this tab's memory. It never touches localStorage.
+  function createCookieClient(options) {
+    if (!options || !options.url || !options.anonKey) throw new Error("PibaseAuth.createCookieClient needs url and anonKey");
+    var url = String(options.url).replace(/\/+$/, "");
+    var anonKey = options.anonKey;
+    var session = null;
+    var listeners = [];
+    var inflight = null;
+    var timer = null;
+    var channel = null;
+    var tabID = randomID();
+    var generation = 0;
+
+    function notify(event) { listeners.slice().forEach(function (cb) { cb(event, session); }); }
+    function save(next, event) {
+      generation++;
+      session = next;
+      if (timer) clearTimeout(timer);
+      timer = null;
+      if (next && options.autoRefresh !== false) {
+        timer = setTimeout(function () { refresh().catch(function () {}); },
+          Math.max(1000, next.expires_at * 1000 - REFRESH_MARGIN_MS - Date.now()));
+      }
+      if (event) notify(event);
+    }
+    function fromBody(body) {
+      return { access_token: body.access_token, token_type: body.token_type || "bearer",
+        expires_in: body.expires_in, expires_at: Math.floor(Date.now() / 1000) + (body.expires_in || 3600),
+        user: body.user || null };
+    }
+    async function post(path, body, bearer) {
+      var headers = { apikey: anonKey, "Content-Type": "application/json", "X-Pibase-Session-Mode": "cookie" };
+      if (bearer) headers.Authorization = "Bearer " + bearer;
+      var res = await fetch(url + path, { method: "POST", credentials: "include", headers: headers, body: JSON.stringify(body || {}) });
+      if (!res.ok) throw await errorFrom(res);
+      return res.status === 204 ? null : res.json();
+    }
+    function refresh() {
+      if (inflight) return inflight;
+      var previous = session;
+      var started = generation;
+      inflight = (async function () {
+        try {
+          var body = await post("/auth/v1/token?grant_type=refresh_token", {});
+          // A sign-out made while refresh was in flight must win.
+          if (generation !== started) return session;
+          var next = fromBody(body);
+          save(next, previous ? "TOKEN_REFRESHED" : "SIGNED_IN");
+          return next;
+        } catch (e) {
+          if (e.status === 400 || e.status === 401) {
+            if (generation === started && previous) save(null, "SIGNED_OUT");
+            return null;
+          }
+          throw e;
+        }
+      })();
+      var current = inflight;
+      current.then(function () { if (inflight === current) inflight = null; },
+        function () { if (inflight === current) inflight = null; });
+      return current;
+    }
+    function broadcast(action) { if (channel) channel.postMessage({ from: tabID, action: action }); }
+    if (typeof BroadcastChannel !== "undefined") {
+      try {
+        channel = new BroadcastChannel("pibase.cookie:" + url);
+        channel.onmessage = function (message) {
+          if (!message.data || message.data.from === tabID) return;
+          if (message.data.action === "signout") save(null, session ? "SIGNED_OUT" : null);
+          if (message.data.action === "signin") refresh().catch(function () {});
+        };
+      } catch (e) { channel = null; }
+    }
+    var client = {
+      signIn: async function (email, password) {
+        var next = fromBody(await post("/auth/v1/token?grant_type=password", { email: email, password: password }));
+        save(next, "SIGNED_IN"); broadcast("signin"); return next;
+      },
+      signInUsername: async function (username, password) {
+        var next = fromBody(await post("/auth/v1/token?grant_type=password", { username: username, password: password }));
+        save(next, "SIGNED_IN"); broadcast("signin"); return next;
+      },
+      signOut: async function () {
+        var current = session || await refresh();
+        save(null, current ? "SIGNED_OUT" : null);
+        broadcast("signout");
+        if (current) await post("/auth/v1/logout", {}, current.access_token);
+      },
+      session: function () { return session; },
+      user: function () { return session ? session.user : null; },
+      accessToken: async function () {
+        if (session && session.expires_at * 1000 - REFRESH_MARGIN_MS > Date.now()) return session.access_token;
+        var next = await refresh(); return next ? next.access_token : null;
+      },
+      refreshSession: refresh,
+      fetch: async function (path, init) {
+        init = Object.assign({}, init || {});
+        var target = /^https?:\/\//.test(path) ? path : url + path;
+        async function send(token) {
+          var headers = new Headers(init.headers || {});
+          headers.set("apikey", anonKey);
+          headers.set("Authorization", "Bearer " + (token || anonKey));
+          return fetch(target, Object.assign({}, init, { headers: headers, credentials: "include" }));
+        }
+        var token = await client.accessToken();
+        var res = await send(token);
+        if (res.status !== 401 || !token) return res;
+        var next = await refresh();
+        return next ? send(next.access_token) : res;
+      },
+      onAuthStateChange: function (cb) {
+        listeners.push(cb);
+        return function () { listeners = listeners.filter(function (item) { return item !== cb; }); };
+      },
+      destroy: function () {
+        if (timer) clearTimeout(timer);
+        if (channel) channel.close();
+        listeners = [];
+      },
+    };
+    return client;
+  }
+
+  return { createClient: createClient, createCookieClient: createCookieClient, version: "1" };
 });

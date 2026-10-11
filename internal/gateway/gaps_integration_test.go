@@ -69,9 +69,8 @@ func TestBanEndsSessionsAndBlocksRefresh(t *testing.T) {
 		t.Fatalf("after unban: %d", got)
 	}
 	// A ban written straight into the database (for example by a project
-	// migration) also takes effect, within the session cache lifetime.
+	// migration) also takes effect on the next request.
 	e.mustSQL(`UPDATE auth.users SET banned_until = now() + interval '1 hour' WHERE id = '` + id + `'`)
-	e.s.sessions.forget(e.p.ID, id, nil)
 	if got := e.status("GET", "/auth/v1/user", again.Access, ""); got != http.StatusUnauthorized {
 		t.Fatalf("after a database ban: %d", got)
 	}
@@ -133,7 +132,6 @@ func TestRealtimeAcceptsRefreshedTokensAndDropsEndedOnes(t *testing.T) {
 	// A sign-in that ends without this gateway being told (expiry, another
 	// gateway, a ban in SQL) is noticed by the periodic check.
 	e.mustSQL(`UPDATE auth.refresh_tokens SET revoked_at = now() WHERE user_id = '` + userID + `'`)
-	e.s.sessions.forget(e.p.ID, userID, nil)
 	e.s.realtime.revalidate()
 	_ = conn.SetReadDeadline(time.Now().Add(3 * time.Second))
 	for {

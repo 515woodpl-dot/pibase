@@ -37,6 +37,21 @@ services:
         condition: service_healthy
     restart: "no"
 
+  storage-init:
+    build:
+      context: .
+      target: ops
+    user: "0:0"
+    entrypoint: ["/bin/sh", "-ec"]
+    command: ['chown -R "$$PIBASE_UID:$$PIBASE_GID" /data/files /data/backups']
+    environment:
+      PIBASE_UID: ${PIBASE_UID:-65532}
+      PIBASE_GID: ${PIBASE_GID:-65532}
+    volumes:
+      - storage-data:/data/files
+      - backup-data:/data/backups
+    restart: "no"
+
   gateway:
     user: "${PIBASE_UID:-65532}:${PIBASE_GID:-65532}"
     build:
@@ -50,6 +65,7 @@ services:
       PIBASE_M0_LIGHT_LOAD: ${PIBASE_M0_LIGHT_LOAD:-false}
       PIBASE_ENV: ${PIBASE_ENV:-production}
       PIBASE_AUTH_EXPOSE_TOKENS: ${PIBASE_AUTH_EXPOSE_TOKENS:-false}
+      PIBASE_COOKIE_ORIGINS: ${PIBASE_COOKIE_ORIGINS:-}
       PIBASE_STORAGE_ROOT: /data/files
       PIBASE_MAX_BODY_BYTES: ${PIBASE_MAX_BODY_BYTES:-1048576}
       PIBASE_REFRESH_REUSE_SECONDS: ${PIBASE_REFRESH_REUSE_SECONDS:-10}
@@ -67,6 +83,8 @@ services:
       PIBASE_SITE_URL: ${PIBASE_SITE_URL:-}
     depends_on:
       bootstrap:
+        condition: service_completed_successfully
+      storage-init:
         condition: service_completed_successfully
     ports:
       - "${PIBASE_GATEWAY_BIND:-127.0.0.1}:18080:8080"
@@ -109,6 +127,8 @@ services:
     depends_on:
       bootstrap:
         condition: service_completed_successfully
+      storage-init:
+        condition: service_completed_successfully
     ports:
       # Local only by default. To reach the dashboard over Tailscale, set
       # PIBASE_ADMIN_BIND in .env to this machine's Tailscale IP (tailscale ip -4).
@@ -133,6 +153,8 @@ services:
     depends_on:
       postgres:
         condition: service_healthy
+      storage-init:
+        condition: service_completed_successfully
     volumes:
       - storage-data:/data/files
       - backup-data:/data/backups

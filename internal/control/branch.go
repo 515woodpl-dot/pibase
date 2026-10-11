@@ -177,7 +177,7 @@ func optionalProjectExtensions(ctx context.Context, projectURL string) ([]string
 			return nil, err
 		}
 		switch extension {
-		case "plpgsql":
+		case "plpgsql", "pgcrypto":
 			continue
 		case "postgis", "vector":
 			extensions = append(extensions, extension)
