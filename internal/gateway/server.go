@@ -82,6 +82,10 @@ func New(ctx context.Context, databaseURL string, masterKey []byte, activeProjec
 		controlPool.Close()
 		return nil, fmt.Errorf("create storage root: %w", err)
 	}
+	if err := config.WritableDir("storage root", storageRoot); err != nil {
+		controlPool.Close()
+		return nil, err
+	}
 	storageQuotaBytes := int64(1 << 30)
 	if raw := os.Getenv("PIBASE_STORAGE_MAX_BYTES"); raw != "" {
 		parsed, parseErr := strconv.ParseInt(raw, 10, 64)

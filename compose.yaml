@@ -43,7 +43,10 @@ services:
       target: ops
     user: "0:0"
     entrypoint: ["/bin/sh", "-ec"]
-    command: ['chown -R "$$PIBASE_UID:$$PIBASE_GID" /data/files /data/backups']
+    # Docker refills an empty volume from the image each time a container
+    # mounts it, which resets its owner to the image's UID. The marker keeps
+    # the volumes non-empty so the ownership set here stays.
+    command: ['touch /data/files/.pibase-volume /data/backups/.pibase-volume && chown -R "$$PIBASE_UID:$$PIBASE_GID" /data/files /data/backups']
     environment:
       PIBASE_UID: ${PIBASE_UID:-65532}
       PIBASE_GID: ${PIBASE_GID:-65532}

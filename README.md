@@ -25,7 +25,10 @@ curl --fail http://localhost:18080/healthz
 Compose runs `storage-init` before the gateway and dashboard. It aligns the
 storage and backup volume ownership with `PIBASE_UID` and `PIBASE_GID`, including
 volumes created by an earlier run with a different UID. This may take longer
-when an existing volume contains many files.
+when an existing volume contains many files. It leaves a `.pibase-volume` file
+in each, because Docker resets the owner of an empty volume whenever a
+container mounts it. The gateway and dashboard refuse to start, with a message
+naming the folder, when they cannot write there.
 
 Create a project (the keys are printed once; store them securely):
 

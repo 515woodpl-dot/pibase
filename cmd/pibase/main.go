@@ -404,6 +404,17 @@ func adminServe() error {
 			return fmt.Errorf("PIBASE_DASHBOARD_URL must look like https://dashboard.example.com")
 		}
 	}
+	// Fail at start, not on the first import or backup, when the data folders
+	// belong to another user.
+	for _, dir := range []struct{ name, env, fallback string }{{"storage root", "PIBASE_STORAGE_ROOT", "/data/files"}, {"backup root", "PIBASE_BACKUP_ROOT", "/data/backups"}} {
+		path := os.Getenv(dir.env)
+		if path == "" {
+			path = dir.fallback
+		}
+		if err := config.WritableDir(dir.name, path); err != nil {
+			return err
+		}
+	}
 	s, err := adminserver.New(adminserver.Config{AdminURL: adminURL, DatabaseURL: databaseURL, StorageRoot: os.Getenv("PIBASE_STORAGE_ROOT"), BackupRoot: os.Getenv("PIBASE_BACKUP_ROOT"), Token: token, MasterKey: master, BackupKey: backupKey, Env: os.Getenv("PIBASE_ADMIN_ENV"), PublicURL: os.Getenv("PIBASE_PUBLIC_URL"), MaxProjectsPerAccount: maxProjects, TrustedProxies: trusted, SendMail: sendMail, DashboardURL: dashboardURL})
 	if err != nil {
 		return err
