@@ -35,7 +35,7 @@ never persisted by the page. By default it answers only on the Pi itself, so the
 address will not load it. Two ways to reach it from another machine:
 
 - Tailscale: add `PIBASE_ADMIN_BIND=<Pi Tailscale IP>` to `.env` (find the IP
-  with `tailscale ip -4`), run `docker compose up -d admin`, then open
+  with `tailscale ip -4`), run `docker compose -f compose.yaml -f compose.pi.yaml up -d admin`, then open
   `http://<Pi Tailscale IP>:18081/`. Only devices on your tailnet can
   connect, and every action still needs a login or the operator token.
 - SSH tunnel, no configuration change: `ssh -L 18081:127.0.0.1:18081 pi@PI_HOST`,

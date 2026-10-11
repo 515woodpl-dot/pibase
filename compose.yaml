@@ -81,6 +81,8 @@ services:
       PIBASE_SMTP_PASS: ${PIBASE_SMTP_PASS:-}
       PIBASE_SMTP_FROM: ${PIBASE_SMTP_FROM:-}
       PIBASE_SITE_URL: ${PIBASE_SITE_URL:-}
+      # Base of the links in those emails when PIBASE_SITE_URL is empty.
+      PIBASE_PUBLIC_URL: ${PIBASE_PUBLIC_URL:-}
     depends_on:
       bootstrap:
         condition: service_completed_successfully

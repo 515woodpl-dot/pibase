@@ -7,8 +7,13 @@ if [ "$#" -ne 1 ]; then
 fi
 cd "$(dirname "$0")/.."
 ./scripts/init-env.sh
-docker compose run --rm \
-  -e PIBASE_ADMIN_DATABASE_URL="postgres://postgres:${POSTGRES_PASSWORD:-$(sed -n 's/^POSTGRES_PASSWORD=//p' .env)}@postgres:5432/postgres" \
-  -e PIBASE_MASTER_KEY="${PIBASE_MASTER_KEY:-$(sed -n 's/^PIBASE_MASTER_KEY=//p' .env)}" \
-  gateway project-create "$1"
-
+# A Pi or droplet runs the server layout (compose.pi.yaml). Without it,
+# Compose would swap the running database for the development volume.
+if [ -z "${COMPOSE_FILE:-}" ] && ! grep -q '^COMPOSE_FILE=' .env; then
+  root="$(sed -n 's/^PIBASE_DATA_ROOT=//p' .env | tail -1)"
+  if [ -d "${root:-/srv/pibase}/postgres" ]; then
+    export COMPOSE_FILE=compose.yaml:compose.pi.yaml
+  fi
+fi
+# The ops tool already has the admin database URL and master key.
+docker compose --profile tools run --rm -T ops project-create "$1"

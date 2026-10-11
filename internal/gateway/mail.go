@@ -24,6 +24,11 @@ func smtpFromEnv() smtpConfig {
 		port = 587
 	}
 	siteURL := strings.TrimRight(os.Getenv("PIBASE_SITE_URL"), "/")
+	if siteURL == "" {
+		// The droplet setup and pi-funnel.sh record the gateway's public
+		// address here; without either, email links would have no host.
+		siteURL = strings.TrimRight(os.Getenv("PIBASE_PUBLIC_URL"), "/")
+	}
 	return smtpConfig{
 		host:    os.Getenv("PIBASE_SMTP_HOST"),
 		port:    port,
