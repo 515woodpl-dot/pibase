@@ -22,7 +22,7 @@ root="$(env_value PIBASE_DATA_ROOT)"; root="${root:-/srv/pibase}"
 ops() { docker compose --profile tools run --rm --no-deps -T ops "$@"; }
 # Keep only the JSON (anything Compose prints before it is ignored).
 # project-list prints indented JSON; take each project's "id" (no jq needed).
-ids="$(ops project-list | grep -o '"id": *"[0-9a-f]\{8\}"' | grep -o '[0-9a-f]\{8\}')"
+ids="$(ops project-list | grep -o '"id": *"[0-9a-f]\{8\}"' | grep -o '[0-9a-f]\{8\}' || true)"
 failed=0
 for id in $ids; do
   if ops backup "$id" /data/backups >/dev/null; then
