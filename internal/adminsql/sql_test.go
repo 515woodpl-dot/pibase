@@ -48,7 +48,7 @@ func TestOwnerSQLMatchesKeywordsNotIdentifierSubstrings(t *testing.T) {
 			t.Fatalf("rejected %q: %v", statement, err)
 		}
 	}
-	for _, statement := range []string{`GRANT SELECT ON public.programs TO PUBLIC`, `SET ROLE postgres`, `SET LOCAL ROLE x`, `SET SESSION ROLE x`, `SET session_authorization='x'`, `SET "role"='x'`, `SELECT set_config('role','x',false)`, `RESET ALL`} {
+	for _, statement := range []string{`GRANT p_x_admin TO PUBLIC`, `SET ROLE postgres`, `SET LOCAL ROLE x`, `SET SESSION ROLE x`, `SET session_authorization='x'`, `SET "role"='x'`, `SELECT set_config('role','x',false)`, `RESET ALL`} {
 		if err := validateOwnerSQL(statement); err == nil {
 			t.Fatalf("accepted %q", statement)
 		}
@@ -79,9 +79,21 @@ func TestSQLFilterComprehensive(t *testing.T) {
 		`RESET session authorization`,
 		// RESET ALL
 		`RESET ALL`,
-		// GRANT / REVOKE / COPY as keywords
-		`GRANT SELECT ON public.t TO PUBLIC`,
-		`REVOKE ALL ON public.t FROM PUBLIC`,
+		// GRANT / REVOKE of role membership, COPY as keywords
+		`GRANT postgres TO anon`,
+		`GRANT p_x_admin TO p_x_anon WITH ADMIN OPTION`,
+		`REVOKE p_x_anon FROM authenticator`,
+		`grant select on t to anon; grant postgres to anon`,
+		// Transaction control would end SET LOCAL ROLE.
+		`COMMIT`,
+		`select 1; commit; select current_user`,
+		`end; reset role`,
+		`ROLLBACK`,
+		`abort`,
+		`BEGIN`,
+		`start transaction`,
+		`savepoint s`,
+		`PREPARE TRANSACTION 'x'`,
 		`COPY public.t TO STDOUT`,
 		`COPY public.t FROM PROGRAM 'cat /etc/passwd'`,
 		// set_config as keyword
@@ -162,8 +174,9 @@ func TestSQLFilterReviewBypasses(t *testing.T) {
 		`SET U&"\0072ole" TO x`,
 		`SELECT U&"d\0061t\+000061" FROM t`,
 		`DO $x$ BEGIN EXECUTE 'RESET ROLE'; END $x$`,
-		`do 'begin null; end'`,
-		`DO LANGUAGE plpgsql $$ BEGIN NULL; END $$`,
+		`do 'begin perform set_config(''role'',''x'',true); end'`,
+		`DO LANGUAGE plpgsql $$ BEGIN SET ROLE postgres; END $$`,
+		`DO $$ BEGIN GRANT postgres TO anon; END $$`,
 		`UPDATE pg_settings SET setting='x' WHERE name='role'`,
 		`update pg_catalog."pg_settings" set setting='x' where name='role'`,
 		`CREATE GROUP g`,
@@ -179,10 +192,12 @@ func TestSQLFilterReviewBypasses(t *testing.T) {
 		`CREATE FUNCTION f() RETURNS void LANGUAGE plpgsql AS $$ BEGIN EXECUTE 'RESET ROLE'; END $$`,
 		`CREATE FUNCTION f() RETURNS void LANGUAGE plpgsql AS $$ BEGIN EXECUTE format('%s','x'); END $$`,
 		`CREATE FUNCTION f() RETURNS text LANGUAGE sql AS 'select set_config(''role'',''x'',true)'`,
-		`CREATE OR REPLACE PROCEDURE p() LANGUAGE sql AS $b$ GRANT SELECT ON t TO PUBLIC $b$`,
+		`CREATE OR REPLACE PROCEDURE p() LANGUAGE sql AS $b$ GRANT p_x_admin TO PUBLIC $b$`,
 		`CREATE FUNCTION f() RETURNS void LANGUAGE plpgsql AS $$ BEGIN RESET ROLE; END $$`,
 		`CREATE FUNCTION f() RETURNS void LANGUAGE sql SET role = x AS 'select 1'`,
 		`ALTER FUNCTION f() SET role TO x`,
+		`SELECT atomic; END;`,
+		`CREATE FUNCTION f() RETURNS int LANGUAGE sql BEGIN ATOMIC SELECT 1; END;`,
 	}
 	for _, stmt := range blocked {
 		if err := validateOwnerSQL(stmt); err == nil {
@@ -200,6 +215,18 @@ func TestSQLFilterReviewBypasses(t *testing.T) {
 		`CREATE FUNCTION touch() RETURNS trigger LANGUAGE plpgsql AS $$ BEGIN NEW.updated_at := now(); RETURN NEW; END $$`,
 		`DROP FUNCTION add(int, int)`,
 		`SELECT "do" FROM t`,
+		// Supabase SQL editor scripts.
+		`GRANT SELECT ON public.t TO PUBLIC`,
+		`grant select, insert on todos to anon, authenticated`,
+		`REVOKE ALL ON public.t FROM anon`,
+		`grant usage, select on all sequences in schema public to authenticated`,
+		`grant execute on function add(int, int) to anon`,
+		`alter default privileges in schema public grant select on tables to anon`,
+		`do 'begin null; end'`,
+		`DO LANGUAGE plpgsql $$ BEGIN NULL; END $$`,
+		`do $$ begin if not exists (select 1 from pg_policies where policyname='p') then create policy p on t for select to anon using (true); end if; end $$`,
+		"create table a(id int);\ninsert into a values (1);\nselect * from a;",
+		`select case when true then 1 end; select 2`,
 	}
 	for _, stmt := range allowed {
 		if err := validateOwnerSQL(stmt); err != nil {
@@ -229,6 +256,22 @@ func TestSQLFilterSecondReview(t *testing.T) {
 	for _, stmt := range allowed {
 		if err := validateOwnerSQL(stmt); err != nil {
 			t.Errorf("should allow: %s — got: %v", stmt, err)
+		}
+	}
+}
+
+func TestAliasAPIRolesNamesProjectRoles(t *testing.T) {
+	roles := map[string]string{"anon": "p_x_anon", "authenticated": "p_x_authenticated", "service_role": "p_x_service_role"}
+	for in, want := range map[string]string{
+		`revoke delete on todos from anon`:                                            `revoke delete on todos from anon, "p_x_anon"`,
+		`GRANT select ON t TO anon, Authenticated WITH GRANT OPTION`:                  `GRANT select ON t TO anon, "p_x_anon", Authenticated, "p_x_authenticated" WITH GRANT OPTION`,
+		"create table anon(id int);\ngrant all on anon to service_role;":              "create table anon(id int);\ngrant all on anon to service_role, \"p_x_service_role\";",
+		`alter default privileges in schema public revoke insert on tables from anon`: `alter default privileges in schema public revoke insert on tables from anon, "p_x_anon"`,
+		`select 'grant x to anon', anon from t`:                                       `select 'grant x to anon', anon from t`,
+		`create policy p on t for select to anon using (true)`:                        `create policy p on t for select to anon using (true)`,
+	} {
+		if got := aliasAPIRoles(in, roles); got != want {
+			t.Errorf("aliasAPIRoles(%q)\n got  %q\n want %q", in, got, want)
 		}
 	}
 }

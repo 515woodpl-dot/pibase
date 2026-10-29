@@ -154,7 +154,53 @@ func TestOperatorDashboardEndpoints(t *testing.T) {
 			t.Fatal("VerifyPassword accepts wrong password")
 		}
 	}
-	call(http.MethodGet, project+"/users", "", http.StatusOK)
+	// Users page edits, like Supabase's admin updateUserById.
+	// A metadata-only role change must end already-issued JWT sessions.
+	{
+		dbURL, _ := url.Parse(adminURL)
+		dbURL.Path = "/" + fields["database"].(string)
+		conn, err := pgx.Connect(ctx, dbURL.String())
+		if err != nil {
+			t.Fatal(err)
+		}
+		defer conn.Close(ctx)
+		tokenID, err := newUUID()
+		if err != nil {
+			t.Fatal(err)
+		}
+		if _, err := conn.Exec(ctx, `INSERT INTO auth.refresh_tokens(id,user_id,token_hash,expires_at) VALUES($1,$2,$3,now()+interval '1 day')`, tokenID, user["id"], []byte("dashboard-role-change-test")); err != nil {
+			t.Fatal(err)
+		}
+		call(http.MethodPatch, project+"/users/"+user["id"], `{"app_metadata":{"role":"viewer"}}`, http.StatusOK)
+		var revoked bool
+		if err := conn.QueryRow(ctx, `SELECT revoked_at IS NOT NULL FROM auth.refresh_tokens WHERE id=$1`, tokenID).Scan(&revoked); err != nil || !revoked {
+			t.Fatalf("metadata-only role change left a session active: revoked=%v error=%v", revoked, err)
+		}
+	}
+	call(http.MethodPatch, project+"/users/"+user["id"], `{"password":"another long password","banned":true,"app_metadata":{"role":"editor"},"user_metadata":{"full_name":"M7b"}}`, http.StatusOK)
+	call(http.MethodPatch, project+"/users/00000000-0000-4000-8000-000000000000", `{"banned":true}`, http.StatusNotFound)
+	call(http.MethodPatch, project+"/users/"+user["id"], `{"password":"short"}`, http.StatusBadRequest)
+	call(http.MethodPost, project+"/users", `{"username":"Deacon_Joe","password":"a sufficiently long password","app_metadata":{"role":"member"}}`, http.StatusCreated)
+	var listed []map[string]any
+	if err := json.Unmarshal(call(http.MethodGet, project+"/users", "", http.StatusOK), &listed); err != nil {
+		t.Fatal(err)
+	}
+	seen := map[string]map[string]any{}
+	for _, u := range listed {
+		key, _ := u["email"].(string)
+		if key == "" {
+			key, _ = u["username"].(string)
+		}
+		seen[key] = u
+	}
+	edited, deacon := seen["m7b@example.test"], seen["deacon_joe"]
+	if edited == nil || edited["banned_until"] == nil || edited["app_metadata"].(map[string]any)["role"] != "editor" || edited["user_metadata"].(map[string]any)["full_name"] != "M7b" {
+		t.Fatalf("edited user = %v", edited)
+	}
+	if deacon == nil || deacon["email"] != nil || deacon["app_metadata"].(map[string]any)["role"] != "member" {
+		t.Fatalf("username-only user = %v", deacon)
+	}
+	call(http.MethodPatch, project+"/users/"+user["id"], `{"banned":false}`, http.StatusOK)
 	call(http.MethodDelete, project+"/users/"+user["id"], `{"confirm":"wrong"}`, http.StatusBadRequest)
 	call(http.MethodDelete, project+"/users/"+user["id"], `{"confirm":"`+user["id"]+`"}`, http.StatusNoContent)
 	applied, _ := json.Marshal(map[string]string{"sql": `SELECT name FROM public.pibase_migrations`})

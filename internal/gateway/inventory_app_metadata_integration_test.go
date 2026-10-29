@@ -36,4 +36,15 @@ func TestServerOnlyAppMetadata(t *testing.T) {
 	if claims["app_metadata"].(map[string]any)["role"] != "office" {
 		t.Fatalf("JWT app metadata: %s", payload)
 	}
+	// Demoting a role must invalidate a JWT that still says "office".
+	requestAuthJSON(t, e.h.Client(), http.MethodPut, e.h.URL+"/auth/v1/admin/users/"+id,
+		e.p.ServiceKey, `{"app_metadata":{"role":"viewer"}}`, 200)
+	requestAuthJSONBearer(t, e.h.Client(), http.MethodGet, e.h.URL+"/auth/v1/user", e.p.AnonKey,
+		tokens.Access, "", http.StatusUnauthorized)
+	fresh := e.login("app-meta@example.test")
+	user = requestAuthJSONBearer(t, e.h.Client(), http.MethodGet, e.h.URL+"/auth/v1/user", e.p.AnonKey,
+		fresh.Access, "", 200)
+	if !strings.Contains(string(user), `"role":"viewer"`) {
+		t.Fatalf("new session did not receive updated role: %s", user)
+	}
 }

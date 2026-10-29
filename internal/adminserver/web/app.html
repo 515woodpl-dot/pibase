@@ -20,6 +20,9 @@ button:disabled{color:#a3acbd;cursor:default;background:#f4f6fa}
 input,textarea{width:100%;border:1px solid #cbd6e7;border-radius:10px;padding:9px 11px;background:#fff}
 input:focus,textarea:focus{border-color:var(--accent)}
 textarea{min-height:150px;font-family:ui-monospace,SFMono-Regular,Menlo,monospace;font-size:13px}
+select{font:inherit;color:inherit;width:100%;border:1px solid #cbd6e7;border-radius:10px;padding:9px 11px;background:#fff;margin-bottom:8px}
+input[type=checkbox]{width:auto;transform:scale(1.3);margin:6px 4px}
+textarea[rows="2"]{min-height:64px}
 .hidden{display:none!important}
 .muted{color:var(--muted)}
 .danger-text{color:var(--danger)}
@@ -171,6 +174,7 @@ function plural(n,word){return n+' '+word+(n===1?'':'s')}
 function apiHeaders(){return account?{'Content-Type':'application/json'}:{Authorization:'Bearer '+q('opToken').value,'Content-Type':'application/json'}}
 async function api(path,opt={}){opt.headers=apiHeaders();const r=await fetch(path,opt),t=await r.text();if(r.status===401&&account){location.replace('/');throw Error('Signed out')}if(!r.ok)throw Error(t.trim()||r.status);return t?JSON.parse(t):null}
 function body(v,method='POST'){return{method,body:JSON.stringify(v)}}
+function envBlock(x,url,k){return ['# PIBASE project: '+(x.name||x.id),'SUPABASE_URL='+url,'SUPABASE_ANON_KEY='+k.anon_key,'NEXT_PUBLIC_SUPABASE_URL='+url,'NEXT_PUBLIC_SUPABASE_ANON_KEY='+k.anon_key,'VITE_SUPABASE_URL='+url,'VITE_SUPABASE_ANON_KEY='+k.anon_key,'# Server only: skips Row Level Security. Never put it in browser code.','SUPABASE_SERVICE_ROLE_KEY='+k.service_key,''].join('\n')}
 function projectPath(){return '/_pibase/projects/'+encodeURIComponent(selected.id)}
 function apiBase(x){return (x&&x.api_url)||(location.protocol+'//'+location.hostname+':18080')}
 async function copyText(value,status){try{if(navigator.clipboard&&window.isSecureContext){await navigator.clipboard.writeText(value)}else{const t=document.createElement('textarea');t.value=value;document.body.append(t);t.select();document.execCommand('copy');t.remove()}status.textContent='Copied'}catch(e){status.textContent='Copy failed: '+e.message}}
@@ -359,7 +363,10 @@ async function openKeys(message){
     if(message)p.append(note(message));
     p.append(group('Project address','Where your app sends its requests. Use it as the URL in supabase-js or any HTTP client.',copyField('API URL',url)));
     if(!x.api_url)p.lastChild.append(note('This address is guessed from the page you are on. Set it under Settings, API address.'));
-    if(k.anon_key){p.append(group('Keys','Send a key in the apikey header of every request.',copyField('anon · public',k.anon_key,'Safe in a browser or mobile app as long as your tables use Row Level Security.'),secretField('service_role · secret',k.service_key,'Skips Row Level Security. Use it only on a server you control, never in an app or web page.')))}
+    if(k.anon_key){p.append(group('Keys','Send a key in the apikey header of every request.',copyField('anon · public',k.anon_key,'Safe in a browser or mobile app as long as your tables use Row Level Security.'),secretField('service_role · secret',k.service_key,'Skips Row Level Security. Use it only on a server you control, never in an app or web page.')))
+      const env=envBlock(x,url,k);const ta=el('textarea');ta.value=env;ta.readOnly=true;ta.rows=env.split('\n').length;ta.setAttribute('aria-label','.env file');const st=el('span',null,'muted');
+      p.append(group('Environment variables (.env)','Paste into your app\'s .env file. pibase speaks the Supabase API, so these names work with @supabase/supabase-js as they are: plain Node, Next.js (NEXT_PUBLIC_) and Vite (VITE_). Keep the service_role line out of anything shipped to a browser.',ta,el('div',null,'actions'),st));
+      p.lastChild.querySelector('.actions').append(button('Copy .env',()=>copyText(env,st),'primary'))}
     else{p.append(group('Keys','These keys were created before pibase kept a copy, so they cannot be shown. Rotate the keys once to get keys you can view here at any time.'))}
     p.append(group('JWT secret','The secret that signs the keys above and your app users\' access tokens (HS256). It is base64: decode it to bytes before verifying tokens on your own server. Rotating keys replaces it and signs every user out.',secretField('JWT secret',k.jwt_secret)));
     p.append(group('Paths','What each part of the API is called.',el('p','Data: /rest/v1/<table>   ·   Functions: /rest/v1/rpc/<name>   ·   Sign-in: /auth/v1   ·   Storage: /storage/v1   ·   Realtime: /realtime/v1/websocket','muted'),copyField('Try it',"curl '"+url+"/rest/v1/YOUR_TABLE?select=*' -H 'apikey: "+(k.anon_key||'YOUR_ANON_KEY')+"'")));
@@ -398,22 +405,64 @@ async function openRows(t,offset=0){
   }catch(e){p.replaceChildren(...h,el('p',e.message))}
 }
 async function openUsers(){
-  clearFrom(2);const intro='The people who sign in to your app. They live in this project\'s database and are separate from your dashboard account.';
-  const p=pane('Users',intro);const h=head(p);p.append(el('p','Loading…'));add(p);
+  clearFrom(2);const intro='The people who sign in to your app, like Supabase Auth users. They live in this project\'s database and are separate from your dashboard account. Your app reads the role from user.app_metadata.role, and policies can use auth.jwt()->\'app_metadata\'->>\'role\'.';
+  const p=pane('Users',intro);p.classList.add('wide');const h=head(p);p.append(el('p','Loading…'));add(p);
+  const userPath=u=>projectPath()+'/users/'+encodeURIComponent(u.id);
+  const parseJSON=(t,what)=>{if(!t.trim())return undefined;try{const v=JSON.parse(t);if(v&&typeof v==='object'&&!Array.isArray(v))return v}catch(e){}throw Error(what+' must be a JSON object, for example {"full_name":"Ann"}')};
   try{
     const users=await api(projectPath()+'/users');p.replaceChildren(...h);
-    const email=input('email','name@example.com'),pass=input('password','');const status=note('');
-    p.append(group('Add a user','Creates a user who can sign in to your app straight away, without an email confirmation.',field('Email',email),field('Password',pass,'At least 8 characters.'),button('Create user',async()=>{try{await api(projectPath()+'/users',body({email:email.value,password:pass.value,email_confirm:true}));openUsers()}catch(e){status.textContent=e.message}},'primary'),status));
+    const email=input('email','name@example.com'),username=input('text','optional, for example jsmith'),pass=input('password',''),role=input('text','for example admin, editor, member'),meta=el('textarea'),confirm=input('checkbox');confirm.checked=true;meta.placeholder='{"full_name":"Ann Smith"}';meta.rows=2;const status=note('');
+    p.append(group('Add a user','Creates a user who can sign in to your app with supabase.auth.signInWithPassword. Give an email, a username or both.',field('Email',email),field('Username',username,'Lets the user sign in with a name instead of an email.'),field('Password',pass,'8 to 72 characters.'),field('App role',role,'Saved as app_metadata.role. Only you and server code with the service key can change it, so it is safe to use in policies.'),field('User metadata (JSON)',meta,'Optional. Saved as user_metadata; the user can change it.'),field('Email already confirmed',confirm,'Untick to make the user confirm by email first.'),button('Create user',async()=>{try{const v={email:email.value,username:username.value,password:pass.value,email_confirm:confirm.checked,user_metadata:parseJSON(meta.value,'User metadata')};if(role.value.trim())v.app_metadata={role:role.value.trim()};await api(projectPath()+'/users',body(v));openUsers()}catch(e){status.textContent=e.message}},'primary'),status));
     if(!users.length)p.append(note('No users yet. Add the first one above, or let people sign up from your app.'));
-    for(const u of users){const c=input('text','');const g=group(u.email,null,el('p','ID: '+u.id+' · Created '+new Date(u.created_at).toLocaleString()+' · Email confirmed: '+(u.email_confirmed_at?'yes':'no'),'muted'),field('Type the user ID to delete this user',c),button('Delete user',async()=>{try{await api(projectPath()+'/users/'+encodeURIComponent(u.id),body({confirm:c.value},'DELETE'));openUsers()}catch(e){say(e.message)}},'danger'));p.append(g)}
+    for(const u of users){
+      const app=u.app_metadata||{},banned=u.banned_until&&new Date(u.banned_until)>new Date();const st=note('');
+      const done=m=>async()=>{st.textContent='';try{await m();openUsers()}catch(e){st.textContent=e.message}};
+      const np=input('password','new password'),r=input('text','role',app.role||''),um=el('textarea');um.rows=2;um.value=JSON.stringify(u.user_metadata||{});const c=input('text','');
+      const info=[u.username?'Username: '+u.username:null,'ID: '+u.id,'Created '+new Date(u.created_at).toLocaleString(),u.email?'Email confirmed: '+(u.email_confirmed_at?'yes':'no'):null,'Role: '+(app.role||'none'),banned?'BANNED':null].filter(Boolean).join(' · ');
+      const g=group(u.email||u.username,null,el('p',info,'muted'),
+        field('New password',np,null,button('Set password',done(()=>api(userPath(u),body({password:np.value},'PATCH'))))),
+        field('App role',r,null,button('Save role',done(()=>api(userPath(u),body({app_metadata:Object.assign({},app,{role:r.value.trim()||undefined})},'PATCH'))))),
+        field('User metadata (JSON)',um));
+      const acts=el('div',null,'actions');
+      acts.append(button('Save metadata',done(()=>api(userPath(u),body({user_metadata:parseJSON(um.value,'User metadata')||{}},'PATCH')))));
+      acts.append(button(banned?'Unban user':'Ban user',done(()=>api(userPath(u),body({banned:!banned},'PATCH')))));
+      if(u.email&&!u.email_confirmed_at)acts.append(button('Confirm email',done(()=>api(userPath(u),body({email_confirm:true},'PATCH')))));
+      g.append(acts,field('Type the user ID to delete this user',c),button('Delete user',done(()=>api(userPath(u),body({confirm:c.value},'DELETE'))),'danger'),st);p.append(g)}
   }catch(e){p.replaceChildren(...h,el('p',e.message))}
 }
+const SQL_TEMPLATES={
+'Table anyone can read':`create table notes (
+  id bigint generated always as identity primary key,
+  title text not null,
+  created_at timestamptz not null default now()
+);
+-- Row level security is switched on automatically; this policy opens reads.
+create policy "anyone can read" on notes for select to anon, authenticated using (true);
+insert into notes (title) values ('Hello');
+select * from notes;`,
+'Rows owned by each user':`create table todos (
+  id bigint generated always as identity primary key,
+  user_id uuid not null default auth.uid() references auth.users(id) on delete cascade,
+  task text not null,
+  done boolean not null default false
+);
+create policy "own todos" on todos for all to authenticated
+  using (user_id = auth.uid()) with check (user_id = auth.uid());`,
+'Admins by app role':`-- Users whose app role (Users page) is admin may change everything.
+create policy "admins manage" on notes for all to authenticated
+  using ((auth.jwt()->'app_metadata'->>'role') = 'admin')
+  with check ((auth.jwt()->'app_metadata'->>'role') = 'admin');`,
+'List tables and policies':`select c.relname as table, c.relrowsecurity as rls, p.policyname, p.roles, p.cmd
+from pg_class c join pg_namespace n on n.oid = c.relnamespace
+left join pg_policies p on p.schemaname = n.nspname and p.tablename = c.relname
+where n.nspname = 'public' and c.relkind = 'r' order by 1, 3;`};
 function openSQL(){
-  clearFrom(2);const p=pane('SQL','Run one SQL statement directly against this project\'s Postgres database, for example create table or select. The result appears below. Changes are permanent; for changes you want to repeat or track, use Migrations.');p.classList.add('wide');
-  const a=el('textarea');a.placeholder='select * from my_table limit 10';a.setAttribute('aria-label','SQL statement');const out=el('div');
-  const run=async()=>{try{const r=await api(projectPath()+'/sql',body({sql:a.value}));const n=(r.rows||[]).length;out.replaceChildren(el('p',r.command||plural(n,'row')));if(r.columns&&r.columns.length)out.append(dataTable(r.columns,r.rows||[]))}catch(e){out.replaceChildren(el('pre',e.message))}};
+  clearFrom(2);const p=pane('SQL','Run SQL against this project\'s Postgres database, as in the Supabase SQL editor: create and change tables, policies, functions and grants, or query data. A script may hold many statements; it runs as one transaction, so if one fails nothing is changed. For changes you want to track or repeat on another project, use Migrations.');p.classList.add('wide');
+  const a=el('textarea');a.rows=12;a.placeholder='select * from my_table limit 10';a.setAttribute('aria-label','SQL statement');const out=el('div');
+  const pick_=el('select');pick_.append(el('option','Start from a template…'));for(const k in SQL_TEMPLATES)pick_.append(el('option',k));pick_.onchange=()=>{if(SQL_TEMPLATES[pick_.value])a.value=SQL_TEMPLATES[pick_.value];pick_.selectedIndex=0;a.focus()};pick_.setAttribute('aria-label','SQL templates');
+  const run=async()=>{out.replaceChildren(el('p','Running…'));try{const r=await api(projectPath()+'/sql',body({sql:a.value}));const n=(r.rows||[]).length;out.replaceChildren();if(r.results&&r.results.length>1)out.append(el('p',r.results.length+' statements: '+r.results.map(x=>x.command).join(' · '),'muted'));out.append(el('p',r.columns&&r.columns.length?plural(n,'row'):(r.command||'Done')));if(r.columns&&r.columns.length)out.append(dataTable(r.columns,r.rows||[]))}catch(e){out.replaceChildren(el('pre',e.message))}};
   a.addEventListener('keydown',e=>{if(e.key==='Enter'&&(e.ctrlKey||e.metaKey)){e.preventDefault();run()}});
-  p.append(group('Statement','One statement at a time. Press Ctrl+Enter (or Cmd+Enter) to run it.',a,button('Run SQL',run,'primary'),out));add(p)
+  p.append(group('Script','Press Ctrl+Enter (or Cmd+Enter) to run. Roles: anon (your public key), authenticated (signed-in users), service_role (server key). Up to 1,000 rows are shown.',pick_,a,button('Run SQL',run,'primary'),out));add(p)
 }
 async function openMigrations(note_){
   clearFrom(2);const intro='A migration is a named, one-time change to your database structure, such as creating a table. pibase remembers which ones have run so each is applied only once, and lists them below.';

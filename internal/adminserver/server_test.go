@@ -20,6 +20,24 @@ func TestEveryAdminEndpointRejectsMissingToken(t *testing.T) {
 	}
 }
 
+func TestUserEditLimitIsPerAccount(t *testing.T) {
+	s := &Server{userEditLimit: newRateLimiter()}
+	for i := 0; i < 21; i++ {
+		r := httptest.NewRequest(http.MethodPatch, "/_pibase/projects/p/users/u", nil)
+		r = r.WithContext(withIdentity(r.Context(), identity{kind: accountKind, accountID: "owner-a"}))
+		w := httptest.NewRecorder()
+		allowed := s.allowUserEdit(w, r)
+		if allowed != (i < 20) || (i == 20 && w.Code != http.StatusTooManyRequests) {
+			t.Fatalf("attempt %d: allowed=%v status=%d", i+1, allowed, w.Code)
+		}
+	}
+	r := httptest.NewRequest(http.MethodPatch, "/_pibase/projects/p/users/u", nil)
+	r = r.WithContext(withIdentity(r.Context(), identity{kind: accountKind, accountID: "owner-b"}))
+	if !s.allowUserEdit(httptest.NewRecorder(), r) {
+		t.Fatal("one account exhausted another account's user-edit budget")
+	}
+}
+
 func TestPagesLoadWithoutTokenAndHoldNoSecrets(t *testing.T) {
 	s := &Server{Config: Config{Token: "operator-secret-token"}}
 	for _, path := range []string{"/", "/app", "/dashboard"} {

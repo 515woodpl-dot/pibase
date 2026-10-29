@@ -18,6 +18,7 @@ import (
 	"net/url"
 	"os"
 	"path/filepath"
+	"regexp"
 	"strings"
 	"sync"
 	"time"
@@ -60,6 +61,7 @@ type Server struct {
 	passwordLimit *rateLimiter
 	loginFailures *rateLimiter
 	recoverLimit  *rateLimiter
+	userEditLimit *rateLimiter
 	// accountProjectsMu serialises account-owned project creation and account
 	// deletion so the per-account cap cannot be raced and a delete cannot
 	// leave behind a project created while it ran.
@@ -79,7 +81,7 @@ func New(c Config) (*Server, error) {
 	if c.MaxProjectsPerAccount <= 0 {
 		c.MaxProjectsPerAccount = 2
 	}
-	return &Server{Config: c, loginLimit: newRateLimiter(), signupLimit: newRateLimiter(), passwordLimit: newRateLimiter(), loginFailures: newRateLimiter(), recoverLimit: newRateLimiter()}, nil
+	return &Server{Config: c, loginLimit: newRateLimiter(), signupLimit: newRateLimiter(), passwordLimit: newRateLimiter(), loginFailures: newRateLimiter(), recoverLimit: newRateLimiter(), userEditLimit: newRateLimiter()}, nil
 }
 
 // identityKind distinguishes operator-token auth from account-session auth.
@@ -133,6 +135,7 @@ func (s *Server) Handler() http.Handler {
 	mux.HandleFunc("POST /_pibase/projects/{id}/export", s.exportProject)
 	mux.HandleFunc("POST /_pibase/projects/import", s.importProject)
 	mux.HandleFunc("POST /_pibase/projects/{id}/users", s.createUser)
+	mux.HandleFunc("PATCH /_pibase/projects/{id}/users/{user}", s.updateUser)
 	mux.HandleFunc("DELETE /_pibase/projects/{id}/users/{user}", s.deleteUser)
 	// Auth endpoints — no token required.
 	mux.HandleFunc("POST /_pibase/auth/signup", s.authSignup)
@@ -214,6 +217,28 @@ func (s *Server) checkOwner(w http.ResponseWriter, r *http.Request, projectID st
 		http.Error(w, "forbidden", http.StatusForbidden)
 	}
 	return false
+}
+
+// allowUserEdit bounds password hashing and bulk account changes per dashboard
+// identity. Operators share one budget because their bearer token is shared.
+func (s *Server) allowUserEdit(w http.ResponseWriter, r *http.Request) bool {
+	if s.Env == "test" {
+		return true
+	}
+	id, ok := getIdentity(r.Context())
+	if !ok {
+		http.Error(w, "authentication required", http.StatusUnauthorized)
+		return false
+	}
+	key := "operator"
+	if id.kind == accountKind {
+		key = "account:" + id.accountID
+	}
+	if !s.userEditLimit.Allow(key, 20, time.Minute) {
+		http.Error(w, "too many user changes; try again shortly", http.StatusTooManyRequests)
+		return false
+	}
+	return true
 }
 
 // sessionCookieValue extracts the pibase_session cookie value, or "".
@@ -538,7 +563,7 @@ func (s *Server) users(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	defer c.Close(r.Context())
-	rows, err := c.Query(r.Context(), `SELECT id,email,email_confirmed_at,banned_until,created_at FROM auth.users ORDER BY created_at`)
+	rows, err := c.Query(r.Context(), `SELECT id,email,username,email_confirmed_at,banned_until,created_at,raw_user_meta_data,raw_app_meta_data FROM auth.users ORDER BY created_at`)
 	if err != nil {
 		fail(w, err)
 		return
@@ -546,14 +571,16 @@ func (s *Server) users(w http.ResponseWriter, r *http.Request) {
 	defer rows.Close()
 	out := make([]map[string]any, 0)
 	for rows.Next() {
-		var id, email string
+		var id string
+		var email, username *string
 		var confirmed, banned *time.Time
 		var created time.Time
-		if err := rows.Scan(&id, &email, &confirmed, &banned, &created); err != nil {
+		var userMeta, appMeta map[string]any
+		if err := rows.Scan(&id, &email, &username, &confirmed, &banned, &created, &userMeta, &appMeta); err != nil {
 			fail(w, err)
 			return
 		}
-		out = append(out, map[string]any{"id": id, "email": email, "email_confirmed_at": confirmed, "banned_until": banned, "created_at": created})
+		out = append(out, map[string]any{"id": id, "email": email, "username": username, "email_confirmed_at": confirmed, "banned_until": banned, "created_at": created, "user_metadata": userMeta, "app_metadata": appMeta})
 	}
 	if err := rows.Err(); err != nil {
 		fail(w, err)
@@ -561,22 +588,65 @@ func (s *Server) users(w http.ResponseWriter, r *http.Request) {
 	}
 	writeJSON(w, 200, out)
 }
+
+// usernamePattern matches the gateway's username sign-in rule.
+var usernamePattern = regexp.MustCompile(`^[a-z0-9][a-z0-9_.-]{2,63}$`)
+
+// userFields is the Users page form, shaped like Supabase's admin user API.
+type userFields struct {
+	Email        *string        `json:"email"`
+	Username     *string        `json:"username"`
+	Password     string         `json:"password"`
+	EmailConfirm *bool          `json:"email_confirm"`
+	Banned       *bool          `json:"banned"`
+	UserMetadata map[string]any `json:"user_metadata"`
+	AppMetadata  map[string]any `json:"app_metadata"`
+}
+
+func (b *userFields) normalize() error {
+	if b.Email != nil {
+		v := strings.ToLower(strings.TrimSpace(*b.Email))
+		b.Email = &v
+	}
+	if b.Username != nil {
+		v := strings.ToLower(strings.TrimSpace(*b.Username))
+		if v != "" && !usernamePattern.MatchString(v) {
+			return fmt.Errorf("username must be 3-64 characters using letters, digits, dot, underscore or hyphen")
+		}
+		b.Username = &v
+	}
+	if b.Password != "" && (len(b.Password) < 8 || len(b.Password) > 72) {
+		return fmt.Errorf("password must be 8 to 72 characters")
+	}
+	return nil
+}
+
+// nullIfEmpty stores an empty email or username as NULL.
+func nullIfEmpty(v *string) any {
+	if v == nil || *v == "" {
+		return nil
+	}
+	return *v
+}
+
 func (s *Server) createUser(w http.ResponseWriter, r *http.Request) {
 	id := r.PathValue("id")
 	if !s.checkOwner(w, r, id) {
 		return
 	}
-	var b struct {
-		Email        string `json:"email"`
-		Password     string `json:"password"`
-		EmailConfirm bool   `json:"email_confirm"`
+	if !s.allowUserEdit(w, r) {
+		return
 	}
+	var b userFields
 	if !jsonBody(w, r, &b) {
 		return
 	}
-	b.Email = strings.ToLower(strings.TrimSpace(b.Email))
-	if b.Email == "" || len(b.Password) < 8 {
-		fail(w, fmt.Errorf("email and a password of at least 8 characters are required"))
+	if err := b.normalize(); err != nil {
+		fail(w, err)
+		return
+	}
+	if nullIfEmpty(b.Email) == nil && nullIfEmpty(b.Username) == nil || b.Password == "" {
+		fail(w, fmt.Errorf("an email or username and a password of at least 8 characters are required"))
 		return
 	}
 	hash, err := auth.HashPassword(b.Password)
@@ -596,15 +666,124 @@ func (s *Server) createUser(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	var confirmed any
-	if b.EmailConfirm {
+	if b.EmailConfirm == nil || *b.EmailConfirm || nullIfEmpty(b.Email) == nil {
 		confirmed = time.Now().UTC()
 	}
-	_, err = c.Exec(r.Context(), `INSERT INTO auth.users(id,email,password_hash,email_confirmed_at) VALUES($1,$2,$3,$4)`, uid, b.Email, hash, confirmed)
+	userMeta, appMeta := b.UserMetadata, b.AppMetadata
+	if userMeta == nil {
+		userMeta = map[string]any{}
+	}
+	if appMeta == nil {
+		appMeta = map[string]any{}
+	}
+	_, err = c.Exec(r.Context(), `INSERT INTO auth.users(id,email,username,password_hash,email_confirmed_at,raw_user_meta_data,raw_app_meta_data) VALUES($1,$2,$3,$4,$5,$6,$7)`,
+		uid, nullIfEmpty(b.Email), nullIfEmpty(b.Username), hash, confirmed, userMeta, appMeta)
 	if err != nil {
 		fail(w, err)
 		return
 	}
-	writeJSON(w, 201, map[string]string{"id": uid, "email": b.Email})
+	writeJSON(w, 201, map[string]any{"id": uid, "email": nullIfEmpty(b.Email), "username": nullIfEmpty(b.Username)})
+}
+
+// updateUser changes one app user, like Supabase's admin updateUserById: a
+// new password or a ban also signs the user out everywhere.
+func (s *Server) updateUser(w http.ResponseWriter, r *http.Request) {
+	projectID := r.PathValue("id")
+	if !s.checkOwner(w, r, projectID) {
+		return
+	}
+	if !s.allowUserEdit(w, r) {
+		return
+	}
+	var b userFields
+	if !jsonBody(w, r, &b) {
+		return
+	}
+	if err := b.normalize(); err != nil {
+		fail(w, err)
+		return
+	}
+	userID := r.PathValue("user")
+	c, err := s.projectDB(r.Context(), projectID)
+	if err != nil {
+		fail(w, err)
+		return
+	}
+	defer c.Close(r.Context())
+	tx, err := c.Begin(r.Context())
+	if err != nil {
+		fail(w, err)
+		return
+	}
+	defer func() { _ = tx.Rollback(context.Background()) }()
+	var exists bool
+	if err := tx.QueryRow(r.Context(), `SELECT EXISTS(SELECT 1 FROM auth.users WHERE id::text=$1)`, userID).Scan(&exists); err != nil || !exists {
+		http.NotFound(w, r)
+		return
+	}
+	endSessions := false
+	exec := func(statement string, args ...any) bool {
+		if _, err := tx.Exec(r.Context(), statement, append(args, userID)...); err != nil {
+			fail(w, err)
+			return false
+		}
+		return true
+	}
+	if b.Password != "" {
+		hash, err := auth.HashPassword(b.Password)
+		if err != nil {
+			fail(w, err)
+			return
+		}
+		if !exec(`UPDATE auth.users SET password_hash=$1,updated_at=now() WHERE id::text=$2`, hash) {
+			return
+		}
+		endSessions = true
+	}
+	if b.Email != nil && !exec(`UPDATE auth.users SET email=$1,updated_at=now() WHERE id::text=$2`, nullIfEmpty(b.Email)) {
+		return
+	}
+	if b.Username != nil && !exec(`UPDATE auth.users SET username=$1,updated_at=now() WHERE id::text=$2`, nullIfEmpty(b.Username)) {
+		return
+	}
+	if b.EmailConfirm != nil {
+		confirmed := `NULL`
+		if *b.EmailConfirm {
+			confirmed = `COALESCE(email_confirmed_at,now())`
+		}
+		if !exec(`UPDATE auth.users SET email_confirmed_at=` + confirmed + `,updated_at=now() WHERE id::text=$1`) {
+			return
+		}
+	}
+	if b.Banned != nil {
+		var until any
+		if *b.Banned {
+			until = time.Date(9999, 1, 1, 0, 0, 0, 0, time.UTC)
+			endSessions = true
+		}
+		if !exec(`UPDATE auth.users SET banned_until=$1,updated_at=now() WHERE id::text=$2`, until) {
+			return
+		}
+	}
+	if b.UserMetadata != nil && !exec(`UPDATE auth.users SET raw_user_meta_data=$1,updated_at=now() WHERE id::text=$2`, b.UserMetadata) {
+		return
+	}
+	if b.AppMetadata != nil {
+		if !exec(`UPDATE auth.users SET raw_app_meta_data=$1,updated_at=now() WHERE id::text=$2`, b.AppMetadata) {
+			return
+		}
+		// Access JWTs carry app_metadata. End existing sessions so a removed
+		// role cannot continue authorizing requests until the JWT expires.
+		endSessions = true
+	}
+	if endSessions && !exec(`UPDATE auth.refresh_tokens SET revoked_at=now() WHERE revoked_at IS NULL AND user_id::text=$1`) {
+		return
+	}
+	if err := tx.Commit(r.Context()); err != nil {
+		fail(w, err)
+		return
+	}
+	writeJSON(w, 200, map[string]string{"id": userID})
 }
 
 func newUUID() (string, error) {
@@ -619,6 +798,9 @@ func newUUID() (string, error) {
 func (s *Server) deleteUser(w http.ResponseWriter, r *http.Request) {
 	projectID := r.PathValue("id")
 	if !s.checkOwner(w, r, projectID) {
+		return
+	}
+	if !s.allowUserEdit(w, r) {
 		return
 	}
 	var b struct {

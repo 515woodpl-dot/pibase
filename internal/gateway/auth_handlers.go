@@ -871,6 +871,7 @@ func (s *Server) authAdminUpdate(w http.ResponseWriter, r *http.Request) {
 	id := r.PathValue("id")
 	banned := false
 	passwordChanged := false
+	appMetadataChanged := false
 	err = s.adminTx(r.Context(), p, func(tx pgx.Tx) error {
 		if req.Password != "" || req.PasswordHash != "" {
 			h, e := adminPasswordHash(req)
@@ -936,6 +937,10 @@ func (s *Server) authAdminUpdate(w http.ResponseWriter, r *http.Request) {
 			if _, e := tx.Exec(r.Context(), `UPDATE auth.users SET raw_app_meta_data=$1,updated_at=now() WHERE id=$2`, m, id); e != nil {
 				return e
 			}
+			if _, e := revokeUserSessions(r.Context(), tx, id, "", false); e != nil {
+				return e
+			}
+			appMetadataChanged = true
 		}
 		return nil
 	})
@@ -943,7 +948,7 @@ func (s *Server) authAdminUpdate(w http.ResponseWriter, r *http.Request) {
 		writeAPIError(w, err)
 		return
 	}
-	if banned || passwordChanged {
+	if banned || passwordChanged || appMetadataChanged {
 		s.endSessions(p.id, id, nil)
 	}
 	writeJSON(w, http.StatusOK, map[string]any{"id": id})

@@ -211,3 +211,68 @@ CREATE TABLE public.no_columns ();`); err != nil {
 		t.Fatalf("zero-column table: %v %v", res, err)
 	}
 }
+
+// TestSQLTabRunsSupabaseScripts runs SQL editor scripts the way Supabase
+// users write them: several statements, GRANT/REVOKE to the stable API
+// roles, and DO blocks, all as one transaction.
+func TestSQLTabRunsSupabaseScripts(t *testing.T) {
+	adminURL, authURL := integrationSetup(t)
+	ctx := context.Background()
+	p := newProject(t, adminURL, "sql tab scripts")
+	r, err := Run(ctx, authURL, p.ID, `create table notes (id int primary key, title text);
+insert into notes values (1, 'a'), (2, 'b');
+grant select on notes to anon;
+revoke insert, update, delete on notes from anon;
+do $$ begin
+  if not exists (select 1 from pg_policies where tablename = 'notes') then
+    create policy "read" on notes for select to anon using (true);
+  end if;
+end $$;
+select id, title from notes order by id;`)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(r.Results) != 6 || len(r.Rows) != 2 || r.Rows[0]["id"] != int32(1) || r.Rows[1]["title"] != "b" {
+		t.Fatalf("result = %+v", r)
+	}
+	pr, err := lookupProject(ctx, authURL, p.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	privileges, err := Run(ctx, authURL, p.ID, fmt.Sprintf(`select has_table_privilege('%s', 'notes', 'SELECT') as can_select, has_table_privilege('%s', 'notes', 'DELETE') as can_delete`, pr.anonRole, pr.anonRole))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if privileges.Rows[0]["can_select"] != true || privileges.Rows[0]["can_delete"] != false {
+		t.Fatalf("project anon privileges after REVOKE ... FROM anon = %+v", privileges.Rows[0])
+	}
+	if _, err := Run(ctx, authURL, p.ID, `insert into notes values (3, 'c'); select 1/0`); err == nil {
+		t.Fatal("division by zero succeeded")
+	}
+	count, err := Run(ctx, authURL, p.ID, `select count(*) as n from notes`)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if count.Rows[0]["n"] != int64(2) {
+		t.Fatalf("failed script was not rolled back: %+v", count.Rows[0])
+	}
+	if _, err := Run(ctx, authURL, p.ID, `select 1; commit; select current_user`); err == nil {
+		t.Fatal("COMMIT inside the SQL tab was accepted")
+	}
+}
+
+func TestSQLTabRejectsAtomicBodyBeforeAnyCommit(t *testing.T) {
+	adminURL, authURL := integrationSetup(t)
+	p := newProject(t, adminURL, "atomic rollback")
+	ctx := context.Background()
+	// The extra END used to commit the outer transaction. Run reported an
+	// error afterward, while the function remained in the database.
+	script := `CREATE FUNCTION public.review_atomic() RETURNS int LANGUAGE sql BEGIN ATOMIC SELECT 1; END; END;`
+	if _, err := Run(ctx, authURL, p.ID, script); err == nil || !strings.Contains(err.Error(), "transaction control") {
+		t.Fatalf("atomic script error = %v", err)
+	}
+	result, err := Run(ctx, authURL, p.ID, `SELECT count(*) AS n FROM pg_proc WHERE proname='review_atomic'`)
+	if err != nil || result.Rows[0]["n"] != int64(0) {
+		t.Fatalf("atomic script persisted a function: result=%+v error=%v", result, err)
+	}
+}

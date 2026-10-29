@@ -101,9 +101,18 @@ printf 'select current_user, now()' | docker compose run --rm -T \
   gateway sql PROJECT_ID
 ```
 
-Migration names are idempotent and checksum-protected. Owner SQL has a
-token-based guard against privilege-changing statements; it is not a security
-boundary—the constrained authenticator connection and PostgreSQL roles are.
+Migration names are idempotent and checksum-protected. Owner SQL works like
+the Supabase SQL editor: a script may hold many statements and runs as one
+transaction (if one fails, nothing changes); `GRANT`/`REVOKE` on tables,
+sequences and functions, `ALTER DEFAULT PRIVILEGES` and `DO $$ ... $$` blocks
+are allowed; and `anon`, `authenticated` and `service_role` in a `GRANT` or
+`REVOKE` also apply to the project's own API roles, so `revoke delete on t
+from anon` takes effect. A token-based guard still refuses role changes, role
+membership grants, transaction control (`COMMIT`, `BEGIN`, ...) and dynamic
+`EXECUTE` in DO or routine bodies. SQL-standard `BEGIN ATOMIC` routine bodies
+must be applied as migrations because their `END` can also end the SQL tab's
+transaction. The guard is not a security boundary—the
+constrained authenticator connection and PostgreSQL roles are. Owner SQL has a
 30-second statement timeout and is not exposed through the public HTTP API.
 
 ## Verify
@@ -140,7 +149,11 @@ asks for its password; `--reset <email>` gives an account a new one. Forgot pass
 one-hour, single-use link when `PIBASE_SMTP_*` and `PIBASE_DASHBOARD_URL` are set, and the operator
 view can set any account's password. After logging in, `/app` shows only that account's projects, with an icon menu that expands on tap,
 a per-project overview (database size, requests, success rate, warnings and errors by service, and daily
-requests), API keys, tables, users, the owner SQL editor, migrations, backups and settings.
+requests), API keys with a ready `.env` block (`SUPABASE_URL`, `NEXT_PUBLIC_*`, `VITE_*`), tables, users
+(add, set a password, app role in `app_metadata.role`, user metadata, ban, confirm, delete; email or
+username), the SQL editor with templates, migrations, backups and settings.
+Changing app metadata ends the user's existing sessions, and dashboard user
+changes are limited to 20 per minute per account or operator credential.
 Every page explains what it does. `/app#operator` is the operator view of all projects and needs
 `PIBASE_OPERATOR_TOKEN`; owner SQL executes through
 the M1 authenticator boundary, with a 30-second timeout and 1,000-row cap.

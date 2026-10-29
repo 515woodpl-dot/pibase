@@ -61,7 +61,25 @@ create policy "owners edit" on notes for all
 ```
 
 Tables created in `public` get row level security switched on automatically.
-Migrations run as the project admin role.
+Migrations and the dashboard SQL tab run as the project admin role. In both,
+`GRANT`/`REVOKE ... TO/FROM anon` (and `authenticated`, `service_role`) also
+names the project's own role, so revoking works as on Supabase. The SQL tab
+runs a whole script as one transaction and allows `DO` blocks.
+
+A role for your app's own permissions (for example `admin` or `editor`) goes in
+`app_metadata.role`: set it on the dashboard Users page, or with
+`supabase.auth.admin.updateUserById(id, { app_metadata: { role: 'admin' } })`
+from server code. Users cannot change it themselves. Read it in the app from
+`user.app_metadata.role` and in policies with:
+
+```sql
+create policy "admins manage" on notes for all to authenticated
+  using ((auth.jwt()->'app_metadata'->>'role') = 'admin')
+  with check ((auth.jwt()->'app_metadata'->>'role') = 'admin');
+```
+
+Changing `app_metadata` through either admin API ends existing sessions. Users
+must sign in again to receive a token with the new role.
 
 ## Storage access
 
