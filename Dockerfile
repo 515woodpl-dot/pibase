@@ -21,6 +21,7 @@ RUN mkdir -p /out/data/files /out/data/backups
 # integration tests. It is never shipped or used by the production stack.
 FROM postgres:16-bookworm AS test
 COPY --from=toolchain /usr/local/go /usr/local/go
+COPY --from=toolchain /etc/ssl/certs/ca-certificates.crt /etc/ssl/certs/ca-certificates.crt
 COPY --from=node_toolchain /usr/local/bin/node /usr/local/bin/node
 ENV PATH="/usr/local/go/bin:${PATH}" GOPATH=/go
 
