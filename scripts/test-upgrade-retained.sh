@@ -126,7 +126,7 @@ auth_db_url="postgres://authenticator:${auth_password}@127.0.0.1:${pg_port}/_con
 echo "=== Step 5: Create schema and retained data through the old HTTP API ==="
 p1_admin="p_${project1_id}_admin"
 p2_admin="p_${project2_id}_admin"
-printf 'CREATE TABLE public.items(name text PRIMARY KEY); GRANT SELECT, INSERT ON public.items TO p_%s_service_role;' "$project1_id" | docker run --rm -i --network host \
+printf 'CREATE TABLE public.items(name text PRIMARY KEY); GRANT SELECT, INSERT ON public.items TO p_%s_service_role; ALTER TABLE public.items ENABLE ROW LEVEL SECURITY; CREATE POLICY items_authenticated_read ON public.items FOR SELECT TO p_%s_authenticated USING (true);' "$project1_id" "$project1_id" | docker run --rm -i --network host \
   --env PIBASE_DATABASE_URL="$auth_db_url" "$old_ops_image" migration-apply "$project1_id" 0001_items
 printf 'CREATE TABLE public.tasks(title text PRIMARY KEY); GRANT SELECT, INSERT ON public.tasks TO p_%s_service_role;' "$project2_id" | docker run --rm -i --network host \
   --env PIBASE_DATABASE_URL="$auth_db_url" "$old_ops_image" migration-apply "$project2_id" 0001_tasks
@@ -200,6 +200,8 @@ check "$p1_owners" "auth=$operator,cron=$operator,realtime=$operator,storage=$op
 
 p1_rows="$(dbexec -d "$project1_db" -c "SELECT count(*) FROM public.items")"
 check "$p1_rows" "2" "project 1 data rows"
+p1_policy="$(dbexec -d "$project1_db" -c "SELECT count(*) FROM pg_policies WHERE schemaname='public' AND tablename='items' AND policyname='items_authenticated_read'")"
+check "$p1_policy" "1" "project 1 retained RLS policy"
 
 p2_rows="$(dbexec -d "$project2_db" -c "SELECT count(*) FROM public.tasks")"
 check "$p2_rows" "1" "project 2 data rows"
@@ -238,6 +240,8 @@ check "$p1_restored_version" "15" "project 1 restored schema version"
 
 p1_restored_rows="$(dbexec -d "$project1_db" -c "SELECT count(*) FROM public.items")"
 check "$p1_restored_rows" "2" "project 1 restored data rows"
+p1_restored_policy="$(dbexec -d "$project1_db" -c "SELECT count(*) FROM pg_policies WHERE schemaname='public' AND tablename='items' AND policyname='items_authenticated_read'")"
+check "$p1_restored_policy" "1" "project 1 restored RLS policy"
 
 p1_restored_owners="$(dbexec -d "$project1_db" -c "SELECT string_agg(nspname||'='||pg_get_userbyid(nspowner),',' ORDER BY nspname) FROM pg_namespace WHERE nspname IN ('auth','storage','realtime','cron')")"
 check "$p1_restored_owners" "auth=$operator,cron=$operator,realtime=$operator,storage=$operator" "project 1 restored schema owners"
