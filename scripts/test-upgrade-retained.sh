@@ -19,6 +19,8 @@ old_image="pibase:upgrade-drill-old-$$"
 old_ops_image="pibase:upgrade-drill-old-ops-$$"
 new_image="${PIBASE_IMAGE:-pibase:upgrade-drill-new-$$}"
 worktree=""
+storage_root=""
+backup_dir=""
 backup_key="$(head -c 32 /dev/urandom | base64 | tr -d '\n')"
 master_key="$(head -c 32 /dev/urandom | base64 | tr -d '\n')"
 
@@ -28,6 +30,12 @@ cleanup() {
   docker volume rm --force "$volume_name" >/dev/null 2>&1 || true
   if [ -n "$worktree" ] && [ -d "$worktree" ]; then
     git worktree remove --force "$worktree" 2>/dev/null || rm -rf "$worktree"
+  fi
+  if [ -n "$storage_root" ] && [ -d "$storage_root" ]; then
+    rm -r "$storage_root"
+  fi
+  if [ -n "$backup_dir" ] && [ -d "$backup_dir" ]; then
+    rm -r "$backup_dir"
   fi
 }
 trap cleanup EXIT INT TERM
@@ -85,8 +93,8 @@ admin_url="postgres://postgres:${postgres_password}@127.0.0.1:${pg_port}/postgre
 internal_url="postgres://postgres:${postgres_password}@127.0.0.1:5432/postgres"
 
 echo "=== Step 4: Bootstrap and create projects with old binary ==="
-storage_root="$(mktemp -d)"
-backup_dir="$(mktemp -d)"
+storage_root="$(mktemp -d "$(dirname "$repo_root")/.pibase-upgrade-storage.XXXXXX")"
+backup_dir="$(mktemp -d "$(dirname "$repo_root")/.pibase-upgrade-backups.XXXXXX")"
 chmod 777 "$storage_root" "$backup_dir"
 
 docker run --rm --network host \
@@ -142,7 +150,7 @@ curl --fail --silent -X POST http://127.0.0.1:28081/rest/v1/items -H "apikey: $p
 curl --fail --silent -X POST http://127.0.0.1:28081/rest/v1/items -H "apikey: $project1_service" -H 'Content-Type: application/json' -H 'Prefer: return=representation' -d '{"name":"beta"}' >/dev/null
 curl --fail --silent -X POST http://127.0.0.1:28081/rest/v1/tasks -H "apikey: $project2_service" -H 'Content-Type: application/json' -H 'Prefer: return=representation' -d '[{"title":"task-one"}]' >/dev/null
 curl --fail --silent -X POST http://127.0.0.1:28081/storage/v1/bucket -H "apikey: $project1_service" -H 'Content-Type: application/json' -d '{"id":"drill-files","public":true}' >/dev/null
-curl --fail --silent -X POST http://127.0.0.1:28081/storage/v1/object/drill-files/drill-object.txt -H "apikey: $project1_anon" -H "Authorization: Bearer $user_token" -H 'Content-Type: text/plain' --data 'drill-file-content' >/dev/null
+curl --fail-with-body --silent --show-error -X POST http://127.0.0.1:28081/storage/v1/object/drill-files/drill-object.txt -H "apikey: $project1_anon" -H "Authorization: Bearer $user_token" -H 'Content-Type: text/plain' --data 'drill-file-content'
 dbexec -d "$project1_db" -c "INSERT INTO cron.jobs(schedule,sql) VALUES ('0 * * * *', 'SELECT 1');"
 
 echo "=== Step 6: Backup project 1 with old binary (pre-upgrade) ==="
@@ -183,8 +191,8 @@ check() {
 
 p1_version="$(dbexec -d _control -c "SELECT schema_version FROM control.projects WHERE id='$project1_id'")"
 p2_version="$(dbexec -d _control -c "SELECT schema_version FROM control.projects WHERE id='$project2_id'")"
-check "$p1_version" "9" "project 1 schema version"
-check "$p2_version" "9" "project 2 schema version"
+check "$p1_version" "15" "project 1 schema version"
+check "$p2_version" "15" "project 2 schema version"
 
 p1_owners="$(dbexec -d "$project1_db" -c "SELECT string_agg(nspname||'='||pg_get_userbyid(nspowner),',' ORDER BY nspname) FROM pg_namespace WHERE nspname IN ('auth','storage','realtime','cron')")"
 operator="postgres"
@@ -226,7 +234,7 @@ docker run --rm --network host \
   "$new_ops_image" restore "$project1_id" "$pre_upgrade_backup"
 
 p1_restored_version="$(dbexec -d _control -c "SELECT schema_version FROM control.projects WHERE id='$project1_id'")"
-check "$p1_restored_version" "9" "project 1 restored schema version"
+check "$p1_restored_version" "15" "project 1 restored schema version"
 
 p1_restored_rows="$(dbexec -d "$project1_db" -c "SELECT count(*) FROM public.items")"
 check "$p1_restored_rows" "2" "project 1 restored data rows"
