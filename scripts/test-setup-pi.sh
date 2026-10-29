@@ -84,6 +84,7 @@ run_case() {
   : >"$case_root/log/sudo"
   : >"$case_root/log/curl"
   HOME="$case_root/home" \
+    DOCKER_CONFIG="$case_root/home/.docker" \
     MOCK_LOG="$case_root/log" \
     MOCK_COMPOSE_CANDIDATE="$candidate" \
     MOCK_COMPOSE_AVAILABLE="$compose_available" \
@@ -96,6 +97,7 @@ invalid_root="$test_root/invalid-root"
 mkdir -p "$invalid_root/home" "$invalid_root/log"
 : >"$invalid_root/log/sudo"
 if HOME="$invalid_root/home" MOCK_LOG="$invalid_root/log" \
+  DOCKER_CONFIG="$invalid_root/home/.docker" \
   MOCK_COMPOSE_CANDIDATE=2.26.1 MOCK_COMPOSE_AVAILABLE=1 \
   PIBASE_DATA_ROOT=/tmp/pibase PATH="$mock_bin:/usr/bin:/bin" \
   "$setup_script" >"$invalid_root/stdout" 2>"$invalid_root/stderr"; then

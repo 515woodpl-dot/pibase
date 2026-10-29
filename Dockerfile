@@ -1,5 +1,6 @@
 # syntax=docker/dockerfile:1
 FROM golang:1.23-bookworm AS toolchain
+FROM node:22-bookworm AS node_toolchain
 
 FROM toolchain AS build
 WORKDIR /src
@@ -20,6 +21,7 @@ RUN mkdir -p /out/data/files /out/data/backups
 # integration tests. It is never shipped or used by the production stack.
 FROM postgres:16-bookworm AS test
 COPY --from=toolchain /usr/local/go /usr/local/go
+COPY --from=node_toolchain /usr/local/bin/node /usr/local/bin/node
 ENV PATH="/usr/local/go/bin:${PATH}" GOPATH=/go
 
 FROM postgres:16-bookworm AS ops

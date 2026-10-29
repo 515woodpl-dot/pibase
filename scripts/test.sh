@@ -12,6 +12,7 @@ docker build --tag "$production_image" .
 postgres_password="${POSTGRES_PASSWORD:-$(sed -n 's/^POSTGRES_PASSWORD=//p' .env)}"
 test_postgres_image="${PIBASE_TEST_POSTGRES_IMAGE:-pibase-postgres:test}"
 docker build --file Dockerfile.postgres --tag "$test_postgres_image" .
+docker run --rm -v "$PWD:/src" -w /src node:22-bookworm npm ci --ignore-scripts --no-audit --no-fund
 test_postgres="pibase-gate-postgres-$$"
 cleanup_test_postgres() {
   docker rm --force "$test_postgres" >/dev/null 2>&1 || true

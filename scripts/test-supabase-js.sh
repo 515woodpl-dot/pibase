@@ -29,6 +29,7 @@ test_postgres_image="${PIBASE_TEST_POSTGRES_IMAGE:-pibase-postgres:test}"
 if ! docker image inspect "$test_postgres_image" >/dev/null 2>&1; then
   docker build --file Dockerfile.postgres --tag "$test_postgres_image" .
 fi
+docker run --rm -v "$PWD:/src" -w /src node:22-bookworm npm ci --ignore-scripts --no-audit --no-fund
 docker network create "$test_network" >/dev/null
 echo "acceptance: starting disposable PostgreSQL"
 docker run --rm --detach --name "$test_postgres" --network "$test_network" \
