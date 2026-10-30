@@ -18,11 +18,13 @@ postgres_password="$(od -An -N16 -tx1 /dev/urandom | tr -d ' \n')"
 auth_password="pi-drill-local-auth"
 master_key="$(head -c 32 /dev/urandom | base64 | tr -d '\n')"
 backup_key="$(head -c 32 /dev/urandom | base64 | tr -d '\n')"
+operator_token="$(od -An -N16 -tx1 /dev/urandom | tr -d ' \n')"
 cat >"$env_file" <<EOF
 POSTGRES_PASSWORD=$postgres_password
 PIBASE_AUTHENTICATOR_PASSWORD=$auth_password
 PIBASE_MASTER_KEY=$master_key
 PIBASE_BACKUP_KEY=$backup_key
+PIBASE_OPERATOR_TOKEN=$operator_token
 EOF
 cat >"$override_file" <<'EOF'
 services:
@@ -30,6 +32,8 @@ services:
     ports: !override ["127.0.0.1:28082:5432"]
   gateway:
     ports: !override ["127.0.0.1:28083:8080"]
+  admin:
+    ports: !override ["127.0.0.1:28084:18081"]
 EOF
 
 compose() {
