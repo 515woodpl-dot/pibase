@@ -31,12 +31,16 @@ cleanup() {
   if [ -n "$worktree" ] && [ -d "$worktree" ]; then
     git worktree remove --force "$worktree" 2>/dev/null || rm -rf "$worktree"
   fi
-  if [ -n "$storage_root" ] && [ -d "$storage_root" ]; then
-    rm -r "$storage_root"
-  fi
-  if [ -n "$backup_dir" ] && [ -d "$backup_dir" ]; then
-    rm -r "$backup_dir"
-  fi
+  # The gateway writes these as the container user, so the host operator
+  # cannot always delete them; clear them from a container when rm fails.
+  for dir in "$storage_root" "$backup_dir"; do
+    [ -n "$dir" ] && [ -d "$dir" ] || continue
+    rm -rf "$dir" 2>/dev/null || true
+    if [ -d "$dir" ]; then
+      docker run --rm -v "$dir:/clean" --entrypoint sh "$postgres_image" -c 'rm -rf /clean/* /clean/.[!.]*' >/dev/null 2>&1 || true
+      rmdir "$dir" 2>/dev/null || true
+    fi
+  done
 }
 trap cleanup EXIT INT TERM
 
