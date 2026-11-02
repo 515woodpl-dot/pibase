@@ -43,17 +43,18 @@ textarea[rows="2"]{min-height:64px}
 .nav-sep{height:1px;margin:8px 6px;background:var(--line)}
 .scrim{position:fixed;inset:0 0 0 60px;z-index:25;background:rgba(23,32,58,.18)}
 
-.app{margin-left:60px;min-height:100vh}
+.app{margin-left:60px;min-height:100vh;min-width:0;overflow-x:hidden}
 .topbar{display:flex;align-items:center;gap:12px;margin:16px 18px 0;padding:10px 16px;min-height:54px;border:1px solid var(--line);border-radius:14px;background:rgba(255,255,255,.92);box-shadow:var(--shadow)}
 .who{min-width:0;flex:1;display:flex;flex-direction:column;line-height:1.25}
 .org{font-weight:650;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
 .email{font-size:12px;color:var(--muted);overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
 #status{font-size:13px;color:var(--muted);overflow-wrap:anywhere;text-align:right}
 #opBox{display:flex;gap:8px;flex:0 1 360px}
-.back{display:none;margin:10px 10px 0}
-.chain{display:flex;gap:18px;align-items:flex-start;padding:18px;overflow-x:auto}
-.pane{flex:0 0 400px;min-width:0;padding:24px 22px;background:var(--surface);border:1px solid var(--line);border-radius:16px;box-shadow:var(--shadow)}
-.pane.wide{flex-basis:800px}
+.back{display:inline-block;margin:10px 18px 0}
+.chain{display:block;padding:18px}
+.chain>.pane:not(:last-child){display:none}
+.pane{width:100%;max-width:1100px;margin:0 auto;min-width:0;padding:24px 22px;background:var(--surface);border:1px solid var(--line);border-radius:16px;box-shadow:var(--shadow)}
+.pane.wide{max-width:1400px}
 .pane h1{margin:0 0 6px;font-size:19px;letter-spacing:-.02em}
 .intro{margin:0 0 20px;color:var(--muted);overflow-wrap:anywhere}
 .group>.intro{margin-bottom:12px;font-size:13px}
@@ -125,9 +126,8 @@ pre{margin:0;padding:12px;overflow:auto;white-space:pre-wrap;background:#fafafa;
   #status{flex:1 0 100%;text-align:left}
   #status:empty{display:none}
   #opBox{flex:1 0 100%}
-  .back{display:inline-block}
-  .chain{display:block;padding:10px}
-  .chain>.pane:not(:last-child){display:none}
+  .chain{padding:10px}
+  .back{margin:10px 10px 0}
   .pane,.pane.wide{width:auto;padding:16px 14px;border-radius:14px}
   .pane h1{font-size:18px}
   .cards{grid-template-columns:minmax(0,1fr)}
@@ -159,7 +159,7 @@ function button(text,fn,cls){const b=el('button',text,cls);b.onclick=fn;return b
 function pane(title,intro){const p=el('section',null,'pane');p.append(el('h1',title));if(intro)p.append(el('p',intro,'intro'));return p}
 function clearFrom(n){while(chain.children.length>n)chain.lastChild.remove()}
 function add(p){chain.append(p);alignChain()}
-function alignChain(){chain.style.paddingRight='0px';const max=chain.scrollWidth-chain.clientWidth;let x=max;for(const c of chain.children){const left=c.offsetLeft-chain.offsetLeft;if(left>=max){x=left;break}}if(x>max)chain.style.paddingRight=(x-max)+'px';x=Math.max(0,x-18);chain.scrollLeft=x}
+function alignChain(){chain.style.paddingRight='';const l=chain.lastElementChild;if(l&&chain.children.length>1&&l.scrollIntoView)l.scrollIntoView({block:'nearest',behavior:'smooth'})}
 function field(label,control,hint,...extras){const f=el('div',null,'field');const id='f'+(++uid);control.id=id;const l=el('label',label);l.htmlFor=id;f.append(l);if(extras.length){const row=el('div',null,'key-row');row.append(control,...extras);f.append(row)}else f.append(control);if(hint)f.append(el('span',hint,'hint'));return f}
 // Title and intro of a pane, copied so a pane can be rebuilt after it has loaded.
 function head(p){return [...p.querySelectorAll(':scope>h1,:scope>.intro')].map(n=>n.cloneNode(true))}
@@ -385,7 +385,7 @@ async function openTables(){
   }catch(e){p.replaceChildren(...h,el('p',e.message))}
 }
 function openTable(t){
-  clearFrom(3);const p=pane(t.name,'Details for this table. "Row security" (RLS) limits which rows each signed-in user can see. The public key is the anon key your app ships with.');
+  clearFrom(3);const p=pane(t.name,'Details for this table. "Row security" (RLS) limits which rows each signed-in user can see. The public key is the anon key your app ships with.');p.classList.add('sub');
   p.append(el('p',plural(t.count,'row')+' · row security '+(t.rls?'on':'off')+' · public key '+(t.anon_readable?'can read':'cannot read')));
   if(t.columns&&t.columns.length)p.append(el('p','Columns: '+t.columns.join(', ')));
   const url=apiBase(selected)+'/rest/v1/'+encodeURIComponent(t.name)+'?select=*';
@@ -394,7 +394,7 @@ function openTable(t){
   p.append(button('Browse rows',()=>openRows(t),'primary'));add(p)
 }
 async function openRows(t,offset=0){
-  clearFrom(4);const p=pane(t.name+' rows','A read-only preview of the stored rows, 50 at a time. Use SQL to change data.');p.classList.add('wide');const h=head(p);p.append(el('p','Loading…'));add(p);
+  clearFrom(4);const p=pane(t.name+' rows','A read-only preview of the stored rows, 50 at a time. Use SQL to change data.');p.classList.add('wide','sub');const h=head(p);p.append(el('p','Loading…'));add(p);
   try{
     const data=await api(projectPath()+'/tables/'+encodeURIComponent(t.name)+'/rows?offset='+offset);
     p.replaceChildren(...h);
@@ -527,8 +527,8 @@ function openAccount(){
 
 /* ---------- behaviour ---------- */
 document.addEventListener('keydown',e=>{if(e.key!=='Enter'||e.target.tagName!=='INPUT'||e.target.readOnly)return;const g=e.target.closest('.group,.empty');const act=g&&g.querySelector('button.primary');if(act){e.preventDefault();act.click()}});
-const backBtn=q('back');backBtn.onclick=()=>{if(chain.children.length>1){chain.lastChild.remove();alignChain()}};
-new MutationObserver(()=>backBtn.classList.toggle('hidden',chain.children.length<2)).observe(chain,{childList:true});
+const backBtn=q('back');backBtn.onclick=()=>{if(chain.lastChild&&chain.lastChild.classList.contains('sub')){chain.lastChild.remove();alignChain()}};
+new MutationObserver(()=>backBtn.classList.toggle('hidden',!(chain.lastChild&&chain.lastChild.classList.contains('sub')))).observe(chain,{childList:true});
 init();
 </script>
 </body>
