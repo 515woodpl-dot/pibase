@@ -8,6 +8,7 @@ import (
 	"log/slog"
 	"net"
 	"net/http"
+	"net/url"
 	"os"
 	"strconv"
 	"strings"
@@ -290,6 +291,17 @@ func (s *Server) Handler() http.Handler {
 	limited := http.MaxBytesHandler(mux, bodyLimit)
 	return cors(s.observeActivity(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		s.requestCount.Add(1)
+		// r.URL.Query() silently drops any query segment it cannot parse, such
+		// as one holding a raw ";". For the data API that removes a filter and
+		// widens a SELECT, UPDATE or DELETE, so a query string that does not
+		// parse is refused instead. Function calls pass the query through
+		// untouched to the function, which decides for itself.
+		if r.URL.RawQuery != "" && !strings.HasPrefix(r.URL.Path, "/functions/v1/") {
+			if _, err := url.ParseQuery(r.URL.RawQuery); err != nil {
+				writeAPIError(w, httpError(http.StatusBadRequest, "query string is malformed: encode ';' as %3B and '%' as %25"))
+				return
+			}
+		}
 		// Storage uploads stream directly to disk and enforce their own 1 GiB
 		// object limit; all other API requests retain the 1 MiB body cap.
 		if (r.Method == http.MethodPost || r.Method == http.MethodPut) && strings.HasPrefix(r.URL.Path, "/storage/v1/object/") && !strings.HasPrefix(r.URL.Path, "/storage/v1/object/list/") && !strings.HasPrefix(r.URL.Path, "/storage/v1/object/sign/") {

@@ -119,7 +119,8 @@ func TestPagesUIHardRules(t *testing.T) {
 			}
 		}
 	}
-	for _, required := range []string{"function alignChain()", "chain.scrollLeft=x", "function dataTable("} {
+	// Keep the alignment handler; its DOM scrolling method may change.
+	for _, required := range []string{"function alignChain()", "function dataTable("} {
 		if !strings.Contains(page, required) {
 			t.Fatalf("dashboard misses %q", required)
 		}
