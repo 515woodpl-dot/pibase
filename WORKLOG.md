@@ -153,3 +153,15 @@ password automatically.
 The `pibase/m0` worktree intentionally contains the large replacement of the
 old Node/PocketBase application with the Go/PostgreSQL design. Do not restore
 the staged old-tree deletions or discard the untracked Go implementation.
+
+## Malformed query strings refused
+
+- `r.URL.Query()` silently drops any `&`-segment that `url.ParseQuery` cannot
+  parse (for example one holding a raw `;`). In the data API that removed a
+  filter and widened SELECT, UPDATE and DELETE (every row a role can see; for
+  service-key callers every tenant's rows). The gateway now answers such
+  requests with 400 before any handler runs; `/functions/v1/` still passes its
+  query through untouched. Encoded `;` (`%3B`) is unaffected.
+- Regression test: `internal/gateway/query_test.go`. Verified live against a
+  gateway with two projects: the reported read and delete now return 400 and
+  change nothing; normal and encoded filters work.
