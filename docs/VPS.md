@@ -6,11 +6,13 @@ elsewhere (Vercel, Bluehost, another server) and talk to PIBASE over HTTPS.
 
 ```
  visitors ──► client.com (the website, hosted anywhere)
-                 │  supabase-js / pibase-auth.js
+                 │  JS client / pibase-auth.js 
                  ▼
           pibase.client.com ─┐
           api.yourname.com  ─┼─► droplet: Caddy (HTTPS) ─► PIBASE gateway ─► Postgres
-                             │                    (dashboard: SSH tunnel only)
+                             │
+ you, your clients ──► app.yourname.com ──► Caddy (HTTPS) ─► PIBASE dashboard
+ (browser or phone app)    (optional; without it, SSH tunnel only)
 ```
 
 ## 1. Create the droplet
@@ -60,7 +62,15 @@ Running it again is safe; it skips what is already done.
 
 ## 4. Open the dashboard
 
-The dashboard never faces the internet. From your own computer:
+Two ways, chosen when you run the setup:
+
+* **Public** (`--dashboard app.yourname.com`): the dashboard has its own HTTPS
+  address. People sign up and manage their projects from any browser, and can
+  install it on their phone. See "Public dashboard" below for
+  the spam protection and email it needs.
+* **Private** (the default): the dashboard never faces the internet.
+
+For the private dashboard, from your own computer:
 
 ```sh
 ssh -L 18081:127.0.0.1:18081 pibase@DROPLET_IP
@@ -71,6 +81,55 @@ password? `./scripts/create-account.sh --reset omnia@local.com` as `pibase`
 in `/home/pibase/pibase`, or see PI-OPERATIONS.md for email reset links. For the
 operator view (`/app#operator`), the token is the `PIBASE_OPERATOR_TOKEN` line
 in `/home/pibase/pibase/.env`.
+
+## Public dashboard
+
+Run the setup with `--dashboard app.yourname.com` (again on an existing server
+is fine), after adding an A record for that name to the droplet. Caddy serves
+it over HTTPS with HSTS, cookies are marked Secure, and links in emails point
+to it.
+
+**Email first.** Public sign-up asks every new account to confirm its email
+before it can create projects, so the server needs an email service. Until
+`PIBASE_SMTP_*` is set, the setup leaves sign-up **closed**
+(`PIBASE_SIGNUP=closed`) and existing accounts can still log in. To open it,
+add to `/home/pibase/pibase/.env` (any SMTP service works, for example Resend,
+Postmark or Amazon SES):
+
+```sh
+PIBASE_SMTP_HOST=smtp.resend.com
+PIBASE_SMTP_PORT=587
+PIBASE_SMTP_USER=resend
+PIBASE_SMTP_PASS=your-api-key
+PIBASE_SMTP_FROM=no-reply@yourname.com
+PIBASE_SIGNUP=open
+```
+
+then, as `pibase`: `cd /home/pibase/pibase && docker compose up -d`.
+
+**Spam protection**, all on by default:
+
+| Layer | What it stops |
+|---|---|
+| Signed form token, at least 3 seconds old | scripts that post straight to the sign-up endpoint |
+| Hidden field people never see | form-filling bots |
+| Throwaway email domains refused | disposable inboxes; add more with `PIBASE_BLOCKED_EMAIL_DOMAINS=a.com,b.com` |
+| 3 new accounts per network address per day; 5 attempts a minute | one person making many accounts |
+| 30 new accounts per hour for the whole server (`PIBASE_SIGNUP_HOURLY_LIMIT`) | a burst from many addresses filling the disk |
+| Email confirmation before creating projects | fake addresses; unconfirmed accounts without projects are removed after 2 days |
+| 2 projects per account (`PIBASE_MAX_PROJECTS_PER_ACCOUNT`), 1 GB each | one account using the whole server |
+
+The operator view (`https://app.yourname.com/app#operator`, with
+`PIBASE_OPERATOR_TOKEN` from `.env`) lists every account, newest first, with a
+**Not confirmed only** filter, and deletes spam accounts with their projects.
+To stop new sign-ups at any time, set `PIBASE_SIGNUP=closed` and run
+`docker compose up -d`.
+
+**On a phone.** Open `https://app.yourname.com` and install it: on Android,
+Chrome's menu, **Install app** (or **Add to Home screen**); on iPhone, Safari's
+Share button, **Add to Home Screen**. It opens full screen with its own icon.
+It stores no data on the phone: everything comes from the server each time,
+and without a connection it shows a short "You're offline" page.
 
 ## 5. Give a client their own API name
 
@@ -163,7 +222,8 @@ GitHub personal access token that only has read access to this repository.
   uses (`PIBASE_TRUSTED_PROXIES`, set by the setup). Sign-in limits therefore
   count each visitor separately.
 * Ports 18080 (API) and 18081 (dashboard) listen on the droplet itself only.
-  Never set `PIBASE_GATEWAY_BIND` or `PIBASE_ADMIN_BIND` to `0.0.0.0` here.
+  Never set `PIBASE_GATEWAY_BIND` or `PIBASE_ADMIN_BIND` to `0.0.0.0` here; a
+  public dashboard goes through Caddy (`--dashboard`), never a bare port.
 * Root login with an SSH key still works after setup. Once you can log in as
   `pibase`, you may turn off root SSH login, but keep a way in (DigitalOcean's
   web console) before you do.

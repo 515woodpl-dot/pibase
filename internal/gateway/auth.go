@@ -24,6 +24,10 @@ type project struct {
 	maxDatabaseBytes  int64
 }
 
+// errProjectPaused answers every request to a project whose owner's billing
+// lapsed past its grace period. The data is kept; paying resumes it.
+var errProjectPaused = httpError(http.StatusPaymentRequired, "this project is paused because its billing has lapsed; the owner can resume it from the pibase dashboard")
+
 type principal struct {
 	project *project
 	role    string
@@ -91,9 +95,10 @@ func (s *Server) resolveProject(ctx context.Context, apiKey string) (project, []
 	hash := keys.Hash(apiKey)
 	var p project
 	var encrypted, anonHash, serviceHash []byte
-	err := s.control.QueryRow(ctx, `SELECT id,database_name,anon_role,authenticated_role,service_role,admin_role,jwt_secret_encrypted,anon_key_hash,service_key_hash,max_database_bytes
+	var paused bool
+	err := s.control.QueryRow(ctx, `SELECT id,database_name,anon_role,authenticated_role,service_role,admin_role,jwt_secret_encrypted,anon_key_hash,service_key_hash,max_database_bytes,paused_at IS NOT NULL
 FROM control.project_catalog WHERE anon_key_hash=$1 OR service_key_hash=$1`, hash).Scan(
-		&p.id, &p.database, &p.anonRole, &p.authenticatedRole, &p.serviceRole, &p.adminRole, &encrypted, &anonHash, &serviceHash, &p.maxDatabaseBytes)
+		&p.id, &p.database, &p.anonRole, &p.authenticatedRole, &p.serviceRole, &p.adminRole, &encrypted, &anonHash, &serviceHash, &p.maxDatabaseBytes, &paused)
 	if err != nil {
 		if err == pgx.ErrNoRows {
 			return project{}, nil, nil, httpError(http.StatusUnauthorized, "invalid apikey")
@@ -102,6 +107,9 @@ FROM control.project_catalog WHERE anon_key_hash=$1 OR service_key_hash=$1`, has
 	}
 	if !keys.EqualHash(apiKey, anonHash) && !keys.EqualHash(apiKey, serviceHash) {
 		return project{}, nil, nil, httpError(http.StatusUnauthorized, "invalid apikey")
+	}
+	if paused {
+		return project{}, nil, nil, errProjectPaused
 	}
 	p.secret, err = secretbox.Decrypt(s.masterKey, encrypted)
 	if err != nil {
@@ -114,13 +122,17 @@ FROM control.project_catalog WHERE anon_key_hash=$1 OR service_key_hash=$1`, has
 func (s *Server) resolveProjectID(ctx context.Context, id string) (project, error) {
 	var p project
 	var encrypted []byte
-	err := s.control.QueryRow(ctx, `SELECT id,database_name,anon_role,authenticated_role,service_role,admin_role,jwt_secret_encrypted,max_database_bytes FROM control.project_catalog WHERE id=$1`, id).Scan(
-		&p.id, &p.database, &p.anonRole, &p.authenticatedRole, &p.serviceRole, &p.adminRole, &encrypted, &p.maxDatabaseBytes)
+	var paused bool
+	err := s.control.QueryRow(ctx, `SELECT id,database_name,anon_role,authenticated_role,service_role,admin_role,jwt_secret_encrypted,max_database_bytes,paused_at IS NOT NULL FROM control.project_catalog WHERE id=$1`, id).Scan(
+		&p.id, &p.database, &p.anonRole, &p.authenticatedRole, &p.serviceRole, &p.adminRole, &encrypted, &p.maxDatabaseBytes, &paused)
 	if err != nil {
 		if err == pgx.ErrNoRows {
 			return project{}, httpError(http.StatusNotFound, "project not found")
 		}
 		return project{}, err
+	}
+	if paused {
+		return project{}, errProjectPaused
 	}
 	p.secret, err = secretbox.Decrypt(s.masterKey, encrypted)
 	if err != nil {

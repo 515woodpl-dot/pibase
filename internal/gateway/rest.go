@@ -500,7 +500,7 @@ func insertRows(ctx context.Context, w http.ResponseWriter, r *http.Request, tx 
 			statement += " ON CONFLICT" + target + " DO UPDATE SET " + strings.Join(updates, ",")
 		}
 	}
-	return executeMutation(ctx, w, r, tx, statement, []any{body}, http.StatusCreated)
+	return executeMutation(ctx, w, r, tx, table, statement, []any{body}, http.StatusCreated)
 }
 
 // primaryKeyColumns returns the table's primary key columns in key order, or
@@ -555,7 +555,7 @@ func updateRows(ctx context.Context, w http.ResponseWriter, r *http.Request, tx 
 		assignments = append(assignments, identifier+"=(jsonb_populate_record(NULL::"+table.identifier()+",$1::jsonb))."+identifier)
 	}
 	statement := "UPDATE " + table.identifier() + " SET " + strings.Join(assignments, ",") + plan.where
-	return executeMutation(ctx, w, r, tx, statement, append([]any{body}, plan.args...), http.StatusOK)
+	return executeMutation(ctx, w, r, tx, table, statement, append([]any{body}, plan.args...), http.StatusOK)
 }
 
 func deleteRows(ctx context.Context, w http.ResponseWriter, r *http.Request, tx pgx.Tx, table tableInfo) error {
@@ -564,17 +564,46 @@ func deleteRows(ctx context.Context, w http.ResponseWriter, r *http.Request, tx 
 		return err
 	}
 	statement := "DELETE FROM " + table.identifier() + plan.where
-	return executeMutation(ctx, w, r, tx, statement, plan.args, http.StatusOK)
+	return executeMutation(ctx, w, r, tx, table, statement, plan.args, http.StatusOK)
 }
 
-func executeMutation(ctx context.Context, w http.ResponseWriter, r *http.Request, tx pgx.Tx, statement string, args []any, representationStatus int) error {
+// returnedRow is the JSON built for each changed row: every column, or only
+// the plain columns named in select= (as insert(...).select('title') asks).
+// Embedded selections still return every column.
+func returnedRow(r *http.Request, table tableInfo) (string, error) {
+	selection := strings.TrimSpace(r.URL.Query().Get("select"))
+	if selection == "" || selection == "*" || strings.ContainsAny(selection, "()") {
+		return "to_jsonb(changed)", nil
+	}
+	var parts []string
+	for _, name := range strings.Split(selection, ",") {
+		name = strings.TrimSpace(name)
+		if name == "*" {
+			return "to_jsonb(changed)", nil
+		}
+		if _, err := table.column(name); err != nil {
+			return "", err
+		}
+		identifier := pgx.Identifier{name}.Sanitize()
+		parts = append(parts, quoteLiteral(name)+",changed."+identifier)
+	}
+	return "jsonb_build_object(" + strings.Join(parts, ",") + ")", nil
+}
+
+func quoteLiteral(s string) string { return "'" + strings.ReplaceAll(s, "'", "''") + "'" }
+
+func executeMutation(ctx context.Context, w http.ResponseWriter, r *http.Request, tx pgx.Tx, table tableInfo, statement string, args []any, representationStatus int) error {
 	if strings.Contains(r.Header.Get("Prefer"), "return=representation") {
+		row, err := returnedRow(r, table)
+		if err != nil {
+			return err
+		}
 		var body []byte
-		query := "WITH changed AS (" + statement + " RETURNING *) SELECT COALESCE(jsonb_agg(to_jsonb(changed)),'[]'::jsonb) FROM changed"
+		query := "WITH changed AS (" + statement + " RETURNING *) SELECT COALESCE(jsonb_agg(" + row + "),'[]'::jsonb) FROM changed"
 		if err := tx.QueryRow(ctx, query, args...).Scan(&body); err != nil {
 			return err
 		}
-		body, err := shapeResponse(r, body)
+		body, err = shapeResponse(r, body)
 		if err != nil {
 			return err
 		}

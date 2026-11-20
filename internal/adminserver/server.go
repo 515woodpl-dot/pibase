@@ -7,7 +7,7 @@ import (
 	"context"
 	"crypto/rand"
 	"crypto/subtle"
-	_ "embed"
+	"embed"
 	"encoding/hex"
 	"encoding/json"
 	"errors"
@@ -26,6 +26,7 @@ import (
 	"github.com/515woodpl-dot/pibase/internal/adminsql"
 	"github.com/515woodpl-dot/pibase/internal/auth"
 	"github.com/515woodpl-dot/pibase/internal/backup"
+	"github.com/515woodpl-dot/pibase/internal/billing"
 	"github.com/515woodpl-dot/pibase/internal/control"
 	"github.com/jackc/pgx/v5"
 )
@@ -52,6 +53,18 @@ type Config struct {
 	// DashboardURL is this dashboard's address as people open it, used in
 	// reset links (PIBASE_DASHBOARD_URL). Never taken from request headers.
 	DashboardURL string
+	// SignupClosed turns public dashboard sign-up off (PIBASE_SIGNUP=closed).
+	SignupClosed bool
+	// SignupHourlyLimit caps new accounts per hour across the server; 0 means 30.
+	SignupHourlyLimit int
+	// BlockedEmailDomains are refused at sign-up, besides common throwaway inboxes.
+	BlockedEmailDomains []string
+	// Stripe is set when billing is on (PIBASE_STRIPE_SECRET_KEY); nil otherwise.
+	Stripe *billing.Stripe
+	// StripeWebhookSecret checks that webhooks come from Stripe (whsec_...).
+	StripeWebhookSecret string
+	// Billing holds the plans, trial and grace period.
+	Billing control.BillingConfig
 }
 
 type Server struct {
@@ -62,6 +75,7 @@ type Server struct {
 	loginFailures *rateLimiter
 	recoverLimit  *rateLimiter
 	userEditLimit *rateLimiter
+	signup        *signupState
 	// accountProjectsMu serialises account-owned project creation and account
 	// deletion so the per-account cap cannot be raced and a delete cannot
 	// leave behind a project created while it ran.
@@ -81,7 +95,7 @@ func New(c Config) (*Server, error) {
 	if c.MaxProjectsPerAccount <= 0 {
 		c.MaxProjectsPerAccount = 2
 	}
-	return &Server{Config: c, loginLimit: newRateLimiter(), signupLimit: newRateLimiter(), passwordLimit: newRateLimiter(), loginFailures: newRateLimiter(), recoverLimit: newRateLimiter(), userEditLimit: newRateLimiter()}, nil
+	return &Server{Config: c, loginLimit: newRateLimiter(), signupLimit: newRateLimiter(), passwordLimit: newRateLimiter(), loginFailures: newRateLimiter(), recoverLimit: newRateLimiter(), userEditLimit: newRateLimiter(), signup: newSignupState()}, nil
 }
 
 // identityKind distinguishes operator-token auth from account-session auth.
@@ -132,6 +146,8 @@ func (s *Server) Handler() http.Handler {
 	mux.HandleFunc("PATCH /_pibase/projects/{id}/limits", s.setLimits)
 	mux.HandleFunc("PATCH /_pibase/projects/{id}/functions", s.setFunctions)
 	mux.HandleFunc("PATCH /_pibase/projects/{id}/public-url", s.setPublicURL)
+	mux.HandleFunc("GET /_pibase/projects/{id}/auth-settings", s.getAuthSettings)
+	mux.HandleFunc("PUT /_pibase/projects/{id}/auth-settings", s.putAuthSettings)
 	mux.HandleFunc("POST /_pibase/projects/{id}/export", s.exportProject)
 	mux.HandleFunc("POST /_pibase/projects/import", s.importProject)
 	mux.HandleFunc("POST /_pibase/projects/{id}/users", s.createUser)
@@ -139,6 +155,16 @@ func (s *Server) Handler() http.Handler {
 	mux.HandleFunc("DELETE /_pibase/projects/{id}/users/{user}", s.deleteUser)
 	// Auth endpoints — no token required.
 	mux.HandleFunc("POST /_pibase/auth/signup", s.authSignup)
+	mux.HandleFunc("GET /_pibase/auth/signup-form", s.signupForm)
+	mux.HandleFunc("POST /_pibase/auth/verify", s.authVerify)
+	mux.HandleFunc("POST /_pibase/auth/verify/resend", s.authResendVerification)
+	mux.HandleFunc("GET /_pibase/operator/accounts", s.operatorAccounts)
+	mux.HandleFunc("DELETE /_pibase/operator/accounts/{id}", s.operatorDeleteAccount)
+	mux.HandleFunc("PATCH /_pibase/operator/accounts/{id}/billing", s.operatorSetBilling)
+	mux.HandleFunc("GET /_pibase/billing", s.billingInfo)
+	mux.HandleFunc("POST /_pibase/billing/checkout", s.billingCheckout)
+	mux.HandleFunc("POST /_pibase/billing/portal", s.billingPortal)
+	mux.HandleFunc("POST /_pibase/billing/webhook", s.billingWebhook)
 	mux.HandleFunc("POST /_pibase/auth/login", s.authLogin)
 	mux.HandleFunc("POST /_pibase/auth/logout", s.authLogout)
 	mux.HandleFunc("GET /_pibase/auth/me", s.authMe)
@@ -151,6 +177,11 @@ func (s *Server) Handler() http.Handler {
 	mux.HandleFunc("POST /_pibase/operator/account-password", s.operatorSetPassword)
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		w.Header().Set("Cache-Control", "no-store")
+		// In production the dashboard is only ever served over HTTPS (Caddy on
+		// a droplet, Cloudflare on a Pi); tell browsers never to use plain HTTP.
+		if s.Env == "production" {
+			w.Header().Set("Strict-Transport-Security", "max-age=31536000")
+		}
 		// Page and auth endpoints need no operator credential.
 		if r.Method == http.MethodGet || r.Method == http.MethodHead {
 			switch r.URL.Path {
@@ -160,9 +191,17 @@ func (s *Server) Handler() http.Handler {
 			case "/app", "/dashboard":
 				s.servePage(w, page)
 				return
+			case "/manifest.webmanifest", "/sw.js", "/favicon.ico", "/apple-touch-icon.png":
+				s.servePWA(w, r)
+				return
+			}
+			if strings.HasPrefix(r.URL.Path, "/pwa/") {
+				s.servePWA(w, r)
+				return
 			}
 		}
-		if strings.HasPrefix(r.URL.Path, "/_pibase/auth/") {
+		// Stripe signs its webhooks; they carry no dashboard session.
+		if strings.HasPrefix(r.URL.Path, "/_pibase/auth/") || r.URL.Path == "/_pibase/billing/webhook" {
 			mux.ServeHTTP(w, r)
 			return
 		}
@@ -287,8 +326,14 @@ func (s *Server) authSignup(w http.ResponseWriter, r *http.Request) {
 		Email           string `json:"email"`
 		Password        string `json:"password"`
 		PasswordConfirm string `json:"password_confirm"`
+		FormToken       string `json:"form_token"`
+		Trap            string `json:"hp"`
 	}
 	if !jsonBody(w, r, &b) {
+		return
+	}
+	if status, msg := s.checkSignup(r, ip, b.Email, b.FormToken, b.Trap); status != 0 {
+		http.Error(w, msg, status)
 		return
 	}
 	// The password is typed twice when an account is created, so a typo cannot
@@ -305,6 +350,28 @@ func (s *Server) authSignup(w http.ResponseWriter, r *http.Request) {
 		}
 		http.Error(w, err.Error(), http.StatusBadRequest)
 		return
+	}
+	s.noteSignup(ip)
+	s.cleanupUnverified()
+	if s.billingEnabled() {
+		if err := control.StartTrial(r.Context(), s.AdminURL, account.ID, s.Billing.TrialDays); err != nil {
+			fail(w, err)
+			return
+		}
+	}
+	if s.verifyEmailRequired() {
+		if err := s.sendVerification(r.Context(), account.ID, account.Email); err != nil {
+			fail(w, err)
+			return
+		}
+	} else {
+		// Without email the server cannot send a link, so the account is
+		// confirmed at once and the other limits carry the spam protection.
+		if err := control.MarkAccountVerified(r.Context(), s.AdminURL, account.ID); err != nil {
+			fail(w, err)
+			return
+		}
+		account.EmailVerified = true
 	}
 	token, err := control.IssueSession(r.Context(), s.AdminURL, account.ID)
 	if err != nil {
@@ -428,6 +495,11 @@ func (s *Server) authDeleteAccount(w http.ResponseWriter, r *http.Request) {
 	}
 	if b.Confirm != account.Email {
 		http.Error(w, "type your email address to confirm deletion", http.StatusBadRequest)
+		return
+	}
+	// Stop charging before the account goes, so nobody pays for nothing.
+	if err := s.cancelSubscriptionOf(r.Context(), account.ID); err != nil {
+		http.Error(w, "could not cancel your subscription with Stripe, so the account was kept: "+err.Error(), http.StatusBadGateway)
 		return
 	}
 	s.accountProjectsMu.Lock()
@@ -864,17 +936,16 @@ func (s *Server) createProject(w http.ResponseWriter, r *http.Request) {
 	if !jsonBody(w, r, &b) {
 		return
 	}
+	if !s.requireVerified(w, r) {
+		return
+	}
 	id, _ := getIdentity(r.Context())
+	var planBytes int64
 	if id.kind == accountKind {
 		s.accountProjectsMu.Lock()
 		defer s.accountProjectsMu.Unlock()
-		n, err := control.CountOwnedProjects(r.Context(), s.AdminURL, id.accountID)
-		if err != nil {
-			fail(w, err)
-			return
-		}
-		if n >= s.MaxProjectsPerAccount {
-			http.Error(w, fmt.Sprintf("project limit reached (%d per account)", s.MaxProjectsPerAccount), http.StatusForbidden)
+		var ok bool
+		if planBytes, ok = s.checkProjectRoom(w, r, id.accountID); !ok {
 			return
 		}
 	}
@@ -889,6 +960,13 @@ func (s *Server) createProject(w http.ResponseWriter, r *http.Request) {
 			_ = control.DeleteProject(context.Background(), s.AdminURL, p.ID)
 			fail(w, err)
 			return
+		}
+		// The plan decides how large the database may grow.
+		if planBytes > 0 {
+			if err := control.SetLimits(r.Context(), s.AdminURL, p.ID, planBytes); err != nil {
+				fail(w, err)
+				return
+			}
 		}
 	}
 	writeJSON(w, 201, p)
@@ -1070,6 +1148,54 @@ func (s *Server) setPublicURL(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, 200, map[string]string{"url": url, "api_url": s.apiURL(url)})
 }
 
+// authSettingsResponse adds whether this server can send email, so the
+// dashboard can warn when confirmation emails would never arrive.
+func (s *Server) authSettingsResponse(a control.AuthSettings) map[string]any {
+	return map[string]any{"confirm_email": a.ConfirmEmail, "site_url": a.SiteURL, "redirect_urls": a.RedirectURLs, "email_sending": s.SendMail != nil}
+}
+
+func (s *Server) getAuthSettings(w http.ResponseWriter, r *http.Request) {
+	id := r.PathValue("id")
+	if !s.checkOwner(w, r, id) {
+		return
+	}
+	a, err := control.GetAuthSettings(r.Context(), s.AdminURL, id)
+	if err != nil {
+		http.NotFound(w, r)
+		return
+	}
+	writeJSON(w, 200, s.authSettingsResponse(a))
+}
+
+func (s *Server) putAuthSettings(w http.ResponseWriter, r *http.Request) {
+	id := r.PathValue("id")
+	if !s.checkOwner(w, r, id) {
+		return
+	}
+	var b struct {
+		ConfirmEmail *bool    `json:"confirm_email"`
+		SiteURL      string   `json:"site_url"`
+		RedirectURLs []string `json:"redirect_urls"`
+	}
+	if !jsonBody(w, r, &b) {
+		return
+	}
+	if b.ConfirmEmail == nil {
+		http.Error(w, "confirm_email is required", http.StatusBadRequest)
+		return
+	}
+	a, err := control.SetAuthSettings(r.Context(), s.AdminURL, id, control.AuthSettings{ConfirmEmail: *b.ConfirmEmail, SiteURL: b.SiteURL, RedirectURLs: b.RedirectURLs})
+	if err != nil {
+		if errors.Is(err, control.ErrNotFound) {
+			http.NotFound(w, r)
+			return
+		}
+		http.Error(w, err.Error(), http.StatusBadRequest)
+		return
+	}
+	writeJSON(w, 200, s.authSettingsResponse(a))
+}
+
 func (s *Server) setLimits(w http.ResponseWriter, r *http.Request) {
 	id := r.PathValue("id")
 	if ident, ok := getIdentity(r.Context()); !ok || ident.kind != opKind {
@@ -1237,10 +1363,51 @@ func (s *Server) backups(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, 200, out)
 }
 
+// servePWA serves the app manifest, icons and service worker. They hold no
+// secrets and are the same for everyone.
+func (s *Server) servePWA(w http.ResponseWriter, r *http.Request) {
+	name := strings.TrimPrefix(r.URL.Path, "/pwa/")
+	switch r.URL.Path {
+	case "/manifest.webmanifest":
+		name = "manifest.webmanifest"
+	case "/sw.js":
+		name = "sw.js"
+	case "/favicon.ico":
+		name = "favicon-32.png"
+	case "/apple-touch-icon.png":
+		name = "apple-touch-icon.png"
+	}
+	if name == "" || strings.ContainsAny(name, "/\\") {
+		http.NotFound(w, r)
+		return
+	}
+	data, err := pwaFiles.ReadFile("web/pwa/" + name)
+	if err != nil {
+		http.NotFound(w, r)
+		return
+	}
+	switch {
+	case strings.HasSuffix(name, ".webmanifest"):
+		w.Header().Set("Content-Type", "application/manifest+json")
+	case strings.HasSuffix(name, ".js"):
+		w.Header().Set("Content-Type", "text/javascript; charset=utf-8")
+	case strings.HasSuffix(name, ".png"):
+		w.Header().Set("Content-Type", "image/png")
+	}
+	w.Header().Set("X-Content-Type-Options", "nosniff")
+	if name == "sw.js" {
+		// Browsers check for a new service worker against the server each time.
+		w.Header().Set("Cache-Control", "no-cache")
+	} else {
+		w.Header().Set("Cache-Control", "public, max-age=86400")
+	}
+	_, _ = w.Write(data)
+}
+
 func (s *Server) servePage(w http.ResponseWriter, html string) {
 	w.Header().Set("Content-Type", "text/html; charset=utf-8")
 	// The pages hold no secrets and load nothing from other sites.
-	w.Header().Set("Content-Security-Policy", "default-src 'none'; script-src 'unsafe-inline'; style-src 'unsafe-inline'; connect-src 'self'; img-src 'self' data:; base-uri 'none'; form-action 'self'; frame-ancestors 'none'")
+	w.Header().Set("Content-Security-Policy", "default-src 'none'; script-src 'unsafe-inline'; style-src 'unsafe-inline'; connect-src 'self'; img-src 'self' data:; manifest-src 'self'; worker-src 'self'; base-uri 'none'; form-action 'self'; frame-ancestors 'none'")
 	w.Header().Set("X-Content-Type-Options", "nosniff")
 	_, _ = w.Write([]byte(html))
 }
@@ -1363,6 +1530,12 @@ func (r *rateLimiter) Reset(key string) {
 //
 //go:embed web/app.html
 var page string
+
+// pwaFiles make the dashboard installable on phones and desktops: the app
+// manifest, its icons and a service worker that keeps nothing on the device.
+//
+//go:embed web/pwa
+var pwaFiles embed.FS
 
 //go:embed web/landing.html
 var landingPage string

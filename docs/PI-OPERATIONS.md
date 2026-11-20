@@ -46,6 +46,81 @@ address will not load it. Two ways to reach it from another machine:
 - SSH tunnel, no configuration change: `ssh -L 18081:127.0.0.1:18081 pi@PI_HOST`,
   then open `http://127.0.0.1:18081/` on your own machine.
 
+## The whole of pibase on a Pi, under your own domain
+
+Everything the droplet setup does ([VPS.md](VPS.md)) also runs on a Pi:
+`api.yourdomain.com` for websites, `app.yourdomain.com` for the public
+dashboard (sign-up, billing, the phone app), HTTPS, and daily backups. A
+Cloudflare Tunnel carries the traffic: the Pi connects out to Cloudflare, so no
+router ports are opened, and it works even when your internet provider shares
+one IP address between homes.
+
+**You need:** a Pi 4 or 5 with 4 GB of memory or more (8 GB is comfortable),
+64-bit Raspberry Pi OS, a USB 3 SSD formatted ext4, a domain whose DNS is on
+Cloudflare (a free Cloudflare account is enough), and ideally a wired network
+and a small UPS.
+
+1. **Prepare the Pi** as above: `./scripts/setup-pi.sh` (the one sudo step),
+   log out and in, put the repository on the SSD, then
+   `PIBASE_DATA_ROOT=... ./scripts/init-env.sh`, `docker compose up --build -d`
+   and `./scripts/create-account.sh` for your own dashboard login.
+2. **Create the tunnel** in Cloudflare: **Zero Trust**, **Networks**,
+   **Tunnels**, **Create a tunnel**, **Cloudflared**. Name it (for example
+   `pibase`) and copy its token, the long string after `--token`. Skip the
+   install step Cloudflare shows; pibase runs the connector itself. On the
+   tunnel's **Public hostnames** tab add two:
+
+   | Public hostname | Service |
+   |---|---|
+   | `api.yourdomain.com` | HTTP `gateway:8080` |
+   | `app.yourdomain.com` | HTTP `admin:18081` |
+
+3. **Go public:**
+
+   ```sh
+   ./scripts/pi-public.sh --api api.yourdomain.com --dashboard app.yourdomain.com
+   ```
+
+   It asks for the token (not shown while you type), keeps it in `.env`, starts
+   the `tunnel` container next to pibase, sets the public addresses, secure
+   cookies and HSTS, trusts the tunnel to report each visitor's address (for
+   sign-up and sign-in limits), and checks both names answer. Public sign-up
+   stays closed until email is set up, exactly as on a droplet.
+4. **Email:** add `PIBASE_SMTP_*` and `PIBASE_SIGNUP=open` to `.env`, then
+   `docker compose up -d`. See "Public dashboard" in [VPS.md](VPS.md) for the
+   spam protection.
+5. **Backups every day:** `./scripts/pi-backups.sh` (asks for sudo once). They
+   stay on the SSD for 14 days; also copy them off the Pi, for example with
+   `rclone` to cloud storage, because a failed SSD or a fire takes both.
+6. **Billing (optional):** [BILLING.md](BILLING.md); the webhook address is
+   `https://app.yourdomain.com/_pibase/billing/webhook`.
+7. **Phones:** open `https://app.yourdomain.com` and install it.
+
+`./scripts/pi-public.sh --off` takes it off the internet again (the dashboard
+goes back to this machine and Tailscale only). Use either the tunnel or
+Tailscale Funnel for the API, not both.
+
+**Cloudflare limits to know:**
+
+* On Cloudflare's free plan one upload can be at most **100 MB**. Bigger file
+  uploads, and importing a project file over 100 MB through the dashboard, fail
+  through the tunnel; do those over Tailscale or on the Pi itself
+  (`scripts/import-project.sh`).
+* A request that takes longer than **100 seconds** is cut off; exporting a very
+  large project is best done with `scripts/export-project.sh` on the Pi.
+* Don't turn on **Bot Fight Mode** or "I'm Under Attack" for the dashboard's
+  name: they would block Stripe's webhooks and the dashboard's own requests.
+  pibase has its own sign-up protection.
+* HTTPS ends at Cloudflare, which then passes requests through the tunnel; as
+  with any CDN, Cloudflare handles that traffic. Say so in your privacy policy.
+
+**A home server, honestly:** when your power or internet is down, the websites
+using your projects lose their data until it is back, and your home upload
+speed limits how fast they load. Check that your internet plan allows running a
+server. When you outgrow the Pi, the dashboard's **Move to another server**
+(or `scripts/export-project.sh`) moves each project with its keys to a
+droplet; websites only change the address, or keep it if your DNS names move.
+
 ### Public API address with Tailscale Funnel
 
 To let the internet reach the API (websites outside your tailnet, or webhooks
@@ -64,8 +139,8 @@ visitor) and restarts the stack. `./scripts/pi-funnel.sh --off` stops sharing.
 
 The first time, the tailnet must allow HTTPS certificates and Funnel for the
 Pi; Tailscale prints a link to the setting if not. Funnel serves only the
-`*.ts.net` name, so a client's own name such as `pibase.client.com` needs the
-droplet setup instead ([VPS.md](VPS.md)). Speed is limited by your home upload.
+`*.ts.net` name; for your own names, and a public dashboard, use the Cloudflare
+Tunnel above instead. Speed is limited by your home upload.
 
 Never set `PIBASE_ADMIN_BIND=0.0.0.0` on a machine reachable from the internet,
 and never route the dashboard through the public gateway. Rotate the operator token after suspected browser

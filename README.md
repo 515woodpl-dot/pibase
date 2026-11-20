@@ -1,7 +1,9 @@
 # pibase
 
-A small Supabase-shaped backend for Raspberry Pi 4. It runs one PostgreSQL 16
-cluster and one Go gateway. M1 provides a PostgREST-compatible data subset,
+pibase is a hosted backend for websites and apps: sign up, create a project,
+put its API address and key in your app, and run SQL in the dashboard to shape
+how your app's data and sign-in work. It runs on a Raspberry Pi 4 or a small
+server as one PostgreSQL 16 cluster and one Go gateway. M1 provides a PostgREST-compatible data subset,
 database-enforced RLS, RPC, migrations, and owner SQL tooling. Auth user
 management, storage, operations, project branching, realtime, and optional TOTP
 multi-factor authentication are included.
@@ -38,7 +40,15 @@ Create a project (the keys are printed once; store them securely):
 
 On a DigitalOcean droplet or any Ubuntu server, `scripts/setup-droplet.sh` does
 all of this plus HTTPS, swap, firewall and daily backups; see
-[docs/VPS.md](docs/VPS.md).
+[docs/VPS.md](docs/VPS.md). With `--dashboard app.yourname.com` the dashboard is
+public: people sign up (with spam protection and email confirmation) and can
+install it on their phone as an app. See "Public dashboard" in that guide.
+On a Raspberry Pi, `scripts/pi-public.sh` does the same through a Cloudflare
+Tunnel (your own domain, no router ports) and `scripts/pi-backups.sh` schedules
+daily backups; see [docs/PI-OPERATIONS.md](docs/PI-OPERATIONS.md).
+To charge for it, [docs/BILLING.md](docs/BILLING.md) sets up monthly plans with
+Stripe: a 14-day trial, Stripe Checkout and customer portal, and projects that
+pause (data kept) when billing lapses past a 7-day grace period.
 
 The command creates an isolated database and four project-specific roles. It revokes public database access, creates protected `auth` and `storage` schemas, encrypts the JWT signing secret with AES-256-GCM, stores only SHA-256 API-key hashes, and returns distinct anon and service JWTs. The service key must never be shipped to browsers.
 
@@ -46,8 +56,9 @@ Customer-authored `SECURITY DEFINER` functions can bypass intended policies if w
 
 ## Data API (M1)
 
-Use the returned project URL and anon key with `@supabase/supabase-js`, or call
-the wire API directly:
+Use the returned project URL and anon key with the standard open-source
+JavaScript client, `@supabase/supabase-js` (MIT licence), or call the API
+directly:
 
 ```sh
 curl 'http://localhost:18080/rest/v1/todos?select=id,title&done=eq.false&order=id.desc&limit=20' \
@@ -75,8 +86,20 @@ returns a clear JSON 400 response.
 
 Email/password authentication supports signup, confirmation, login, rotating
 refresh tokens, logout, password recovery, user updates, and service-key user
-administration. M6a adds the Supabase Auth TOTP factor flow used by
-`supabase-js`: enroll, list, challenge, verify, and unenroll.
+administration. M6a adds the TOTP factor flow used by
+the JavaScript client: enroll, list, challenge, verify, and unenroll.
+
+Each project's **Authentication** page in the dashboard sets how app users sign
+up. **Confirm email** (on by default) makes a new user click a confirmation link
+before signing in; turn it off and sign-up signs the user in at once. Turn it
+off when the server has no email service (`PIBASE_SMTP_*`), or new users can
+never sign in. **Site URL** and **Allowed redirect URLs** are the app pages that
+links in confirmation and password-reset emails send people back to, already
+signed in (the session arrives in the URL fragment, which the JavaScript client
+reads). The app picks one with `emailRedirectTo` / `redirectTo`; an address not
+on the list falls back to the site URL. Email links name the project, so they
+work when opened in a browser. With no site URL, the links answer with JSON as
+before.
 
 TOTP secrets are random 160-bit values encrypted at rest with the instance
 master key. Challenges expire after five minutes, codes are rate-limited and
@@ -102,7 +125,7 @@ printf 'select current_user, now()' | docker compose run --rm -T \
 ```
 
 Migration names are idempotent and checksum-protected. Owner SQL works like
-the Supabase SQL editor: a script may hold many statements and runs as one
+a hosted SQL editor: a script may hold many statements and runs as one
 transaction (if one fails, nothing changes); `GRANT`/`REVOKE` on tables,
 sequences and functions, `ALTER DEFAULT PRIVILEGES` and `DO $$ ... $$` blocks
 are allowed; and `anon`, `authenticated` and `service_role` in a `GRANT` or
@@ -125,13 +148,13 @@ constrained authenticator connection and PostgreSQL roles are. Owner SQL has a
 
 The main test script runs static checks, unit tests, real-PostgreSQL security and
 data tests, builds the production image, and cross-compiles for Linux ARM64.
-The Supabase acceptance script creates a temporary isolated project, exercises
-M1 through the real `@supabase/supabase-js` client, and deletes that project.
+The client acceptance script creates a temporary isolated project, exercises
+M1 through the real JavaScript client (`@supabase/supabase-js`), and deletes that project.
 The M0 measurement harness remains available for reproducing Pi memory data.
 
 ## Using it from websites
 
-`docs/COMPATIBILITY.md` covers using pibase with `@supabase/supabase-js`: what is
+`docs/COMPATIBILITY.md` covers connecting a website to pibase: what is
 supported, SQL helpers, role names, the storage upload hook, sign-out, concurrent
 editors, the browser sign-in client and limits. `docs/SERVER-SIDE-CODE.md` shows
 how to run server-side work (email, webhooks, scheduled jobs) in the site's own
@@ -147,9 +170,11 @@ with log in, sign up and forgot password; signing up asks for an organization na
 twice. The main login (`omnia@local.com` by default) is made with `./scripts/create-account.sh`, which
 asks for its password; `--reset <email>` gives an account a new one. Forgot password emails a
 one-hour, single-use link when `PIBASE_SMTP_*` and `PIBASE_DASHBOARD_URL` are set, and the operator
-view can set any account's password. After logging in, `/app` shows only that account's projects, with an icon menu that expands on tap,
+view can set any account's password. After logging in, `/app` shows only that account's projects as cards, with an icon menu that expands on tap.
+Projects, tables, users, backups, migrations and settings are cards; adding and changing things
+happens in pop-up windows, and deleting asks you to type the name first. The dashboard also has
 a per-project overview (database size, requests, success rate, warnings and errors by service, and daily
-requests), API keys with a ready `.env` block (`SUPABASE_URL`, `NEXT_PUBLIC_*`, `VITE_*`), tables, users
+requests), API keys with a ready `.env` block (`PIBASE_URL`, `NEXT_PUBLIC_*`, `VITE_*`) and connection code, tables, users
 (add, set a password, app role in `app_metadata.role`, user metadata, ban, confirm, delete; email or
 username), the SQL editor with templates, migrations, backups and settings.
 Changing app metadata ends the user's existing sessions, and dashboard user
@@ -176,7 +201,7 @@ handling, restore drills, monitoring, and branching semantics.
 ## Realtime and delivery (M5a)
 
 `/realtime/v1/websocket` supports the `postgres_changes` channel used by
-supabase-js for unfiltered, explicit `INSERT` and `UPDATE` changes on `public`
+the JavaScript client for unfiltered, explicit `INSERT` and `UPDATE` changes on `public`
 tables. Wildcard and `DELETE` subscriptions are rejected clearly.
 An owner enables a table explicitly through the SQL tool:
 

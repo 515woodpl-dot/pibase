@@ -44,6 +44,11 @@ func resetTestServer(t *testing.T, withMail bool) (*httptest.Server, func() []se
 	if withMail {
 		cfg.DashboardURL = "https://dash.example.com/"
 		cfg.SendMail = func(to, subject, body string) error {
+			// Sign-up also sends a welcome email to confirm the address;
+			// these tests are about reset emails only.
+			if subject == "Confirm your pibase account" {
+				return nil
+			}
 			mu.Lock()
 			defer mu.Unlock()
 			sent = append(sent, sentMail{to, subject, body})

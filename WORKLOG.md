@@ -12,6 +12,92 @@ disposable PostgreSQL cluster instead of mutating the running stack. A fresh-Pi
 setup drill remains required before a release claim; current evidence is in
 `reports/M6b.md`.
 
+## Sign-up settings and pibase wording (Claude, 2026-11-20)
+
+- Per-project **Authentication** page (dashboard) and `GET/PUT
+  /_pibase/projects/{id}/auth-settings`: Confirm email (default on), Site URL,
+  allowed redirect URLs (`*` suffix needs a `/` before it). Stored in
+  `control.projects.auth_*`, exposed in `project_catalog`, carried by export/import.
+- Gateway: with Confirm email off, `/auth/v1/signup` confirms the user and returns
+  a session. Email links now carry `project=<id>` (a browser sends no apikey; they
+  never worked before) and `redirect_to`. A GET verify with a site URL or allowed
+  `redirect_to` answers 303 to the app with the session (or `#error=...`) in the
+  fragment; with neither, JSON as before.
+- REST writes with `Prefer: return=representation` now honour plain `select=`
+  columns instead of always returning every column.
+- Customer-visible wording says pibase; the dashboard `.env` block uses
+  `PIBASE_URL` / `PIBASE_ANON_KEY` and adds connection code. The MIT client's
+  package name stays where developers type it. Old reports/reviews are unchanged.
+- Tests: `internal/control/auth_settings_test.go`,
+  `internal/gateway/auth_settings_integration_test.go`, `TestRESTWithRLS`.
+  Pre-existing: `TestPagesUIHardRules` fails on main (`chain.scrollLeft=x`).
+
+## Whole app on a Pi via Cloudflare Tunnel (Claude, 2026-11-20)
+
+- `compose.yaml` service `tunnel` (profile `tunnel`): cloudflared
+  2026.10.7 pinned by multi-arch digest (amd64 + arm64 checked in the registry;
+  entrypoint `cloudflared`, runs as 65532). Remotely managed tunnel; token in
+  `.env` as `PIBASE_TUNNEL_TOKEN`; hostnames route to `gateway:8080` and
+  `admin:18081` on the compose network.
+- `scripts/pi-public.sh --api NAME --dashboard NAME` / `--off`: token prompt
+  (hidden) or env, validation, `.env` updates (mode 600, other profiles kept),
+  production dashboard, sign-up closed until SMTP, trusted proxy = compose
+  subnet, health checks. Dry-run tested with stand-in docker/curl; not yet run
+  against a real Cloudflare account.
+- `scripts/pi-backups.sh`: the droplet's daily backup timer for the Pi.
+- Dashboard sends HSTS itself when `PIBASE_ADMIN_ENV=production`.
+- docs/PI-OPERATIONS.md: full public Pi walkthrough and Cloudflare limits
+  (100 MB uploads, 100 s requests, Bot Fight Mode vs Stripe webhooks).
+
+## Stripe billing (Claude, 2026-11-20)
+
+- Off unless `PIBASE_STRIPE_SECRET_KEY`; then `PIBASE_PLANS`
+  (`Name:price_id:projects:db_MB:label;...`) and `PIBASE_STRIPE_WEBHOOK_SECRET`
+  are required. Trial/grace via `PIBASE_TRIAL_*`, `PIBASE_BILLING_GRACE_DAYS`.
+- `internal/billing`: raw-HTTP Stripe client (customers with idempotency key,
+  Checkout, portal, get/cancel subscription) and webhook signature check
+  (5-minute tolerance, several v1 signatures). No Stripe SDK dependency.
+- `control/billing.go`: account billing columns (existing accounts backfilled
+  exempt; CLI-made accounts exempt), `StandingOf` (exempt/trial/active/grace/
+  paused; past_due counts as active), `ApplyBilling` sweep every 10 minutes and
+  after each webhook: sets `projects.paused_at`, applies plan DB size.
+- Webhooks re-read the subscription from Stripe (order-independent); unknown or
+  deleted accounts are acknowledged. Paying accounts that pick another plan get
+  the portal, never a second Checkout. Deleting an account cancels its live
+  subscription first (refuses the delete if Stripe fails).
+- Gateway: `resolveProject`/`resolveProjectID` answer 402 for paused projects
+  after the key check; outbox jobs skip them. Open realtime sockets end at the
+  next token refresh.
+- Dashboard: Billing page, trial/grace/paused/past-due banners, "Paused: billing"
+  project badge, operator billing badge and exempt toggle.
+- Tests: `TestBillingLifecycle` (fake Stripe), `TestPausedProjectIsRefused`,
+  `TestStandingOf`, `TestParsePlans`, `TestVerifyWebhook`. Browser run through a
+  local Stripe stand-in. Not yet run against real Stripe test mode.
+
+## Public dashboard, spam protection and phone app (Claude, 2026-11-20)
+
+- Dashboard sign-up spam layers (`internal/adminserver/signup_guard.go`): signed
+  form token >= 3 s old, hidden trap field, throwaway domains
+  (+`PIBASE_BLOCKED_EMAIL_DOMAINS`), 3 accounts/IP/day, server-wide hourly cap
+  (`PIBASE_SIGNUP_HOURLY_LIMIT`, default 30), `PIBASE_SIGNUP=closed`. All skipped
+  when `Env=test` except closed and the trap.
+- Email confirmation for self-made accounts when SMTP and `PIBASE_DASHBOARD_URL`
+  are set: `control.accounts.email_verified_at` (existing rows backfilled as
+  confirmed), `control.email_verifications`, link `<dashboard>/#verify=<token>`,
+  resend endpoint, create/import project refused until confirmed. Unconfirmed
+  accounts without projects removed after 48 h (start-up and hourly on sign-up).
+  CLI `account-create` marks accounts confirmed.
+- Operator: `GET /_pibase/operator/accounts`, `DELETE .../accounts/{id}` (type
+  the email); dashboard list with "Not confirmed only" filter.
+- `setup-droplet.sh --dashboard NAME` and `add-domain.sh --dashboard`: Caddy
+  site to :18081 with HSTS, `PIBASE_ADMIN_ENV=production`, dashboard URL, and
+  sign-up closed until SMTP is configured. Caddy config validated and served
+  locally with `tls internal`; not yet run on a real droplet.
+- Installable app: manifest, icons, no-storage service worker with an offline
+  notice; CSP adds `manifest-src`/`worker-src`. Chromium reports no
+  installability errors. `TestDashboardIsInstallable`, `TestSignup*`,
+  `TestStaleUnconfirmedAccountsAreRemoved`.
+
 ## M4 implementation
 
 - Added authenticated static dashboard, owner SQL UI, health/Prometheus

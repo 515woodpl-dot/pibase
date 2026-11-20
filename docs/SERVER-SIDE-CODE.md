@@ -14,7 +14,7 @@ The database stays the security boundary. A route handler is for work that needs
 
 The browser talks to PIBASE directly for data; it goes through the Next.js app only when a secret or an outside service is involved.
 
-## Supabase concept to Next.js equivalent
+## Moving an app from Supabase: concept map
 
 Every Edge Function feature has a plain Next.js equivalent; only JWT checking and scheduling need a few lines of your own.
 

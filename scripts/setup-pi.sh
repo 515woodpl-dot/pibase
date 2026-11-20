@@ -102,3 +102,5 @@ echo "Then create your dashboard login (it asks for the password): scripts/creat
 if [ "$funnel" -eq 1 ]; then
   echo "Then run scripts/pi-funnel.sh to put the API on the internet (https://<pi>.<tailnet>.ts.net:10000)."
 fi
+echo "To put the whole of PIBASE on the internet under your own domain (API, public dashboard,"
+echo "sign-up, billing, phone app), see docs/PI-OPERATIONS.md: scripts/pi-public.sh and scripts/pi-backups.sh."

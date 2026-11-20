@@ -28,6 +28,42 @@ CREATE TABLE IF NOT EXISTS control.sessions (
 -- Organization the account belongs to, shown in the dashboard. Accounts created
 -- before this column existed have an empty name and are asked to add one.
 ALTER TABLE control.accounts ADD COLUMN IF NOT EXISTS organization text NOT NULL DEFAULT '';
+-- When the account's owner clicked the link in the welcome email. Accounts
+-- that existed before this column are counted as confirmed (the default fills
+-- them once and is then removed, so new accounts start unconfirmed).
+DO $$ BEGIN
+  IF NOT EXISTS (SELECT 1 FROM information_schema.columns WHERE table_schema='control' AND table_name='accounts' AND column_name='email_verified_at') THEN
+    ALTER TABLE control.accounts ADD COLUMN email_verified_at timestamptz DEFAULT now();
+    ALTER TABLE control.accounts ALTER COLUMN email_verified_at DROP DEFAULT;
+  END IF;
+END $$;
+-- Single-use email confirmation links for dashboard accounts (hash only).
+CREATE TABLE IF NOT EXISTS control.email_verifications (
+  token_hash  bytea       PRIMARY KEY,
+  account_id  uuid        NOT NULL REFERENCES control.accounts(id) ON DELETE CASCADE,
+  expires_at  timestamptz NOT NULL,
+  created_at  timestamptz NOT NULL DEFAULT now()
+);
+CREATE INDEX IF NOT EXISTS email_verifications_account_idx ON control.email_verifications(account_id);
+-- Billing (Stripe). Accounts that existed before billing, and ones the
+-- operator makes, are exempt; self-made accounts start a trial. The default
+-- fills existing rows once and is then switched off.
+DO $$ BEGIN
+  IF NOT EXISTS (SELECT 1 FROM information_schema.columns WHERE table_schema='control' AND table_name='accounts' AND column_name='billing_exempt') THEN
+    ALTER TABLE control.accounts ADD COLUMN billing_exempt boolean NOT NULL DEFAULT true;
+    ALTER TABLE control.accounts ALTER COLUMN billing_exempt SET DEFAULT false;
+  END IF;
+END $$;
+ALTER TABLE control.accounts ADD COLUMN IF NOT EXISTS trial_ends_at timestamptz;
+ALTER TABLE control.accounts ADD COLUMN IF NOT EXISTS billing_plan text;
+ALTER TABLE control.accounts ADD COLUMN IF NOT EXISTS stripe_customer_id text;
+ALTER TABLE control.accounts ADD COLUMN IF NOT EXISTS stripe_subscription_id text;
+ALTER TABLE control.accounts ADD COLUMN IF NOT EXISTS subscription_status text;
+ALTER TABLE control.accounts ADD COLUMN IF NOT EXISTS current_period_end timestamptz;
+ALTER TABLE control.accounts ADD COLUMN IF NOT EXISTS cancel_at_period_end boolean NOT NULL DEFAULT false;
+-- When the paid subscription ended (canceled or unpaid); grace counts from here.
+ALTER TABLE control.accounts ADD COLUMN IF NOT EXISTS lapsed_at timestamptz;
+CREATE UNIQUE INDEX IF NOT EXISTS accounts_stripe_customer_idx ON control.accounts(stripe_customer_id) WHERE stripe_customer_id IS NOT NULL;
 -- Single-use password reset links for dashboard accounts. Only a hash of the
 -- token is stored; a new request or a successful reset removes older ones.
 CREATE TABLE IF NOT EXISTS control.password_resets (
@@ -71,6 +107,15 @@ ALTER TABLE control.projects ADD COLUMN IF NOT EXISTS functions_private boolean 
 -- The address apps use for this project, such as https://pibase.client.com,
 -- shown in the dashboard. NULL means PIBASE_PUBLIC_URL (or a guess).
 ALTER TABLE control.projects ADD COLUMN IF NOT EXISTS public_url text;
+-- How the project's app users sign up. auth_confirm_email makes new users
+-- confirm by email before signing in; auth_site_url and auth_redirect_urls are
+-- where email links may send people back to (the app's own pages).
+ALTER TABLE control.projects ADD COLUMN IF NOT EXISTS auth_confirm_email boolean NOT NULL DEFAULT true;
+ALTER TABLE control.projects ADD COLUMN IF NOT EXISTS auth_site_url text;
+ALTER TABLE control.projects ADD COLUMN IF NOT EXISTS auth_redirect_urls text[] NOT NULL DEFAULT '{}';
+-- Set while the owner's billing has lapsed past its grace period: the
+-- gateway refuses the project's requests until the owner pays. Data is kept.
+ALTER TABLE control.projects ADD COLUMN IF NOT EXISTS paused_at timestamptz;
 -- Per-minute request counts by service and HTTP status class, written by the
 -- gateway in batches and pruned after 8 days.
 CREATE TABLE IF NOT EXISTS control.project_activity (
@@ -96,7 +141,8 @@ CREATE VIEW control.project_catalog AS
   SELECT id, database_name, anon_role, authenticated_role, service_role,
          admin_role, jwt_secret_encrypted, anon_key_hash, service_key_hash,
          max_database_bytes, name, created_at, schema_version, schema_error,
-         owner_id, functions_url, functions_private, public_url
+         owner_id, functions_url, functions_private, public_url,
+         auth_confirm_email, auth_site_url, auth_redirect_urls, paused_at
   FROM control.projects;
 GRANT USAGE ON SCHEMA control TO authenticator;
 GRANT SELECT ON control.project_catalog TO authenticator;

@@ -129,6 +129,21 @@ services:
       PIBASE_SMTP_PASS: ${PIBASE_SMTP_PASS:-}
       PIBASE_SMTP_FROM: ${PIBASE_SMTP_FROM:-}
       PIBASE_DASHBOARD_URL: ${PIBASE_DASHBOARD_URL:-}
+      # Public sign-up for dashboard accounts: open (default) or closed, the
+      # most new accounts per hour, and extra email domains to refuse
+      # (comma-separated). See docs/VPS.md, "Public dashboard".
+      PIBASE_SIGNUP: ${PIBASE_SIGNUP:-open}
+      PIBASE_SIGNUP_HOURLY_LIMIT: ${PIBASE_SIGNUP_HOURLY_LIMIT:-}
+      PIBASE_BLOCKED_EMAIL_DOMAINS: ${PIBASE_BLOCKED_EMAIL_DOMAINS:-}
+      # Billing through Stripe; off unless the secret key is set. See
+      # docs/BILLING.md for the plans format and the webhook to add in Stripe.
+      PIBASE_STRIPE_SECRET_KEY: ${PIBASE_STRIPE_SECRET_KEY:-}
+      PIBASE_STRIPE_WEBHOOK_SECRET: ${PIBASE_STRIPE_WEBHOOK_SECRET:-}
+      PIBASE_PLANS: ${PIBASE_PLANS:-}
+      PIBASE_TRIAL_DAYS: ${PIBASE_TRIAL_DAYS:-14}
+      PIBASE_TRIAL_PROJECTS: ${PIBASE_TRIAL_PROJECTS:-1}
+      PIBASE_TRIAL_DB_MB: ${PIBASE_TRIAL_DB_MB:-512}
+      PIBASE_BILLING_GRACE_DAYS: ${PIBASE_BILLING_GRACE_DAYS:-7}
     depends_on:
       bootstrap:
         condition: service_completed_successfully
@@ -142,6 +157,24 @@ services:
     volumes:
       - storage-data:/data/files
       - backup-data:/data/backups
+
+  # Optional: a Cloudflare Tunnel puts the API and the dashboard on your own
+  # domain names over HTTPS, without opening ports on your router. It is on
+  # when COMPOSE_PROFILES includes "tunnel"; scripts/pi-public.sh sets it up.
+  # Cloudflare sends api.<domain> to http://gateway:8080 and app.<domain> to
+  # http://admin:18081 inside this network. The version is pinned by digest.
+  tunnel:
+    profiles: ["tunnel"]
+    image: cloudflare/cloudflared:2026.10.7@sha256:4955524aeaa379e154023d5a027c250f7b35041a2e7e950cf13f144bc9b9c5ba
+    command: ["tunnel", "--no-autoupdate", "run"]
+    environment:
+      TUNNEL_TOKEN: ${PIBASE_TUNNEL_TOKEN:-}
+    depends_on:
+      gateway:
+        condition: service_started
+      admin:
+        condition: service_started
+    restart: unless-stopped
 
   ops:
     user: "${PIBASE_UID:-65532}:${PIBASE_GID:-65532}"
