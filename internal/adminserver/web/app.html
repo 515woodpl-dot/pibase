@@ -170,6 +170,8 @@ button.danger.solid:disabled{background:#e9b9b7;border-color:#e9b9b7;color:#fff}
 .toolbar input{max-width:340px}
 .banner{padding:12px 14px;margin:0 0 16px;border-radius:12px;border:1px solid #f0d9a8;background:#fdf6e6;color:#7a5208;font-weight:600}
 .banner.info{border-color:#c7d8fb;background:#eef4ff;color:#1f4fb8}
+.banner.bad{border-color:#efc2c0;background:#fdeeed;color:#8f2420}
+.banner-sub{margin-top:4px;font-weight:500}
 .switch-row{display:flex;gap:12px;align-items:center;font-weight:650}
 input[type=checkbox].switch{appearance:none;-webkit-appearance:none;position:relative;flex:0 0 44px;width:44px;height:26px;margin:0;padding:0;border:0;border-radius:99px;background:#cbd6e7;cursor:pointer;transform:none}
 input[type=checkbox].switch::after{content:'';position:absolute;top:3px;left:3px;width:20px;height:20px;border-radius:50%;background:#fff;box-shadow:0 1px 3px rgba(0,0,0,.25)}
@@ -228,7 +230,7 @@ button.modal-x{border:0;background:transparent;padding:0 6px;font-size:24px;line
 </main>
 <script>
 const q=id=>document.getElementById(id), chain=q('chain');
-let projects=[], selected=null, account=null, operator=false, uid=0;
+let projects=[], selected=null, account=null, operator=false, uid=0, billing=null;
 
 /* ---------- small helpers ---------- */
 function el(tag,text,cls){const e=document.createElement(tag);if(text!==undefined&&text!==null)e.textContent=text;if(cls)e.className=cls;return e}
@@ -257,7 +259,7 @@ function tile({lead,title,sub,value,off,body,badges,actions,open,cls,kids}){
   if(body)t.append(el('p',body,'tile-body'));
   if(badges&&badges.length){const b=el('div',null,'badges');b.append(...badges);t.append(b)}
   if(kids)t.append(...kids);
-  if(actions&&actions.length){const a=el('div',null,'tile-actions');a.append(...actions);t.append(a)}
+  actions=(actions||[]).filter(Boolean);if(actions.length){const a=el('div',null,'tile-actions');a.append(...actions);t.append(a)}
   return t
 }
 function tiles(...kids){const g=el('div',null,'tiles');g.append(...kids);return g}
@@ -316,11 +318,11 @@ function copyField(label,value,hint){const i=input('text','',value);i.readOnly=t
 function secretField(label,value,hint){const i=input('password','',value);i.readOnly=true;const status=el('span',null,'muted');const reveal=button('Reveal',()=>{i.type=i.type==='password'?'text':'password';reveal.textContent=i.type==='password'?'Reveal':'Hide'});return field(label,i,hint,reveal,button('Copy',()=>copyText(value,status)),status)}
 
 /* ---------- menu ---------- */
-const ICONS={menu:'M4 6h16M4 12h16M4 18h16',grid:'M4 4h7v7H4zM13 4h7v7h-7zM4 13h7v7H4zM13 13h7v7h-7z',chart:'M4 20V9M10 20V4M16 20v-8M3 20h18',table:'M3 5h18v14H3zM3 10h18M9 5v14',users:'M16 20v-1a4 4 0 0 0-4-4H7a4 4 0 0 0-4 4v1M9.5 11a3.5 3.5 0 1 0 0-7 3.5 3.5 0 0 0 0 7M21 20v-1a4 4 0 0 0-3-3.9M15 4.2a3.5 3.5 0 0 1 0 6.6',code:'M8 7l-5 5 5 5M16 7l5 5-5 5M14 4l-4 16',layers:'M12 3l9 5-9 5-9-5zM3 13l9 5 9-5',archive:'M3 4h18v5H3zM5 9v11h14V9M10 13h4',key:'M7 14a4 4 0 1 1 3.9-4.9H21v3h-2v2h-3v-2h-5.1A4 4 0 0 1 7 14z',puzzle:'M12 3v4M12 17v4M3 12h4M17 12h4M6 6l2.5 2.5M15.5 15.5L18 18M6 18l2.5-2.5M15.5 8.5L18 6',gear:'M12 15a3 3 0 1 0 0-6 3 3 0 0 0 0 6M19 12a7 7 0 0 0-.1-1.2l2-1.5-2-3.4-2.3.9a7 7 0 0 0-2-1.2L14.2 3h-4l-.4 2.6a7 7 0 0 0-2 1.2l-2.3-.9-2 3.4 2 1.5A7 7 0 0 0 5 12c0 .4 0 .8.1 1.2l-2 1.5 2 3.4 2.3-.9c.6.5 1.3.9 2 1.2l.4 2.6h4l.4-2.6c.7-.3 1.4-.7 2-1.2l2.3.9 2-3.4-2-1.5c.1-.4.1-.8.1-1.2z',user:'M12 12a4 4 0 1 0 0-8 4 4 0 0 0 0 8M4 21a8 8 0 0 1 16 0',logout:'M9 4H5v16h4M16 8l4 4-4 4M20 12H9',shield:'M12 3l8 3v6c0 4.5-3.4 8.3-8 9-4.6-.7-8-4.5-8-9V6zM9 12l2 2 4-4'};
+const ICONS={menu:'M4 6h16M4 12h16M4 18h16',grid:'M4 4h7v7H4zM13 4h7v7h-7zM4 13h7v7H4zM13 13h7v7h-7z',chart:'M4 20V9M10 20V4M16 20v-8M3 20h18',table:'M3 5h18v14H3zM3 10h18M9 5v14',users:'M16 20v-1a4 4 0 0 0-4-4H7a4 4 0 0 0-4 4v1M9.5 11a3.5 3.5 0 1 0 0-7 3.5 3.5 0 0 0 0 7M21 20v-1a4 4 0 0 0-3-3.9M15 4.2a3.5 3.5 0 0 1 0 6.6',code:'M8 7l-5 5 5 5M16 7l5 5-5 5M14 4l-4 16',layers:'M12 3l9 5-9 5-9-5zM3 13l9 5 9-5',archive:'M3 4h18v5H3zM5 9v11h14V9M10 13h4',key:'M7 14a4 4 0 1 1 3.9-4.9H21v3h-2v2h-3v-2h-5.1A4 4 0 0 1 7 14z',puzzle:'M12 3v4M12 17v4M3 12h4M17 12h4M6 6l2.5 2.5M15.5 15.5L18 18M6 18l2.5-2.5M15.5 8.5L18 6',gear:'M12 15a3 3 0 1 0 0-6 3 3 0 0 0 0 6M19 12a7 7 0 0 0-.1-1.2l2-1.5-2-3.4-2.3.9a7 7 0 0 0-2-1.2L14.2 3h-4l-.4 2.6a7 7 0 0 0-2 1.2l-2.3-.9-2 3.4 2 1.5A7 7 0 0 0 5 12c0 .4 0 .8.1 1.2l-2 1.5 2 3.4 2.3-.9c.6.5 1.3.9 2 1.2l.4 2.6h4l.4-2.6c.7-.3 1.4-.7 2-1.2l2.3.9 2-3.4-2-1.5c.1-.4.1-.8.1-1.2z',user:'M12 12a4 4 0 1 0 0-8 4 4 0 0 0 0 8M4 21a8 8 0 0 1 16 0',logout:'M9 4H5v16h4M16 8l4 4-4 4M20 12H9',shield:'M12 3l8 3v6c0 4.5-3.4 8.3-8 9-4.6-.7-8-4.5-8-9V6zM9 12l2 2 4-4',card:'M3 6h18v12H3zM3 10h18M7 15h4'};
 function icon(name){const s=svgEl('svg',{viewBox:'0 0 24 24','aria-hidden':'true'});s.append(svgEl('path',{d:ICONS[name]||ICONS.grid}));return s}
 // key, label, icon, needs a project, operator only
 const MENU=[['projects','Projects','grid',false],['overview','Overview','chart',true],['tables','Tables','table',true],['users','Users','users',true],['auth','Authentication','shield',true],['sql','SQL','code',true],['migrations','Migrations','layers',true],['backups','Backups','archive',true],['api','API keys','key',true],['extensions','Extensions','puzzle',true,true],['settings','Settings','gear',true]];
-const ACTIONS={projects:()=>load(),overview:()=>openOverview(),tables:()=>openTables(),users:()=>openUsers(),auth:()=>openAuth(),sql:()=>openSQL(),migrations:()=>openMigrations(),backups:()=>openBackups(),api:()=>openKeys(),extensions:()=>openExtensions(),settings:()=>openSettings(),account:()=>openAccount(),logout:()=>logout()};
+const ACTIONS={projects:()=>load(),overview:()=>openOverview(),tables:()=>openTables(),users:()=>openUsers(),auth:()=>openAuth(),sql:()=>openSQL(),migrations:()=>openMigrations(),backups:()=>openBackups(),api:()=>openKeys(),extensions:()=>openExtensions(),settings:()=>openSettings(),account:()=>openAccount(),billing:()=>openBilling(),logout:()=>logout()};
 function navButton(key,label,ic,cls){const b=el('button',null,'nav-item'+(cls?' '+cls:''));b.dataset.menu=key;b.title=label;b.setAttribute('aria-label',label);b.append(icon(ic),el('span',label,'lbl'));return b}
 function buildNav(){
   const nav=q('nav');
@@ -329,9 +331,10 @@ function buildNav(){
   nav.append(toggle,ctx);
   for(const [key,label,ic,needs,op] of MENU){const b=navButton(key,label,ic,(needs?'needs-project ':'')+(op?'operator-only':''));b.onclick=()=>pick(key);nav.append(b)}
   nav.append(el('div',null,'nav-fill'),el('div',null,'nav-sep'));
+  const bill=navButton('billing','Billing','card','account-only billing-only');bill.onclick=()=>pick('billing');
   const acct=navButton('account','Account','user','account-only');acct.onclick=()=>pick('account');
   const out=navButton('logout','Log out','logout','account-only');out.onclick=()=>pick('logout');
-  nav.append(acct,out);
+  nav.append(bill,acct,out);
   q('scrim').onclick=()=>navOpen(false);
   document.addEventListener('keydown',e=>{if(e.key==='Escape')navOpen(false)});
   refreshNav()
@@ -343,6 +346,7 @@ function refreshNav(){
   document.querySelectorAll('.needs-project').forEach(b=>b.classList.toggle('hidden',!selected));
   document.querySelectorAll('.operator-only').forEach(b=>b.classList.toggle('hidden',!!account));
   document.querySelectorAll('.account-only').forEach(b=>b.classList.toggle('hidden',!account));
+  document.querySelectorAll('.billing-only').forEach(b=>b.classList.toggle('hidden',!(account&&billing&&billing.enabled)));
   const ctx=q('navCtx');ctx.textContent=selected?'Working in: '+selected.name:'';ctx.classList.toggle('show',!!selected)
 }
 
@@ -354,12 +358,15 @@ function renderWho(){
 }
 async function init(){
   buildNav();
-  try{const r=await fetch('/_pibase/auth/me');if(r.ok){account=await r.json();renderWho();refreshNav();load();if(location.hash==='#verified'){history.replaceState(null,'','/app');toast('Email confirmed. You can create projects now.')}return}}catch(_){}
+  try{const r=await fetch('/_pibase/auth/me');if(r.ok){account=await r.json();renderWho();await loadBilling();refreshNav();if(location.hash.indexOf('#billing')===0){const done=location.hash==='#billing=done';history.replaceState(null,'','/app');await load();pick('billing');if(done)afterCheckout();return}load();if(location.hash==='#verified'){history.replaceState(null,'','/app');toast('Email confirmed. You can create projects now.')}return}}catch(_){}
   if(location.hash==='#operator'){operator=true;renderWho();refreshNav();q('opLoad').onclick=load;q('opToken').addEventListener('keydown',e=>{if(e.key==='Enter')load()});add(operatorPane());return}
   location.replace('/')
 }
 // Operator only: give a dashboard account a new password, for people who
 // can't receive a reset email.
+// Billing state of an account, for the operator's list.
+function billingBadge(a){const st=a.billing;if(!st)return null;
+  return {exempt:badge('Not billed'),trial:badge('Trial','info'),active:badge(st.plan||'Paid','ok'),grace:badge('Grace','warn'),paused:badge('Paused','bad')}[st.state]||null}
 function accountsPane(){
   const p=pane('Dashboard accounts','Reset the password of anyone who signs in to this dashboard. They are signed out everywhere and log in with the new password.');
   const reset=()=>{const em=input('email','name@example.com'),pw=input('password',''),pw2=input('password','');pw.autocomplete='new-password';pw2.autocomplete='new-password';
@@ -374,8 +381,8 @@ function accountsPane(){
     const unconfirmed=list.filter(a=>!a.email_verified_at).length;
     const count=el('span',plural(list.length,'account')+(unconfirmed?' · '+unconfirmed+' not confirmed':''),'muted');
     const cards=tiles(...list.map(a=>{const t=tile({lead:avatar(a.organization||a.email,true),title:a.email,sub:(a.organization?a.organization+' · ':'')+'Joined '+new Date(a.created_at).toLocaleDateString(),
-      badges:[a.email_verified_at?badge('Confirmed','ok'):badge('Not confirmed','warn'),badge(plural(a.projects,'project'),'info')],
-      actions:[sbtn('Delete',()=>dangerModal('Delete '+a.email+'?','Deletes this dashboard account and every project it owns, with all their data. Use it for spam accounts. This cannot be undone.',a.email,'Delete account',async()=>{await api('/_pibase/operator/accounts/'+encodeURIComponent(a.id),body({confirm:a.email},'DELETE'));load();return 'Deleted '+a.email}),'danger')]});
+      badges:[a.email_verified_at?badge('Confirmed','ok'):badge('Not confirmed','warn'),badge(plural(a.projects,'project'),'info'),billingBadge(a)].filter(Boolean),
+      actions:[a.billing?sbtn(a.billing_exempt?'Bill this account':'Exempt from billing',async()=>{try{await api('/_pibase/operator/accounts/'+encodeURIComponent(a.id)+'/billing',body({exempt:!a.billing_exempt},'PATCH'));toast(a.billing_exempt?a.email+' will now be billed':a.email+' is now exempt');load()}catch(e){toast(e.message)}}):null,sbtn('Delete',()=>dangerModal('Delete '+a.email+'?','Deletes this dashboard account and every project it owns, with all their data. Use it for spam accounts. This cannot be undone.',a.email,'Delete account',async()=>{await api('/_pibase/operator/accounts/'+encodeURIComponent(a.id),body({confirm:a.email},'DELETE'));load();return 'Deleted '+a.email}),'danger')].filter(Boolean)});
       t.dataset.search=(a.email+' '+(a.organization||'')).toLowerCase();return t}));
     // Newest 30 first; search, the filter or "Show all" reach the rest.
     let all=false;const onlyNew=input('checkbox');onlyNew.className='switch';const onlyLbl=el('label',null,'switch-row');onlyLbl.append(onlyNew,el('span','Not confirmed only'));
@@ -413,7 +420,7 @@ function orgPrompt(){
 function renderProjectList(list){
   list.replaceChildren();
   for(const x of projects)list.append(tile({lead:avatar(x.name),title:x.name,sub:'ID '+x.id,open:()=>openProject(x),cls:selected&&selected.id===x.id?'active':'',
-    badges:[x.database_bytes!==undefined?badge(bytes(x.database_bytes)+' database','info'):null,x.requests_30d!==undefined?badge(plural(x.requests_30d,'request')+' in 30 days'):null,x.schema_error?badge('Needs attention','bad'):null].filter(Boolean)}));
+    badges:[x.database_bytes!==undefined?badge(bytes(x.database_bytes)+' database','info'):null,x.requests_30d!==undefined?badge(plural(x.requests_30d,'request')+' in 30 days'):null,x.paused?badge('Paused: billing','bad'):null,x.schema_error?badge('Needs attention','bad'):null].filter(Boolean)}));
   const more=button(null,newProjectWindow,'tile add');more.append(el('span','+ New project'));list.append(more)
 }
 // A new account confirms its email before it can create projects.
@@ -430,6 +437,7 @@ function projectsPane(){
   const unverified=account&&!account.email_verified;
   if(!unverified)topAction(p,button('Import a project',importWindow));
   if(unverified){p.append(verifyBanner());if(!projects.length)return p}
+  const bb=billingBanner();if(bb)p.append(bb);
   if(account&&!account.organization)p.append(orgPrompt());
   if(!projects.length){p.append(createProjectForm());return p}
   const list=el('div',null,'tiles');list.id='projectList';renderProjectList(list);p.append(list);
@@ -721,6 +729,52 @@ async function openAuth(){
     p.replaceChildren(...kids)
   };
   render()
+}
+
+/* ---------- billing ---------- */
+async function loadBilling(){try{billing=account?await api('/_pibase/billing'):null}catch(_){billing=null}}
+function fmtDate(t){return t?new Date(t).toLocaleDateString(undefined,{month:'short',day:'numeric',year:'numeric'}):''}
+function daysLeft(t){return Math.max(0,Math.ceil((new Date(t)-new Date())/86400000))}
+// What the account's billing means right now, in one sentence.
+function billingSummary(b){
+  const st=b.standing||{};
+  switch(st.state){
+    case 'exempt':return {kind:'ok',title:'Not billed',text:'Your account is not charged. Projects are limited only by the server.'};
+    case 'trial':{const d=daysLeft(st.trial_ends_at);return {kind:d<=3?'warn':'info',title:'Free trial: '+d+(d===1?' day':' days')+' left',text:'Your trial ends on '+fmtDate(st.trial_ends_at)+'. It includes '+plural(b.trial_projects,'project')+' with up to '+b.trial_database_mb+' MB of data. Choose a plan any time to keep going.'}}
+    case 'active':{if(st.subscription_status==='past_due')return {kind:'warn',title:'Payment failed',text:'Your last payment did not go through. Stripe will try again; update your card under Manage billing so your projects keep running.'};
+      return {kind:'ok',title:(st.plan||'Paid')+' plan',text:st.cancel_at_period_end?'Your plan is cancelled and ends on '+fmtDate(st.current_period_end)+'. Choose it again under Manage billing to keep it.':(st.current_period_end?'Renews on '+fmtDate(st.current_period_end)+'.':'Active.')}}
+    case 'grace':return {kind:'warn',title:'Choose a plan by '+fmtDate(st.grace_ends_at),text:'Your trial or subscription has ended. Your projects keep working until '+fmtDate(st.grace_ends_at)+'; after that they pause until you choose a plan. Nothing is deleted.'};
+    case 'paused':return {kind:'bad',title:'Your projects are paused',text:'Billing has lapsed, so your projects\' APIs are switched off and the websites using them cannot reach their data. Everything is kept. Choose a plan and they start again within a minute.'};
+  }
+  return {kind:'info',title:'Billing',text:''}
+}
+// A reminder at the top of Projects when billing needs attention.
+function billingBanner(){
+  if(!billing||!billing.enabled||!account||!account.email_verified)return null;
+  const st=billing.standing||{},s=billingSummary(billing);
+  const urgent=st.state==='grace'||st.state==='paused'||st.subscription_status==='past_due'||(st.state==='trial'&&daysLeft(st.trial_ends_at)<=3);
+  if(!urgent)return null;
+  const b=el('div',null,'banner'+(s.kind==='bad'?' bad':''));b.append(el('div',s.title+'. '+s.text));
+  const row=el('div',null,'tile-actions');row.append(sbtn(st.state==='active'?'Manage billing':'Choose a plan',()=>pick('billing')));b.append(row);return b
+}
+async function goStripe(path,payload){const r=await api(path,body(payload||{}));if(r&&r.url)location.href=r.url}
+async function afterCheckout(){toast('Thank you! Your plan is being activated…');for(let i=0;i<6;i++){await new Promise(r=>setTimeout(r,2000));await loadBilling();if(billing&&billing.standing&&billing.standing.state==='active'){toast('Your '+(billing.standing.plan||'')+' plan is active.');await load();pick('billing');return}}pick('billing')}
+async function openBilling(){
+  clearFrom(0);const p=pane('Billing','Your plan, what it includes, and payments. Payments are handled by Stripe; card details never reach pibase.');const h=head(p);p.append(el('p','Loading…'));add(p);
+  await loadBilling();refreshNav();
+  if(!billing||!billing.enabled){p.replaceChildren(...h,note('Billing is not turned on for this server.'));return}
+  const b=billing,st=b.standing||{},s=billingSummary(b);p.replaceChildren(...h);
+  if(st.has_customer)topAction(p,button('Manage billing',async()=>{try{await goStripe('/_pibase/billing/portal')}catch(e){toast(e.message)}}));
+  const status=el('div',null,'banner'+(s.kind==='ok'||s.kind==='info'?' info':s.kind==='bad'?' bad':''));status.append(el('div',s.title),el('div',s.text,'banner-sub'));p.append(status);
+  if(st.state!=='exempt')p.append(el('p','Projects: '+b.projects+' of '+(b.project_limit||0)+' on your current plan.','muted'));
+  if(st.state==='exempt'){return}
+  const active=st.state==='active';
+  p.append(el('h2','Plans','section'),tiles(...b.plans.map(pl=>{
+    const current=active&&pl.name===st.plan;
+    const go=current?sbtn('Manage billing',async()=>{try{await goStripe('/_pibase/billing/portal')}catch(e){toast(e.message)}}):
+      sbtn(active?'Switch to '+pl.name:'Choose '+pl.name,async()=>{go.disabled=true;go.textContent='Opening Stripe…';try{await goStripe('/_pibase/billing/checkout',{plan:pl.name})}catch(e){toast(e.message);go.disabled=false;go.textContent=active?'Switch to '+pl.name:'Choose '+pl.name}},'primary');
+    return tile({lead:iconBadge('card'),title:pl.name,value:pl.label||'',badges:[current?badge('Current plan','ok'):null,badge(plural(pl.projects,'project'),'info'),badge(pl.database_mb>=1024?(pl.database_mb/1024).toFixed(pl.database_mb%1024?1:0)+' GB each':pl.database_mb+' MB each')].filter(Boolean),actions:[go]})})));
+  p.append(note('You can change plan or cancel any time under Manage billing. If a subscription ends, your projects keep working for '+plural(b.grace_days,'day')+', then pause until you pay again. Nothing is deleted.'))
 }
 
 /* ---------- settings and account ---------- */

@@ -141,6 +141,8 @@ type AccountSummary struct {
 	CreatedAt    time.Time  `json:"created_at"`
 	VerifiedAt   *time.Time `json:"email_verified_at"`
 	Projects     int        `json:"projects"`
+	// Billing is the account's billing record, for working out its standing.
+	Billing AccountBilling `json:"-"`
 }
 
 // ListAccounts returns every dashboard account, newest first.
@@ -151,7 +153,9 @@ func ListAccounts(ctx context.Context, adminURL string) ([]AccountSummary, error
 	}
 	defer conn.Close(ctx)
 	rows, err := conn.Query(ctx, `SELECT a.id,a.email,a.organization,a.created_at,a.email_verified_at,
-  (SELECT count(*) FROM control.projects p WHERE p.owner_id=a.id)
+  (SELECT count(*) FROM control.projects p WHERE p.owner_id=a.id),
+  a.billing_exempt,a.trial_ends_at,COALESCE(a.billing_plan,''),COALESCE(a.stripe_customer_id,''),COALESCE(a.stripe_subscription_id,''),
+  COALESCE(a.subscription_status,''),a.current_period_end,a.cancel_at_period_end,a.lapsed_at
 FROM control.accounts a ORDER BY a.created_at DESC LIMIT 1000`)
 	if err != nil {
 		return nil, err
@@ -160,9 +164,12 @@ FROM control.accounts a ORDER BY a.created_at DESC LIMIT 1000`)
 	out := []AccountSummary{}
 	for rows.Next() {
 		var a AccountSummary
-		if err := rows.Scan(&a.ID, &a.Email, &a.Organization, &a.CreatedAt, &a.VerifiedAt, &a.Projects); err != nil {
+		b := &a.Billing
+		if err := rows.Scan(&a.ID, &a.Email, &a.Organization, &a.CreatedAt, &a.VerifiedAt, &a.Projects,
+			&b.Exempt, &b.TrialEndsAt, &b.Plan, &b.CustomerID, &b.SubscriptionID, &b.SubscriptionStatus, &b.CurrentPeriodEnd, &b.CancelAtPeriodEnd, &b.LapsedAt); err != nil {
 			return nil, err
 		}
+		b.AccountID, b.Email, b.CreatedAt = a.ID, a.Email, a.CreatedAt
 		out = append(out, a)
 	}
 	return out, rows.Err()

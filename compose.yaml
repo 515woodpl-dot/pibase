@@ -135,6 +135,15 @@ services:
       PIBASE_SIGNUP: ${PIBASE_SIGNUP:-open}
       PIBASE_SIGNUP_HOURLY_LIMIT: ${PIBASE_SIGNUP_HOURLY_LIMIT:-}
       PIBASE_BLOCKED_EMAIL_DOMAINS: ${PIBASE_BLOCKED_EMAIL_DOMAINS:-}
+      # Billing through Stripe; off unless the secret key is set. See
+      # docs/BILLING.md for the plans format and the webhook to add in Stripe.
+      PIBASE_STRIPE_SECRET_KEY: ${PIBASE_STRIPE_SECRET_KEY:-}
+      PIBASE_STRIPE_WEBHOOK_SECRET: ${PIBASE_STRIPE_WEBHOOK_SECRET:-}
+      PIBASE_PLANS: ${PIBASE_PLANS:-}
+      PIBASE_TRIAL_DAYS: ${PIBASE_TRIAL_DAYS:-14}
+      PIBASE_TRIAL_PROJECTS: ${PIBASE_TRIAL_PROJECTS:-1}
+      PIBASE_TRIAL_DB_MB: ${PIBASE_TRIAL_DB_MB:-512}
+      PIBASE_BILLING_GRACE_DAYS: ${PIBASE_BILLING_GRACE_DAYS:-7}
     depends_on:
       bootstrap:
         condition: service_completed_successfully

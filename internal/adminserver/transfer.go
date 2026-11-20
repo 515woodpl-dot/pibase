@@ -4,6 +4,7 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"log/slog"
 	"net/http"
 	"os"
 	"regexp"
@@ -139,13 +140,7 @@ func (s *Server) importProject(w http.ResponseWriter, r *http.Request) {
 	if ident.kind == accountKind {
 		s.accountProjectsMu.Lock()
 		defer s.accountProjectsMu.Unlock()
-		n, err := control.CountOwnedProjects(r.Context(), s.AdminURL, ident.accountID)
-		if err != nil {
-			fail(w, err)
-			return
-		}
-		if n >= s.MaxProjectsPerAccount {
-			http.Error(w, fmt.Sprintf("project limit reached (%d per account); delete a project or ask the operator", s.MaxProjectsPerAccount), http.StatusForbidden)
+		if _, ok := s.checkProjectRoom(w, r, ident.accountID); !ok {
 			return
 		}
 		opts.OwnerAccountID = ident.accountID
@@ -160,6 +155,12 @@ func (s *Server) importProject(w http.ResponseWriter, r *http.Request) {
 		}
 		http.Error(w, err.Error(), status)
 		return
+	}
+	// Size the imported project to the owner's plan.
+	if ident.kind == accountKind && s.billingEnabled() {
+		if _, _, err := control.ApplyBilling(r.Context(), s.AdminURL, s.Billing, time.Now(), ident.accountID); err != nil {
+			slog.Warn("apply plan to imported project", "error", err)
+		}
 	}
 	writeJSON(w, http.StatusCreated, result)
 }

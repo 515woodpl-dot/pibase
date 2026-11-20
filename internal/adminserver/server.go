@@ -26,6 +26,7 @@ import (
 	"github.com/515woodpl-dot/pibase/internal/adminsql"
 	"github.com/515woodpl-dot/pibase/internal/auth"
 	"github.com/515woodpl-dot/pibase/internal/backup"
+	"github.com/515woodpl-dot/pibase/internal/billing"
 	"github.com/515woodpl-dot/pibase/internal/control"
 	"github.com/jackc/pgx/v5"
 )
@@ -58,6 +59,12 @@ type Config struct {
 	SignupHourlyLimit int
 	// BlockedEmailDomains are refused at sign-up, besides common throwaway inboxes.
 	BlockedEmailDomains []string
+	// Stripe is set when billing is on (PIBASE_STRIPE_SECRET_KEY); nil otherwise.
+	Stripe *billing.Stripe
+	// StripeWebhookSecret checks that webhooks come from Stripe (whsec_...).
+	StripeWebhookSecret string
+	// Billing holds the plans, trial and grace period.
+	Billing control.BillingConfig
 }
 
 type Server struct {
@@ -153,6 +160,11 @@ func (s *Server) Handler() http.Handler {
 	mux.HandleFunc("POST /_pibase/auth/verify/resend", s.authResendVerification)
 	mux.HandleFunc("GET /_pibase/operator/accounts", s.operatorAccounts)
 	mux.HandleFunc("DELETE /_pibase/operator/accounts/{id}", s.operatorDeleteAccount)
+	mux.HandleFunc("PATCH /_pibase/operator/accounts/{id}/billing", s.operatorSetBilling)
+	mux.HandleFunc("GET /_pibase/billing", s.billingInfo)
+	mux.HandleFunc("POST /_pibase/billing/checkout", s.billingCheckout)
+	mux.HandleFunc("POST /_pibase/billing/portal", s.billingPortal)
+	mux.HandleFunc("POST /_pibase/billing/webhook", s.billingWebhook)
 	mux.HandleFunc("POST /_pibase/auth/login", s.authLogin)
 	mux.HandleFunc("POST /_pibase/auth/logout", s.authLogout)
 	mux.HandleFunc("GET /_pibase/auth/me", s.authMe)
@@ -183,7 +195,8 @@ func (s *Server) Handler() http.Handler {
 				return
 			}
 		}
-		if strings.HasPrefix(r.URL.Path, "/_pibase/auth/") {
+		// Stripe signs its webhooks; they carry no dashboard session.
+		if strings.HasPrefix(r.URL.Path, "/_pibase/auth/") || r.URL.Path == "/_pibase/billing/webhook" {
 			mux.ServeHTTP(w, r)
 			return
 		}
@@ -335,6 +348,12 @@ func (s *Server) authSignup(w http.ResponseWriter, r *http.Request) {
 	}
 	s.noteSignup(ip)
 	s.cleanupUnverified()
+	if s.billingEnabled() {
+		if err := control.StartTrial(r.Context(), s.AdminURL, account.ID, s.Billing.TrialDays); err != nil {
+			fail(w, err)
+			return
+		}
+	}
 	if s.verifyEmailRequired() {
 		if err := s.sendVerification(r.Context(), account.ID, account.Email); err != nil {
 			fail(w, err)
@@ -471,6 +490,11 @@ func (s *Server) authDeleteAccount(w http.ResponseWriter, r *http.Request) {
 	}
 	if b.Confirm != account.Email {
 		http.Error(w, "type your email address to confirm deletion", http.StatusBadRequest)
+		return
+	}
+	// Stop charging before the account goes, so nobody pays for nothing.
+	if err := s.cancelSubscriptionOf(r.Context(), account.ID); err != nil {
+		http.Error(w, "could not cancel your subscription with Stripe, so the account was kept: "+err.Error(), http.StatusBadGateway)
 		return
 	}
 	s.accountProjectsMu.Lock()
@@ -911,16 +935,12 @@ func (s *Server) createProject(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	id, _ := getIdentity(r.Context())
+	var planBytes int64
 	if id.kind == accountKind {
 		s.accountProjectsMu.Lock()
 		defer s.accountProjectsMu.Unlock()
-		n, err := control.CountOwnedProjects(r.Context(), s.AdminURL, id.accountID)
-		if err != nil {
-			fail(w, err)
-			return
-		}
-		if n >= s.MaxProjectsPerAccount {
-			http.Error(w, fmt.Sprintf("project limit reached (%d per account)", s.MaxProjectsPerAccount), http.StatusForbidden)
+		var ok bool
+		if planBytes, ok = s.checkProjectRoom(w, r, id.accountID); !ok {
 			return
 		}
 	}
@@ -935,6 +955,13 @@ func (s *Server) createProject(w http.ResponseWriter, r *http.Request) {
 			_ = control.DeleteProject(context.Background(), s.AdminURL, p.ID)
 			fail(w, err)
 			return
+		}
+		// The plan decides how large the database may grow.
+		if planBytes > 0 {
+			if err := control.SetLimits(r.Context(), s.AdminURL, p.ID, planBytes); err != nil {
+				fail(w, err)
+				return
+			}
 		}
 	}
 	writeJSON(w, 201, p)

@@ -275,7 +275,22 @@ func (s *Server) operatorAccounts(w http.ResponseWriter, r *http.Request) {
 		fail(w, err)
 		return
 	}
-	writeJSON(w, http.StatusOK, list)
+	type row struct {
+		control.AccountSummary
+		BillingExempt bool              `json:"billing_exempt"`
+		Billing       *control.Standing `json:"billing,omitempty"`
+	}
+	out := make([]row, 0, len(list))
+	now := time.Now()
+	for _, a := range list {
+		r := row{AccountSummary: a, BillingExempt: a.Billing.Exempt}
+		if s.billingEnabled() {
+			st := control.StandingOf(a.Billing, s.Billing, now)
+			r.Billing = &st
+		}
+		out = append(out, r)
+	}
+	writeJSON(w, http.StatusOK, out)
 }
 
 // operatorDeleteAccount deletes an account and every project it owns.
@@ -308,6 +323,10 @@ func (s *Server) operatorDeleteAccount(w http.ResponseWriter, r *http.Request) {
 	}
 	if b.Confirm != email {
 		http.Error(w, "type the account's email address to confirm deletion", http.StatusBadRequest)
+		return
+	}
+	if err := s.cancelSubscriptionOf(r.Context(), id); err != nil {
+		http.Error(w, "could not cancel the account's Stripe subscription, so it was kept: "+err.Error(), http.StatusBadGateway)
 		return
 	}
 	s.accountProjectsMu.Lock()

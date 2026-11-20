@@ -20,6 +20,7 @@ import (
 	"github.com/515woodpl-dot/pibase/internal/adminserver"
 	"github.com/515woodpl-dot/pibase/internal/adminsql"
 	"github.com/515woodpl-dot/pibase/internal/backup"
+	"github.com/515woodpl-dot/pibase/internal/billing"
 	"github.com/515woodpl-dot/pibase/internal/config"
 	"github.com/515woodpl-dot/pibase/internal/control"
 	"github.com/515woodpl-dot/pibase/internal/gateway"
@@ -301,6 +302,10 @@ func run() error {
 		if err := control.MarkAccountVerified(ctx, url, account.ID); err != nil {
 			return err
 		}
+		// ...and it is never charged; the operator bills such clients directly.
+		if err := control.SetBillingExempt(ctx, url, account.ID, true); err != nil {
+			return err
+		}
 		fmt.Printf("Created dashboard account %s.\n", account.Email)
 		return nil
 	case "account-password-reset":
@@ -351,6 +356,58 @@ func run() error {
 	default:
 		return fmt.Errorf("unknown command %q", os.Args[1])
 	}
+}
+
+// billingFromEnv reads the Stripe settings. Billing is off unless
+// PIBASE_STRIPE_SECRET_KEY is set; then plans and the webhook secret are
+// required too.
+func billingFromEnv() (*billing.Stripe, control.BillingConfig, string, error) {
+	var cfg control.BillingConfig
+	key := strings.TrimSpace(os.Getenv("PIBASE_STRIPE_SECRET_KEY"))
+	plansRaw := os.Getenv("PIBASE_PLANS")
+	if key == "" {
+		if strings.TrimSpace(plansRaw) != "" {
+			return nil, cfg, "", errors.New("PIBASE_PLANS is set but PIBASE_STRIPE_SECRET_KEY is not; set both to turn billing on")
+		}
+		return nil, cfg, "", nil
+	}
+	if !strings.HasPrefix(key, "sk_") && !strings.HasPrefix(key, "rk_") {
+		return nil, cfg, "", errors.New("PIBASE_STRIPE_SECRET_KEY must be a Stripe secret key (sk_live_... or sk_test_...)")
+	}
+	plans, err := control.ParsePlans(plansRaw)
+	if err != nil {
+		return nil, cfg, "", fmt.Errorf("PIBASE_PLANS: %w", err)
+	}
+	if len(plans) == 0 {
+		return nil, cfg, "", errors.New("PIBASE_PLANS must list at least one plan, e.g. Starter:price_123:1:1024:$12 a month")
+	}
+	secret := strings.TrimSpace(os.Getenv("PIBASE_STRIPE_WEBHOOK_SECRET"))
+	if !strings.HasPrefix(secret, "whsec_") {
+		return nil, cfg, "", errors.New("PIBASE_STRIPE_WEBHOOK_SECRET must be the webhook signing secret (whsec_...)")
+	}
+	cfg.Plans = plans
+	for _, v := range []struct {
+		name     string
+		fallback int
+		min      int
+		dst      *int
+	}{{"PIBASE_TRIAL_DAYS", 14, 0, &cfg.TrialDays}, {"PIBASE_TRIAL_PROJECTS", 1, 0, &cfg.TrialProjects}, {"PIBASE_BILLING_GRACE_DAYS", 7, 0, &cfg.GraceDays}} {
+		n, err := config.Int(v.name, v.fallback)
+		if err != nil || n < v.min {
+			return nil, cfg, "", fmt.Errorf("%s must be a whole number of at least %d", v.name, v.min)
+		}
+		*v.dst = n
+	}
+	mb, err := config.Int("PIBASE_TRIAL_DB_MB", 512)
+	if err != nil || mb < 1 {
+		return nil, cfg, "", errors.New("PIBASE_TRIAL_DB_MB must be at least 1")
+	}
+	cfg.TrialDBMB = int64(mb)
+	stripe := billing.New(key)
+	if api := strings.TrimSpace(os.Getenv("PIBASE_STRIPE_API")); api != "" {
+		stripe.API = api // a local stand-in for Stripe, for testing
+	}
+	return stripe, cfg, secret, nil
 }
 
 func adminServe() error {
@@ -448,7 +505,11 @@ func adminServe() error {
 	if n, err := control.RemoveStaleUnverifiedAccounts(context.Background(), adminURL); err == nil && n > 0 {
 		slog.Info("removed unconfirmed dashboard accounts", "count", n)
 	}
-	s, err := adminserver.New(adminserver.Config{AdminURL: adminURL, DatabaseURL: databaseURL, StorageRoot: os.Getenv("PIBASE_STORAGE_ROOT"), BackupRoot: os.Getenv("PIBASE_BACKUP_ROOT"), Token: token, MasterKey: master, BackupKey: backupKey, Env: os.Getenv("PIBASE_ADMIN_ENV"), PublicURL: os.Getenv("PIBASE_PUBLIC_URL"), MaxProjectsPerAccount: maxProjects, TrustedProxies: trusted, SendMail: sendMail, DashboardURL: dashboardURL, SignupClosed: signupClosed, SignupHourlyLimit: hourly, BlockedEmailDomains: blocked})
+	stripe, billingCfg, webhookSecret, err := billingFromEnv()
+	if err != nil {
+		return err
+	}
+	s, err := adminserver.New(adminserver.Config{AdminURL: adminURL, DatabaseURL: databaseURL, StorageRoot: os.Getenv("PIBASE_STORAGE_ROOT"), BackupRoot: os.Getenv("PIBASE_BACKUP_ROOT"), Token: token, MasterKey: master, BackupKey: backupKey, Env: os.Getenv("PIBASE_ADMIN_ENV"), PublicURL: os.Getenv("PIBASE_PUBLIC_URL"), MaxProjectsPerAccount: maxProjects, TrustedProxies: trusted, SendMail: sendMail, DashboardURL: dashboardURL, SignupClosed: signupClosed, SignupHourlyLimit: hourly, BlockedEmailDomains: blocked, Stripe: stripe, StripeWebhookSecret: webhookSecret, Billing: billingCfg})
 	if err != nil {
 		return err
 	}
@@ -461,6 +522,10 @@ func adminServe() error {
 		defer cancel()
 		_ = h.Shutdown(c)
 	}()
+	if stripe != nil {
+		slog.Info("billing on", "plans", len(billingCfg.Plans), "trial_days", billingCfg.TrialDays, "grace_days", billingCfg.GraceDays)
+		go s.RunBilling(ctx, 10*time.Minute)
+	}
 	slog.Info("operator dashboard listening", "address", addr)
 	err = h.ListenAndServe()
 	if errors.Is(err, http.ErrServerClosed) {

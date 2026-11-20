@@ -43,6 +43,9 @@ all of this plus HTTPS, swap, firewall and daily backups; see
 [docs/VPS.md](docs/VPS.md). With `--dashboard app.yourname.com` the dashboard is
 public: people sign up (with spam protection and email confirmation) and can
 install it on their phone as an app. See "Public dashboard" in that guide.
+To charge for it, [docs/BILLING.md](docs/BILLING.md) sets up monthly plans with
+Stripe: a 14-day trial, Stripe Checkout and customer portal, and projects that
+pause (data kept) when billing lapses past a 7-day grace period.
 
 The command creates an isolated database and four project-specific roles. It revokes public database access, creates protected `auth` and `storage` schemas, encrypts the JWT signing secret with AES-256-GCM, stores only SHA-256 API-key hashes, and returns distinct anon and service JWTs. The service key must never be shipped to browsers.
 

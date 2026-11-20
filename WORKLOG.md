@@ -32,6 +32,31 @@ setup drill remains required before a release claim; current evidence is in
   `internal/gateway/auth_settings_integration_test.go`, `TestRESTWithRLS`.
   Pre-existing: `TestPagesUIHardRules` fails on main (`chain.scrollLeft=x`).
 
+## Stripe billing (Claude, 2026-11-20)
+
+- Off unless `PIBASE_STRIPE_SECRET_KEY`; then `PIBASE_PLANS`
+  (`Name:price_id:projects:db_MB:label;...`) and `PIBASE_STRIPE_WEBHOOK_SECRET`
+  are required. Trial/grace via `PIBASE_TRIAL_*`, `PIBASE_BILLING_GRACE_DAYS`.
+- `internal/billing`: raw-HTTP Stripe client (customers with idempotency key,
+  Checkout, portal, get/cancel subscription) and webhook signature check
+  (5-minute tolerance, several v1 signatures). No Stripe SDK dependency.
+- `control/billing.go`: account billing columns (existing accounts backfilled
+  exempt; CLI-made accounts exempt), `StandingOf` (exempt/trial/active/grace/
+  paused; past_due counts as active), `ApplyBilling` sweep every 10 minutes and
+  after each webhook: sets `projects.paused_at`, applies plan DB size.
+- Webhooks re-read the subscription from Stripe (order-independent); unknown or
+  deleted accounts are acknowledged. Paying accounts that pick another plan get
+  the portal, never a second Checkout. Deleting an account cancels its live
+  subscription first (refuses the delete if Stripe fails).
+- Gateway: `resolveProject`/`resolveProjectID` answer 402 for paused projects
+  after the key check; outbox jobs skip them. Open realtime sockets end at the
+  next token refresh.
+- Dashboard: Billing page, trial/grace/paused/past-due banners, "Paused: billing"
+  project badge, operator billing badge and exempt toggle.
+- Tests: `TestBillingLifecycle` (fake Stripe), `TestPausedProjectIsRefused`,
+  `TestStandingOf`, `TestParsePlans`, `TestVerifyWebhook`. Browser run through a
+  local Stripe stand-in. Not yet run against real Stripe test mode.
+
 ## Public dashboard, spam protection and phone app (Claude, 2026-11-20)
 
 - Dashboard sign-up spam layers (`internal/adminserver/signup_guard.go`): signed
