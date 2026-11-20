@@ -32,6 +32,23 @@ setup drill remains required before a release claim; current evidence is in
   `internal/gateway/auth_settings_integration_test.go`, `TestRESTWithRLS`.
   Pre-existing: `TestPagesUIHardRules` fails on main (`chain.scrollLeft=x`).
 
+## Whole app on a Pi via Cloudflare Tunnel (Claude, 2026-11-20)
+
+- `compose.yaml` service `tunnel` (profile `tunnel`): cloudflared
+  2026.10.7 pinned by multi-arch digest (amd64 + arm64 checked in the registry;
+  entrypoint `cloudflared`, runs as 65532). Remotely managed tunnel; token in
+  `.env` as `PIBASE_TUNNEL_TOKEN`; hostnames route to `gateway:8080` and
+  `admin:18081` on the compose network.
+- `scripts/pi-public.sh --api NAME --dashboard NAME` / `--off`: token prompt
+  (hidden) or env, validation, `.env` updates (mode 600, other profiles kept),
+  production dashboard, sign-up closed until SMTP, trusted proxy = compose
+  subnet, health checks. Dry-run tested with stand-in docker/curl; not yet run
+  against a real Cloudflare account.
+- `scripts/pi-backups.sh`: the droplet's daily backup timer for the Pi.
+- Dashboard sends HSTS itself when `PIBASE_ADMIN_ENV=production`.
+- docs/PI-OPERATIONS.md: full public Pi walkthrough and Cloudflare limits
+  (100 MB uploads, 100 s requests, Bot Fight Mode vs Stripe webhooks).
+
 ## Stripe billing (Claude, 2026-11-20)
 
 - Off unless `PIBASE_STRIPE_SECRET_KEY`; then `PIBASE_PLANS`

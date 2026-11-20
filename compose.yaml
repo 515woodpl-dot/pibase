@@ -158,6 +158,24 @@ services:
       - storage-data:/data/files
       - backup-data:/data/backups
 
+  # Optional: a Cloudflare Tunnel puts the API and the dashboard on your own
+  # domain names over HTTPS, without opening ports on your router. It is on
+  # when COMPOSE_PROFILES includes "tunnel"; scripts/pi-public.sh sets it up.
+  # Cloudflare sends api.<domain> to http://gateway:8080 and app.<domain> to
+  # http://admin:18081 inside this network. The version is pinned by digest.
+  tunnel:
+    profiles: ["tunnel"]
+    image: cloudflare/cloudflared:2026.10.7@sha256:4955524aeaa379e154023d5a027c250f7b35041a2e7e950cf13f144bc9b9c5ba
+    command: ["tunnel", "--no-autoupdate", "run"]
+    environment:
+      TUNNEL_TOKEN: ${PIBASE_TUNNEL_TOKEN:-}
+    depends_on:
+      gateway:
+        condition: service_started
+      admin:
+        condition: service_started
+    restart: unless-stopped
+
   ops:
     user: "${PIBASE_UID:-65532}:${PIBASE_GID:-65532}"
     profiles: ["tools"]

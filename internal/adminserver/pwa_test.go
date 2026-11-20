@@ -77,3 +77,17 @@ func TestDashboardIsInstallable(t *testing.T) {
 		}
 	}
 }
+
+func TestProductionDashboardSendsHSTS(t *testing.T) {
+	for env, want := range map[string]string{"production": "max-age=31536000", "development": "", "test": ""} {
+		s, err := New(Config{AdminURL: "postgres://unused", DatabaseURL: "postgres://unused", Token: "op", MasterKey: bytes.Repeat([]byte{7}, 32), BackupKey: bytes.Repeat([]byte{9}, 32), Env: env})
+		if err != nil {
+			t.Fatal(err)
+		}
+		rec := httptest.NewRecorder()
+		s.Handler().ServeHTTP(rec, httptest.NewRequest(http.MethodGet, "/", nil))
+		if got := rec.Header().Get("Strict-Transport-Security"); got != want {
+			t.Errorf("%s: HSTS %q, want %q", env, got, want)
+		}
+	}
+}

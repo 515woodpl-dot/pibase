@@ -177,6 +177,11 @@ func (s *Server) Handler() http.Handler {
 	mux.HandleFunc("POST /_pibase/operator/account-password", s.operatorSetPassword)
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		w.Header().Set("Cache-Control", "no-store")
+		// In production the dashboard is only ever served over HTTPS (Caddy on
+		// a droplet, Cloudflare on a Pi); tell browsers never to use plain HTTP.
+		if s.Env == "production" {
+			w.Header().Set("Strict-Transport-Security", "max-age=31536000")
+		}
 		// Page and auth endpoints need no operator credential.
 		if r.Method == http.MethodGet || r.Method == http.MethodHead {
 			switch r.URL.Path {

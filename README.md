@@ -43,6 +43,9 @@ all of this plus HTTPS, swap, firewall and daily backups; see
 [docs/VPS.md](docs/VPS.md). With `--dashboard app.yourname.com` the dashboard is
 public: people sign up (with spam protection and email confirmation) and can
 install it on their phone as an app. See "Public dashboard" in that guide.
+On a Raspberry Pi, `scripts/pi-public.sh` does the same through a Cloudflare
+Tunnel (your own domain, no router ports) and `scripts/pi-backups.sh` schedules
+daily backups; see [docs/PI-OPERATIONS.md](docs/PI-OPERATIONS.md).
 To charge for it, [docs/BILLING.md](docs/BILLING.md) sets up monthly plans with
 Stripe: a 14-day trial, Stripe Checkout and customer portal, and projects that
 pause (data kept) when billing lapses past a 7-day grace period.
