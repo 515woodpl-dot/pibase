@@ -12,6 +12,26 @@ disposable PostgreSQL cluster instead of mutating the running stack. A fresh-Pi
 setup drill remains required before a release claim; current evidence is in
 `reports/M6b.md`.
 
+## Sign-up settings and pibase wording (Claude, 2026-11-20)
+
+- Per-project **Authentication** page (dashboard) and `GET/PUT
+  /_pibase/projects/{id}/auth-settings`: Confirm email (default on), Site URL,
+  allowed redirect URLs (`*` suffix needs a `/` before it). Stored in
+  `control.projects.auth_*`, exposed in `project_catalog`, carried by export/import.
+- Gateway: with Confirm email off, `/auth/v1/signup` confirms the user and returns
+  a session. Email links now carry `project=<id>` (a browser sends no apikey; they
+  never worked before) and `redirect_to`. A GET verify with a site URL or allowed
+  `redirect_to` answers 303 to the app with the session (or `#error=...`) in the
+  fragment; with neither, JSON as before.
+- REST writes with `Prefer: return=representation` now honour plain `select=`
+  columns instead of always returning every column.
+- Customer-visible wording says pibase; the dashboard `.env` block uses
+  `PIBASE_URL` / `PIBASE_ANON_KEY` and adds connection code. The MIT client's
+  package name stays where developers type it. Old reports/reviews are unchanged.
+- Tests: `internal/control/auth_settings_test.go`,
+  `internal/gateway/auth_settings_integration_test.go`, `TestRESTWithRLS`.
+  Pre-existing: `TestPagesUIHardRules` fails on main (`chain.scrollLeft=x`).
+
 ## M4 implementation
 
 - Added authenticated static dashboard, owner SQL UI, health/Prometheus

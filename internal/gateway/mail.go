@@ -59,11 +59,10 @@ func (c smtpConfig) send(to, subject, body string) error {
 
 // sendConfirmationEmail sends a signup confirmation email if SMTP is configured.
 // It runs asynchronously; a failed send is logged but does not fail the signup.
-func (s *Server) sendConfirmationEmail(to, token string) {
+func (s *Server) sendConfirmationEmail(to, link string) {
 	if !s.smtp.configured() {
 		return
 	}
-	link := s.smtp.siteURL + "/auth/v1/verify?token=" + token + "&type=confirmation"
 	body := "Confirm your email address:\n\n" + link + "\n\nThis link expires in 24 hours."
 	go func() {
 		if err := s.smtp.send(to, "Confirm your email", body); err != nil {
@@ -74,11 +73,10 @@ func (s *Server) sendConfirmationEmail(to, token string) {
 
 // sendRecoveryEmail sends a password-reset email if SMTP is configured.
 // It runs asynchronously; a failed send is logged but does not fail the recover call.
-func (s *Server) sendRecoveryEmail(to, token string) {
+func (s *Server) sendRecoveryEmail(to, link string) {
 	if !s.smtp.configured() {
 		return
 	}
-	link := s.smtp.siteURL + "/auth/v1/verify?token=" + token + "&type=recovery"
 	body := "Reset your password:\n\n" + link + "\n\nThis link expires in 1 hour.\n\nIf you did not request a reset, ignore this email."
 	go func() {
 		if err := s.smtp.send(to, "Reset your password", body); err != nil {

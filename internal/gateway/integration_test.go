@@ -110,8 +110,15 @@ GRANT EXECUTE ON FUNCTION public.add_numbers(integer,integer) TO ` + pgx.Identif
 	if err := json.Unmarshal(response, &rows); err != nil || len(rows) != 1 {
 		t.Fatalf("filtered response: %s, %v", response, err)
 	}
-	requestJSON(t, httpServer.Client(), http.MethodPatch, httpServer.URL+"/rest/v1/todos?title=eq.private", p.ServiceKey,
+	// A write returns only the columns named in select=, as
+	// .update(...).select('title') asks.
+	response = requestJSON(t, httpServer.Client(), http.MethodPatch, httpServer.URL+"/rest/v1/todos?title=eq.private&select=title,visible", p.ServiceKey,
 		`{"visible":true}`, "return=representation", http.StatusOK)
+	if string(response) != `[{"title": "private", "visible": true}]` && string(response) != `[{"title":"private","visible":true}]` {
+		t.Fatalf("write with select= returned %s", response)
+	}
+	requestJSON(t, httpServer.Client(), http.MethodPatch, httpServer.URL+"/rest/v1/todos?title=eq.private&select=nope", p.ServiceKey,
+		`{"visible":true}`, "return=representation", http.StatusBadRequest)
 	requestJSON(t, httpServer.Client(), http.MethodPost, httpServer.URL+"/rest/v1/todos?on_conflict=title", p.ServiceKey,
 		`{"category_id":1,"user_id":"user-2","title":"public","visible":true}`, "resolution=merge-duplicates,return=representation", http.StatusCreated)
 	response = requestJSON(t, httpServer.Client(), http.MethodGet, httpServer.URL+"/rest/v1/todos?order=id.asc", p.AnonKey, "", "", http.StatusOK)

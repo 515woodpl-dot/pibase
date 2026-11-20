@@ -6,7 +6,7 @@ elsewhere (Vercel, Bluehost, another server) and talk to PIBASE over HTTPS.
 
 ```
  visitors ──► client.com (the website, hosted anywhere)
-                 │  supabase-js / pibase-auth.js
+                 │  JS client / pibase-auth.js 
                  ▼
           pibase.client.com ─┐
           api.yourname.com  ─┼─► droplet: Caddy (HTTPS) ─► PIBASE gateway ─► Postgres

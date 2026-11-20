@@ -56,17 +56,19 @@ var managedSchemas = []string{"auth", "storage", "realtime", "cron"}
 
 // ExportManifest describes an export file.
 type ExportManifest struct {
-	Kind             string    `json:"kind"`
-	Version          int       `json:"version"`
-	ProjectID        string    `json:"project_id"`
-	Name             string    `json:"name"`
-	SchemaVersion    int       `json:"schema_version"`
-	MaxDatabaseBytes int64     `json:"max_database_bytes"`
-	FunctionsURL     string    `json:"functions_url,omitempty"`
-	PublicURL        string    `json:"public_url,omitempty"`
-	Extensions       []string  `json:"extensions,omitempty"`
-	Tables           []string  `json:"managed_tables"`
-	CreatedAt        time.Time `json:"created_at"`
+	Kind             string `json:"kind"`
+	Version          int    `json:"version"`
+	ProjectID        string `json:"project_id"`
+	Name             string `json:"name"`
+	SchemaVersion    int    `json:"schema_version"`
+	MaxDatabaseBytes int64  `json:"max_database_bytes"`
+	FunctionsURL     string `json:"functions_url,omitempty"`
+	PublicURL        string `json:"public_url,omitempty"`
+	// Auth is nil in files exported before sign-up settings existed.
+	Auth       *control.AuthSettings `json:"auth,omitempty"`
+	Extensions []string              `json:"extensions,omitempty"`
+	Tables     []string              `json:"managed_tables"`
+	CreatedAt  time.Time             `json:"created_at"`
 }
 
 type exportSecrets struct {
@@ -95,6 +97,16 @@ func ExportProject(ctx context.Context, adminURL, projectID, storageRoot string,
 	var database string
 	err = control_.QueryRow(ctx, `SELECT name, database_name, schema_version, max_database_bytes, COALESCE(functions_url,''), COALESCE(public_url,'')
 FROM control.projects WHERE id=$1`, projectID).Scan(&m.Name, &database, &m.SchemaVersion, &m.MaxDatabaseBytes, &m.FunctionsURL, &m.PublicURL)
+	if err == nil {
+		var a control.AuthSettings
+		var site *string
+		if err = control_.QueryRow(ctx, `SELECT auth_confirm_email, auth_site_url, auth_redirect_urls FROM control.projects WHERE id=$1`, projectID).Scan(&a.ConfirmEmail, &site, &a.RedirectURLs); err == nil {
+			if site != nil {
+				a.SiteURL = *site
+			}
+			m.Auth = &a
+		}
+	}
 	control_.Close(ctx)
 	if err != nil {
 		return fmt.Errorf("project %q not found", projectID)
@@ -399,6 +411,11 @@ func ImportProject(ctx context.Context, adminURL, storageRoot string, masterKey 
 	if m.PublicURL != "" {
 		if _, e := control.SetPublicURL(ctx, adminURL, created.ID, m.PublicURL); e != nil {
 			result.Notes = append(result.Notes, "API address not kept: "+e.Error())
+		}
+	}
+	if m.Auth != nil {
+		if _, e := control.SetAuthSettings(ctx, adminURL, created.ID, *m.Auth); e != nil {
+			result.Notes = append(result.Notes, "Sign-up settings not kept ("+e.Error()+"); set them again under Authentication.")
 		}
 	}
 	if m.FunctionsURL != "" {

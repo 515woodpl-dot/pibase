@@ -196,6 +196,16 @@ func (s *Server) authSignup(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	s.recordRequest(r.Context(), p.id)
+	settings, err := s.projectAuthSettings(r.Context(), p.id)
+	if err != nil {
+		writeAPIError(w, err)
+		return
+	}
+	useCookie := !settings.ConfirmEmail && cookieMode(r)
+	if useCookie && !cookieOriginAllowed(r) {
+		writeAPIError(w, httpError(403, "cookie origin is not allowed"))
+		return
+	}
 	password, err := auth.HashPassword(req.Password)
 	if err != nil {
 		writeAPIError(w, httpError(400, err.Error()))
@@ -215,14 +225,25 @@ func (s *Server) authSignup(w http.ResponseWriter, r *http.Request) {
 	if req.Data == nil {
 		metadata = []byte(`{}`)
 	}
-	var user map[string]any
+	email := strings.ToLower(strings.TrimSpace(req.Email))
+	var user, session map[string]any
 	err = s.adminTx(r.Context(), p, func(tx pgx.Tx) error {
 		var created, updated time.Time
-		err := tx.QueryRow(r.Context(), `INSERT INTO auth.users(id,email,username,password_hash,confirmation_token_hash,confirmation_expires_at,raw_user_meta_data) VALUES($1,$2,NULLIF($3,''),$4,$5,now()+interval '24 hours',$6) RETURNING created_at,updated_at`, id, strings.ToLower(strings.TrimSpace(req.Email)), username, password, digest, metadata).Scan(&created, &updated)
+		if !settings.ConfirmEmail {
+			// The project lets people in without confirming their email:
+			// the new user is confirmed and signed in at once.
+			if err := tx.QueryRow(r.Context(), `INSERT INTO auth.users(id,email,username,password_hash,email_confirmed_at,raw_user_meta_data) VALUES($1,$2,NULLIF($3,''),$4,now(),$5) RETURNING created_at,updated_at`, id, email, username, password, metadata).Scan(&created, &updated); err != nil {
+				return err
+			}
+			var e error
+			session, e = s.issueSession(r.Context(), p, tx, id, email, "aal1", "password", "")
+			return e
+		}
+		err := tx.QueryRow(r.Context(), `INSERT INTO auth.users(id,email,username,password_hash,confirmation_token_hash,confirmation_expires_at,raw_user_meta_data) VALUES($1,$2,NULLIF($3,''),$4,$5,now()+interval '24 hours',$6) RETURNING created_at,updated_at`, id, email, username, password, digest, metadata).Scan(&created, &updated)
 		if err != nil {
 			return err
 		}
-		user = userJSON(id, strings.ToLower(strings.TrimSpace(req.Email)), username, false, metadata, []byte(`{}`), created, updated)
+		user = userJSON(id, email, username, false, metadata, []byte(`{}`), created, updated)
 		return nil
 	})
 	if err != nil {
@@ -235,11 +256,19 @@ func (s *Server) authSignup(w http.ResponseWriter, r *http.Request) {
 		}
 		return
 	}
+	if session != nil {
+		if useCookie {
+			setRefreshCookie(w, r, p, session["refresh_token"].(string))
+			delete(session, "refresh_token")
+		}
+		writeJSON(w, http.StatusOK, session)
+		return
+	}
 	result := map[string]any{"user": user, "session": nil}
 	if s.exposeAuthTokens {
 		result["confirmation_token"] = confirmation
 	}
-	s.sendConfirmationEmail(strings.ToLower(strings.TrimSpace(req.Email)), confirmation)
+	s.sendConfirmationEmail(email, s.emailLink(p.id, confirmation, "signup", returnAddress(settings, r.URL.Query().Get("redirect_to"))))
 	writeJSON(w, http.StatusOK, result)
 }
 
@@ -427,18 +456,38 @@ FROM auth.refresh_tokens WHERE token_hash=$1 FOR UPDATE`, tokenHash(raw), s.refr
 }
 
 func (s *Server) authVerify(w http.ResponseWriter, r *http.Request) {
-	token := r.URL.Query().Get("token")
+	q := r.URL.Query()
+	token := q.Get("token")
 	if token == "" {
 		writeAPIError(w, httpError(400, "token is required"))
 		return
 	}
-	p, err := s.resolveAuthProject(r)
+	// A link opened from an email carries no apikey header; it names the
+	// project instead. The single-use token is what proves the request.
+	var p project
+	var err error
+	if strings.TrimSpace(r.Header.Get("apikey")) == "" && q.Get("project") != "" {
+		p, err = s.resolveProjectID(r.Context(), q.Get("project"))
+	} else {
+		p, err = s.resolveAuthProject(r)
+	}
 	if err != nil {
 		writeAPIError(w, err)
 		return
 	}
-	if r.URL.Query().Get("type") == "recovery" {
-		useCookie := cookieMode(r)
+	// A browser following an email link goes back to the app when the
+	// project has somewhere to send it; API callers get JSON as before.
+	returnTo := ""
+	if r.Method == http.MethodGet {
+		settings, err := s.projectAuthSettings(r.Context(), p.id)
+		if err != nil {
+			writeAPIError(w, err)
+			return
+		}
+		returnTo = returnAddress(settings, q.Get("redirect_to"))
+	}
+	if q.Get("type") == "recovery" {
+		useCookie := returnTo == "" && cookieMode(r)
 		if useCookie && !cookieOriginAllowed(r) {
 			writeAPIError(w, httpError(http.StatusForbidden, "origin is not allowed for cookie sessions"))
 			return
@@ -458,7 +507,15 @@ func (s *Server) authVerify(w http.ResponseWriter, r *http.Request) {
 			return e
 		})
 		if err != nil {
+			if returnTo != "" {
+				redirectWithError(w, r, returnTo, "otp_expired", "The password reset link is invalid or has expired")
+				return
+			}
 			writeAPIError(w, httpError(400, "invalid or expired recovery token"))
+			return
+		}
+		if returnTo != "" {
+			redirectWithSession(w, r, returnTo, out, "recovery")
 			return
 		}
 		if useCookie {
@@ -469,14 +526,32 @@ func (s *Server) authVerify(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	var id, email string
+	var session map[string]any
 	err = s.adminTx(r.Context(), p, func(tx pgx.Tx) error {
-		return tx.QueryRow(r.Context(), `UPDATE auth.users SET email_confirmed_at=COALESCE(email_confirmed_at,now()),confirmation_token_hash=NULL,confirmation_expires_at=NULL WHERE confirmation_token_hash=$1 AND confirmation_expires_at>now() RETURNING id,email`, tokenHash(token)).Scan(&id, &email)
+		if err := tx.QueryRow(r.Context(), `UPDATE auth.users SET email_confirmed_at=COALESCE(email_confirmed_at,now()),confirmation_token_hash=NULL,confirmation_expires_at=NULL WHERE confirmation_token_hash=$1 AND confirmation_expires_at>now() RETURNING id,email`, tokenHash(token)).Scan(&id, &email); err != nil {
+			return err
+		}
+		if returnTo == "" {
+			return nil
+		}
+		// Confirming from the email signs the person in on the app's page.
+		var e error
+		session, e = s.issueSession(r.Context(), p, tx, id, email, "aal1", "otp", "")
+		return e
 	})
 	if err != nil {
+		if returnTo != "" {
+			redirectWithError(w, r, returnTo, "otp_expired", "The confirmation link is invalid or has expired")
+			return
+		}
 		writeAPIError(w, httpError(400, "invalid or expired verification token"))
 		return
 	}
-	writeJSON(w, 200, map[string]any{"user": map[string]any{"id": id, "email": email}, "type": r.URL.Query().Get("type")})
+	if returnTo != "" {
+		redirectWithSession(w, r, returnTo, session, "signup")
+		return
+	}
+	writeJSON(w, 200, map[string]any{"user": map[string]any{"id": id, "email": email}, "type": q.Get("type")})
 }
 
 func (s *Server) authRecover(w http.ResponseWriter, r *http.Request) {
@@ -512,7 +587,12 @@ func (s *Server) authRecover(w http.ResponseWriter, r *http.Request) {
 	if s.exposeAuthTokens {
 		out["reset_token"] = raw
 	}
-	s.sendRecoveryEmail(strings.ToLower(strings.TrimSpace(req.Email)), raw)
+	settings, err := s.projectAuthSettings(r.Context(), p.id)
+	if err != nil {
+		writeAPIError(w, err)
+		return
+	}
+	s.sendRecoveryEmail(strings.ToLower(strings.TrimSpace(req.Email)), s.emailLink(p.id, raw, "recovery", returnAddress(settings, r.URL.Query().Get("redirect_to"))))
 	writeJSON(w, 200, out)
 }
 

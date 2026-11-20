@@ -51,8 +51,10 @@ type ProjectUsage struct {
 
 type ProjectStat struct {
 	ProjectSummary
-	DatabaseBytes int64 `json:"database_bytes"`
-	StorageBytes  int64 `json:"storage_bytes"`
+	// Sign-up settings for the project's app users.
+	Auth          AuthSettings `json:"auth"`
+	DatabaseBytes int64        `json:"database_bytes"`
+	StorageBytes  int64        `json:"storage_bytes"`
 	// StorageError is set when the project's file folder cannot be read, so
 	// StorageBytes is unknown. The rest of the project list still loads.
 	StorageError string `json:"storage_error,omitempty"`
@@ -81,7 +83,7 @@ func projectStats(ctx context.Context, adminURL, storageRoot, ownerID string) ([
 		return nil, err
 	}
 	defer conn.Close(ctx)
-	const base = `SELECT p.id,p.name,p.database_name,p.created_at,p.max_database_bytes,p.schema_error,COALESCE(p.functions_url,''),p.functions_private,COALESCE(p.public_url,''),
+	const base = `SELECT p.id,p.name,p.database_name,p.created_at,p.max_database_bytes,p.schema_error,COALESCE(p.functions_url,''),p.functions_private,COALESCE(p.public_url,''),p.auth_confirm_email,COALESCE(p.auth_site_url,''),p.auth_redirect_urls,
 pg_database_size(p.database_name),COALESCE((SELECT sum(requests) FROM control.project_usage u WHERE u.project_id=p.id AND u.day>=current_date-29),0)
 	FROM control.project_catalog p`
 	var rows pgx.Rows
@@ -97,7 +99,7 @@ pg_database_size(p.database_name),COALESCE((SELECT sum(requests) FROM control.pr
 	var result []ProjectStat
 	for rows.Next() {
 		var item ProjectStat
-		if err := rows.Scan(&item.ID, &item.Name, &item.Database, &item.CreatedAt, &item.MaxDatabase, &item.SchemaError, &item.FunctionsURL, &item.FunctionsPrivate, &item.PublicURL, &item.DatabaseBytes, &item.Requests30d); err != nil {
+		if err := rows.Scan(&item.ID, &item.Name, &item.Database, &item.CreatedAt, &item.MaxDatabase, &item.SchemaError, &item.FunctionsURL, &item.FunctionsPrivate, &item.PublicURL, &item.Auth.ConfirmEmail, &item.Auth.SiteURL, &item.Auth.RedirectURLs, &item.DatabaseBytes, &item.Requests30d); err != nil {
 			return nil, err
 		}
 		root := filepath.Join(storageRoot, item.ID)

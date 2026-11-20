@@ -71,6 +71,12 @@ ALTER TABLE control.projects ADD COLUMN IF NOT EXISTS functions_private boolean 
 -- The address apps use for this project, such as https://pibase.client.com,
 -- shown in the dashboard. NULL means PIBASE_PUBLIC_URL (or a guess).
 ALTER TABLE control.projects ADD COLUMN IF NOT EXISTS public_url text;
+-- How the project's app users sign up. auth_confirm_email makes new users
+-- confirm by email before signing in; auth_site_url and auth_redirect_urls are
+-- where email links may send people back to (the app's own pages).
+ALTER TABLE control.projects ADD COLUMN IF NOT EXISTS auth_confirm_email boolean NOT NULL DEFAULT true;
+ALTER TABLE control.projects ADD COLUMN IF NOT EXISTS auth_site_url text;
+ALTER TABLE control.projects ADD COLUMN IF NOT EXISTS auth_redirect_urls text[] NOT NULL DEFAULT '{}';
 -- Per-minute request counts by service and HTTP status class, written by the
 -- gateway in batches and pruned after 8 days.
 CREATE TABLE IF NOT EXISTS control.project_activity (
@@ -96,7 +102,8 @@ CREATE VIEW control.project_catalog AS
   SELECT id, database_name, anon_role, authenticated_role, service_role,
          admin_role, jwt_secret_encrypted, anon_key_hash, service_key_hash,
          max_database_bytes, name, created_at, schema_version, schema_error,
-         owner_id, functions_url, functions_private, public_url
+         owner_id, functions_url, functions_private, public_url,
+         auth_confirm_email, auth_site_url, auth_redirect_urls
   FROM control.projects;
 GRANT USAGE ON SCHEMA control TO authenticator;
 GRANT SELECT ON control.project_catalog TO authenticator;

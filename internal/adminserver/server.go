@@ -132,6 +132,8 @@ func (s *Server) Handler() http.Handler {
 	mux.HandleFunc("PATCH /_pibase/projects/{id}/limits", s.setLimits)
 	mux.HandleFunc("PATCH /_pibase/projects/{id}/functions", s.setFunctions)
 	mux.HandleFunc("PATCH /_pibase/projects/{id}/public-url", s.setPublicURL)
+	mux.HandleFunc("GET /_pibase/projects/{id}/auth-settings", s.getAuthSettings)
+	mux.HandleFunc("PUT /_pibase/projects/{id}/auth-settings", s.putAuthSettings)
 	mux.HandleFunc("POST /_pibase/projects/{id}/export", s.exportProject)
 	mux.HandleFunc("POST /_pibase/projects/import", s.importProject)
 	mux.HandleFunc("POST /_pibase/projects/{id}/users", s.createUser)
@@ -1068,6 +1070,54 @@ func (s *Server) setPublicURL(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	writeJSON(w, 200, map[string]string{"url": url, "api_url": s.apiURL(url)})
+}
+
+// authSettingsResponse adds whether this server can send email, so the
+// dashboard can warn when confirmation emails would never arrive.
+func (s *Server) authSettingsResponse(a control.AuthSettings) map[string]any {
+	return map[string]any{"confirm_email": a.ConfirmEmail, "site_url": a.SiteURL, "redirect_urls": a.RedirectURLs, "email_sending": s.SendMail != nil}
+}
+
+func (s *Server) getAuthSettings(w http.ResponseWriter, r *http.Request) {
+	id := r.PathValue("id")
+	if !s.checkOwner(w, r, id) {
+		return
+	}
+	a, err := control.GetAuthSettings(r.Context(), s.AdminURL, id)
+	if err != nil {
+		http.NotFound(w, r)
+		return
+	}
+	writeJSON(w, 200, s.authSettingsResponse(a))
+}
+
+func (s *Server) putAuthSettings(w http.ResponseWriter, r *http.Request) {
+	id := r.PathValue("id")
+	if !s.checkOwner(w, r, id) {
+		return
+	}
+	var b struct {
+		ConfirmEmail *bool    `json:"confirm_email"`
+		SiteURL      string   `json:"site_url"`
+		RedirectURLs []string `json:"redirect_urls"`
+	}
+	if !jsonBody(w, r, &b) {
+		return
+	}
+	if b.ConfirmEmail == nil {
+		http.Error(w, "confirm_email is required", http.StatusBadRequest)
+		return
+	}
+	a, err := control.SetAuthSettings(r.Context(), s.AdminURL, id, control.AuthSettings{ConfirmEmail: *b.ConfirmEmail, SiteURL: b.SiteURL, RedirectURLs: b.RedirectURLs})
+	if err != nil {
+		if errors.Is(err, control.ErrNotFound) {
+			http.NotFound(w, r)
+			return
+		}
+		http.Error(w, err.Error(), http.StatusBadRequest)
+		return
+	}
+	writeJSON(w, 200, s.authSettingsResponse(a))
 }
 
 func (s *Server) setLimits(w http.ResponseWriter, r *http.Request) {

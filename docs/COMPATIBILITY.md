@@ -1,18 +1,46 @@
-# Using pibase with Supabase clients
+# Connecting your app to pibase
 
-pibase speaks the Supabase wire protocol, so the official `@supabase/supabase-js`
-client works against it from browsers and servers. This page lists what is
+pibase works with the standard open-source JavaScript client,
+`@supabase/supabase-js` (MIT licence), from browsers and servers. This page lists what is
 supported, where pibase deliberately differs, and the limits a site should
-design for. It was checked with supabase-js 2.117.2 in Chromium from a
+design for. It was checked with client version 2.117.2 in Chromium from a
 different origin, and by the Go integration tests named below.
 
 ```js
 import { createClient } from '@supabase/supabase-js'
-const db = createClient('https://api.example.com', ANON_KEY)
+const pibase = createClient('https://api.example.com', ANON_KEY)
 ```
 
 The URL is the gateway address (port 18080, or `PIBASE_PUBLIC_URL`). The
 dashboard's **API keys** page shows it with the project's keys.
+
+## Sign-up settings
+
+Each project's **Authentication** page in the dashboard controls sign-up:
+
+* **Confirm email** (on by default): a new user must click the link in a
+  confirmation email before `signInWithPassword` works. Off: `signUp` returns a
+  session and the user is signed in at once. A server without an email service
+  (`PIBASE_SMTP_*`) cannot send the link, so turn it off there.
+* **Site URL**: your app's address. Links in confirmation and password-reset
+  emails open pibase, which then sends the person back here, signed in. The
+  session is in the URL fragment, where the JavaScript client picks it up.
+* **Allowed redirect URLs**: other pages your app may ask to return to. A line
+  ending in `*` allows every page under it, for example
+  `http://localhost:3000/*`. An address not on the list falls back to the site URL.
+
+```js
+await pibase.auth.signUp({ email, password,
+  options: { emailRedirectTo: 'https://your-app.com/welcome' } })
+await pibase.auth.resetPasswordForEmail(email,
+  { redirectTo: 'https://your-app.com/new-password' })
+// On /new-password the client fires PASSWORD_RECOVERY; then:
+await pibase.auth.updateUser({ password: newPassword })
+```
+
+A link that has expired or was already used sends the person back with
+`#error=access_denied&error_code=otp_expired`. With no site URL set, the links
+answer with JSON instead of redirecting. (`TestAuthSettings*`)
 
 ## Wire APIs
 
@@ -20,7 +48,7 @@ dashboard's **API keys** page shows it with the project's keys.
 |---|---|---|
 | Data (`/rest/v1`) | select with filters, order, limit/offset and embedded relations; count/sum/avg/min/max aggregates; insert, update, delete; `upsert()` with or without `onConflict` (defaults to the primary key, like PostgREST) and with `ignoreDuplicates`; `Prefer: return=representation` and `count=exact`; `columns=` | schemas other than `public` (requests for them get 406), GraphQL |
 | Functions (`/rest/v1/rpc/<name>`) | calling SQL functions in `public`, including omitted named arguments with SQL defaults | overloaded functions |
-| Server-side code (`/functions/v1/<name>`) | forwarding to your site's own server routes, with `supabase.functions.invoke` unchanged (see below) | running code on the PIBASE machine (no Edge Functions runtime) |
+| Server-side code (`/functions/v1/<name>`) | forwarding to your site's own server routes, with `pibase.functions.invoke` unchanged (see below) | running code on the PIBASE machine (no Edge Functions runtime) |
 | Auth (`/auth/v1`) | email or username + password sign-in, email sign-up and confirmation, refresh, scoped sign-out, password recovery and verified password change, `getUser`/`updateUser`, TOTP MFA, admin user management and session termination with the service key, bcrypt hash import | OAuth/social providers, magic links, phone and OTP sign-in |
 | Storage (`/storage/v1`) | buckets; upload (POST and PUT, `upsert`), download, public and signed URLs, list, remove | image transformations |
 | Realtime (`/realtime/v1/websocket`) | table changes (after `realtime.enable_table`), broadcast, presence | |
@@ -43,7 +71,7 @@ aggregation. Aggregate selects do not yet accept `order` or relation embeds.
 | `auth.jwt()` | the request's verified claims as `jsonb` (`{}` without a token) |
 | `auth.role()` | `anon`, `authenticated` or `service_role` |
 | `storage.foldername(name)` | folders of an object path: `'inline/a.png'` gives `{inline}`, and `'inline'` gives `{}`, so a file named like a folder never passes a folder check |
-| `storage.filename(name)`, `storage.extension(name)` | same results as Supabase |
+| `storage.filename(name)`, `storage.extension(name)` | the file name and its extension |
 
 ## Roles and policies
 
@@ -51,7 +79,7 @@ Each project has its own database roles, named after the project ID
 (`p_<id>_anon`, `p_<id>_authenticated`, `p_<id>_service_role`, `p_<id>_admin`).
 The request roles are members of stable, cluster-wide `anon`, `authenticated`
 and `service_role` NOLOGIN roles. Migrations can use `GRANT ... TO
-authenticated` and policies can use `TO authenticated`, as on Supabase. The
+authenticated` and policies can use `TO authenticated`. The
 stable roles cannot sign in to PostgreSQL directly. Projects still use separate
 databases and project-specific gateway roles. For policies based on identity:
 
@@ -63,12 +91,12 @@ create policy "owners edit" on notes for all
 Tables created in `public` get row level security switched on automatically.
 Migrations and the dashboard SQL tab run as the project admin role. In both,
 `GRANT`/`REVOKE ... TO/FROM anon` (and `authenticated`, `service_role`) also
-names the project's own role, so revoking works as on Supabase. The SQL tab
+names the project's own role, so revoking works as expected. The SQL tab
 runs a whole script as one transaction and allows `DO` blocks.
 
 A role for your app's own permissions (for example `admin` or `editor`) goes in
 `app_metadata.role`: set it on the dashboard Users page, or with
-`supabase.auth.admin.updateUserById(id, { app_metadata: { role: 'admin' } })`
+`pibase.auth.admin.updateUserById(id, { app_metadata: { role: 'admin' } })`
 from server code. Users cannot change it themselves. Read it in the app from
 `user.app_metadata.role` and in policies with:
 
@@ -160,7 +188,7 @@ live realtime connections through a database notification.
   their sign-ins, and refreshing is refused until the ban ends. A ban written
   straight into `auth.users.banned_until` takes effect on the next request.
   (`TestBanEndsSessionsAndBlocksRefresh`)
-* Realtime connections follow the token they last presented. supabase-js sends
+* Realtime connections follow the token they last presented. the JavaScript client sends
   each refreshed token on open channels (`access_token` messages), and the
   gateway uses it from then on. Every 30 seconds it closes connections whose
   token has expired or whose sign-in has ended, including a connection opened
@@ -183,7 +211,7 @@ message and hint in the JSON error body. (`TestSQLChosenHTTPStatus`)
 
 ## Browser sign-in client
 
-A site that doesn't use supabase-js can load pibase's own sign-in client from
+A site that doesn't use the JavaScript client can load pibase's own sign-in client from
 the gateway. It has no dependencies and keeps one sign-in shared by every tab
 of the site:
 
@@ -244,14 +272,14 @@ from the browser to `/rest/v1` under row level security. The guide
 [SERVER-SIDE-CODE.md](SERVER-SIDE-CODE.md) has the patterns: authenticated
 routes, email, webhooks, scheduled jobs.
 
-To keep `supabase.functions.invoke('send-quote', { body })` working unchanged,
+To keep `pibase.functions.invoke('send-quote', { body })` working unchanged,
 set the project's **Server-side code** address in the dashboard's Settings, for
 example `https://app.example.com/api`. The gateway then forwards
 `/functions/v1/<name>` to `<address>/<name>`:
 
 * It checks the project key and the caller's token first. A signed-out token
   gets 401 and the site is never called. The anon key alone is accepted, as with
-  Supabase's default `verify_jwt`, so a route that needs a signed-in user must
+  the client's default, so a route that needs a signed-in user must
   check for one.
 * The site receives the method, query string, body and the `Authorization`
   header, so the route can act as the user. The project's `apikey` header and
@@ -274,7 +302,7 @@ example `https://app.example.com/api`. The gateway then forwards
   totals.
 
 **Checking a token in your own server.** Ask PIBASE (`GET /auth/v1/user` with the
-token, which is what `supabase.auth.getUser(token)` does). Don't check the
+token, which is what `pibase.auth.getUser(token)` does). Don't check the
 signature locally: PIBASE ends every token of a sign-in at sign-out or ban, but
 a locally checked token stays valid until it expires, up to an hour.
 (`TestFunctionsProxyForwardsWithVerifiedIdentity`, `TestFunctionsProxyRefusesUnsafeTargetsAndNames`,
@@ -287,7 +315,7 @@ keep a version column and update only if it is unchanged. An empty result
 means someone else saved first: reload and merge, rather than overwriting.
 
 ```js
-const { data } = await db.from('pages')
+const { data } = await pibase.from('pages')
   .update({ content, version: version + 1 })
   .eq('slug', slug).eq('version', version)
   .select()
