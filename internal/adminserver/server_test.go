@@ -119,10 +119,21 @@ func TestPagesUIHardRules(t *testing.T) {
 			}
 		}
 	}
-	for _, required := range []string{"function alignChain()", "chain.scrollLeft=x", "function dataTable("} {
+	// One pane at a time, at every width: the page itself never scrolls
+	// sideways. Wide content (a table of rows) scrolls inside its own box.
+	for _, required := range []string{"function alignChain()", "function dataTable(",
+		".chain{display:block;", ".chain>.pane:not(:last-child){display:none}", "overflow-x:hidden}", ".data{overflow:auto;"} {
 		if !strings.Contains(page, required) {
 			t.Fatalf("dashboard misses %q", required)
 		}
+	}
+	for _, forbidden := range []string{"chain.scrollLeft", ".chain{display:flex"} {
+		if strings.Contains(page, forbidden) {
+			t.Fatalf("dashboard brings back the sideways-scrolling chain: %q", forbidden)
+		}
+	}
+	if i := strings.Index(page, ".chain>.pane:not(:last-child){display:none}"); i > strings.Index(page, "@media(max-width:") {
+		t.Fatal("one-pane-at-a-time must apply at every width, not only inside the phone media query")
 	}
 }
 
