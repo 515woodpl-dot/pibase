@@ -57,7 +57,10 @@ p.warn:empty{display:none}
 .chain>.pane:not(:last-child){display:none}
 .pane{width:100%;max-width:1100px;margin:0 auto;min-width:0;padding:24px 22px;background:var(--surface);border:1px solid var(--line);border-radius:16px;box-shadow:var(--shadow)}
 .pane.wide{max-width:1400px}
-.pane h1{margin:0 0 6px;font-size:19px;letter-spacing:-.02em}
+.pane h1{margin:0;font-size:19px;letter-spacing:-.02em;flex:1;min-width:0}
+.pane-top{display:flex;align-items:center;gap:10px;flex-wrap:wrap;margin:0 0 6px}
+.pane-actions{display:flex;gap:8px;flex-wrap:wrap}
+.pane h2.section{margin:22px 0 10px;font-size:15px}
 .intro{margin:0 0 20px;color:var(--muted);overflow-wrap:anywhere}
 .group>.intro{margin-bottom:12px;font-size:13px}
 .pane p{overflow-wrap:anywhere}
@@ -118,7 +121,73 @@ th,td{padding:9px;text-align:left;vertical-align:top;border-bottom:1px solid var
 th{font-weight:600}
 pre{margin:0;padding:12px;overflow:auto;white-space:pre-wrap;background:#fafafa;border-radius:10px}
 
+/* Cards */
+.tiles{display:grid;grid-template-columns:repeat(auto-fill,minmax(min(260px,100%),1fr));gap:14px;margin:0 0 20px}
+.tiles.wide{grid-template-columns:repeat(auto-fill,minmax(min(380px,100%),1fr))}
+.tiles.fit{grid-template-columns:repeat(auto-fit,minmax(min(300px,100%),1fr))}
+textarea.code{min-height:0;white-space:pre;overflow-wrap:normal;overflow-x:auto;resize:vertical}
+.tile{display:flex;flex-direction:column;gap:10px;min-width:0;padding:16px;border:1px solid var(--line);border-radius:14px;background:#fff;text-align:left;color:inherit;font:inherit}
+button.tile{width:100%;cursor:pointer}
+button.tile:hover{border-color:#a9c4f5;background:#fff;box-shadow:0 8px 22px rgba(30,52,88,.10)}
+.tile.active{border-color:#a9c6f7;box-shadow:0 0 0 3px #e3edff}
+.tile-top{display:flex;gap:12px;align-items:center;min-width:0}
+.tile-title{min-width:0;flex:1}
+.tile-title b,.tile h3{display:block;margin:0;font-size:15px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+.tile-title span{display:block;margin-top:1px;font-size:12px;color:var(--muted);overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+.tile-value{font-size:15px;font-weight:600;overflow-wrap:anywhere}
+.tile-value.off{color:var(--muted);font-weight:500}
+.tile-body{margin:0;color:var(--muted);font-size:13px}
+.tile .field{margin:0}
+.tile textarea{min-height:0}
+.tile-actions{display:flex;gap:8px;flex-wrap:wrap;margin-top:auto;padding-top:4px}
+.tile.add{align-items:center;justify-content:center;min-height:132px;border:1.5px dashed #b9cbea;background:#f7faff;color:var(--accent-dark);font-weight:650}
+.tile.add:hover{background:#eef4ff}
+.tile.danger{border-color:#efc9c7;background:#fffafa}
+.tile.danger h3,.tile.danger .tile-title b{color:var(--danger)}
+.avatar{flex:0 0 40px;width:40px;height:40px;border-radius:12px;display:grid;place-items:center;font-weight:750;font-size:16px;color:#fff}
+.avatar.round{border-radius:50%}
+.avatar.icon{background:var(--tint);color:var(--accent-dark)}
+.avatar.icon svg{width:20px;height:20px;fill:none;stroke:currentColor;stroke-width:1.8;stroke-linecap:round;stroke-linejoin:round}
+.tile.danger .avatar.icon{background:#fde6e5;color:var(--danger)}
+.badges{display:flex;gap:6px;flex-wrap:wrap}
+.badge{display:inline-flex;align-items:center;max-width:100%;padding:2px 9px;border-radius:99px;font-size:11.5px;font-weight:650;background:#eef2f8;color:#4a5670;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+.badge.ok{background:#e3f6ec;color:#1d7a4d}
+.badge.warn{background:#fdf1dc;color:#8a5d0b}
+.badge.bad{background:#fde6e5;color:#a32c28}
+.badge.info{background:#e7efff;color:#1f4fb8}
+button.small{padding:5px 11px;font-size:13px;border-radius:9px}
+button.danger.solid{background:var(--danger);border-color:var(--danger);color:#fff}
+button.danger.solid:disabled{background:#e9b9b7;border-color:#e9b9b7;color:#fff}
+.chips{display:flex;gap:8px;flex-wrap:wrap;margin:0 0 12px}
+.toolbar{display:flex;gap:10px;align-items:center;flex-wrap:wrap;margin:0 0 14px}
+.toolbar input{max-width:340px}
+.banner{padding:12px 14px;margin:0 0 16px;border-radius:12px;border:1px solid #f0d9a8;background:#fdf6e6;color:#7a5208;font-weight:600}
+.banner.info{border-color:#c7d8fb;background:#eef4ff;color:#1f4fb8}
+.switch-row{display:flex;gap:12px;align-items:center;font-weight:650}
+input[type=checkbox].switch{appearance:none;-webkit-appearance:none;position:relative;flex:0 0 44px;width:44px;height:26px;margin:0;padding:0;border:0;border-radius:99px;background:#cbd6e7;cursor:pointer;transform:none}
+input[type=checkbox].switch::after{content:'';position:absolute;top:3px;left:3px;width:20px;height:20px;border-radius:50%;background:#fff;box-shadow:0 1px 3px rgba(0,0,0,.25)}
+input[type=checkbox].switch:checked{background:var(--accent)}
+input[type=checkbox].switch:checked::after{left:21px}
+
+/* Pop-up windows */
+.modal-back{position:fixed;inset:0;z-index:50;display:flex;align-items:flex-start;justify-content:center;padding:8vh 16px 16px;background:rgba(23,32,58,.42);overflow-y:auto}
+.modal{width:100%;max-width:520px;border:1px solid var(--line);border-radius:16px;background:#fff;box-shadow:0 24px 60px rgba(23,32,58,.3)}
+.modal.wide{max-width:780px}
+.modal-head{display:flex;align-items:flex-start;gap:12px;padding:20px 22px 0}
+.modal-head h2{flex:1;min-width:0;margin:0;font-size:18px;overflow-wrap:anywhere}
+.modal.danger .modal-head h2{color:var(--danger)}
+button.modal-x{border:0;background:transparent;padding:0 6px;font-size:24px;line-height:1;color:var(--muted)}
+.modal-body{padding:8px 22px 0}
+.modal-body>.intro{margin:0 0 16px;font-size:13.5px}
+.modal-foot{display:flex;justify-content:flex-end;gap:8px;flex-wrap:wrap;padding:16px 22px 20px}
+.modal-status{flex:1 1 100%;margin:0;color:var(--danger)}
+.modal-status:empty{display:none}
+.toast{position:fixed;left:50%;bottom:22px;z-index:60;max-width:calc(100vw - 32px);padding:11px 18px;border-radius:12px;background:#17203a;color:#fff;box-shadow:0 12px 30px rgba(23,32,58,.3);transform:translateX(-50%)}
+
 @media(max-width:760px){
+  .modal-back{padding:12px 10px}
+  .modal-head{padding:16px 16px 0}.modal-body{padding:8px 16px 0}.modal-foot{padding:14px 16px 16px}
+  .toolbar input{max-width:none}
   .nav{width:52px;padding:8px 5px}
   .nav-item{padding:0 9px}
   .nav.open{width:min(252px,calc(100vw - 52px))}
@@ -158,13 +227,68 @@ let projects=[], selected=null, account=null, operator=false, uid=0;
 function el(tag,text,cls){const e=document.createElement(tag);if(text!==undefined&&text!==null)e.textContent=text;if(cls)e.className=cls;return e}
 function svgEl(tag,attrs){const e=document.createElementNS('http://www.w3.org/2000/svg',tag);for(const k in attrs)e.setAttribute(k,attrs[k]);return e}
 function button(text,fn,cls){const b=el('button',text,cls);b.onclick=fn;return b}
-function pane(title,intro){const p=el('section',null,'pane');p.append(el('h1',title));if(intro)p.append(el('p',intro,'intro'));return p}
+function pane(title,intro){const p=el('section',null,'pane');const top=el('div',null,'pane-top');top.append(el('h1',title));p.append(top);if(intro)p.append(el('p',intro,'intro'));return p}
+// Buttons beside a pane's title, such as "+ Add user".
+function topAction(p,...btns){let a=p.querySelector(':scope>.pane-top>.pane-actions');if(!a){a=el('div',null,'pane-actions');p.querySelector(':scope>.pane-top').append(a)}a.append(...btns)}
 function clearFrom(n){while(chain.children.length>n)chain.lastChild.remove()}
 function add(p){chain.append(p);alignChain()}
 function alignChain(){chain.style.paddingRight='';const l=chain.lastElementChild;if(l&&chain.children.length>1&&l.scrollIntoView)l.scrollIntoView({block:'nearest',behavior:'smooth'})}
 function field(label,control,hint,...extras){const f=el('div',null,'field');const id='f'+(++uid);control.id=id;const l=el('label',label);l.htmlFor=id;f.append(l);if(extras.length){const row=el('div',null,'key-row');row.append(control,...extras);f.append(row)}else f.append(control);if(hint)f.append(el('span',hint,'hint'));return f}
 // Title and intro of a pane, copied so a pane can be rebuilt after it has loaded.
-function head(p){return [...p.querySelectorAll(':scope>h1,:scope>.intro')].map(n=>n.cloneNode(true))}
+function head(p){return [...p.querySelectorAll(':scope>.pane-top,:scope>.intro')].map(n=>n.cloneNode(true))}
+
+/* ---------- cards, pop-up windows, toasts ---------- */
+function sbtn(text,fn,cls){return button(text,fn,'small'+(cls?' '+cls:''))}
+function badge(text,kind){return el('span',text,'badge'+(kind?' '+kind:''))}
+function avatar(text,round){text=String(text||'?');const a=el('span',text.trim().charAt(0).toUpperCase()||'?','avatar'+(round?' round':''));let h=0;for(const c of text)h=(h*31+c.charCodeAt(0))%360;a.style.background='hsl('+h+',52%,46%)';a.setAttribute('aria-hidden','true');return a}
+function iconBadge(name){const a=el('span',null,'avatar icon');a.append(icon(name));return a}
+// A card. With open it is one big button, so it takes no action buttons.
+function tile({lead,title,sub,value,off,body,badges,actions,open,cls,kids}){
+  const t=el(open?'button':'div',null,'tile'+(cls?' '+cls:''));if(open)t.onclick=open;
+  const top=el('div',null,'tile-top');if(lead)top.append(lead);const tt=el('div',null,'tile-title');tt.append(el('b',title));if(sub)tt.append(el('span',sub));top.append(tt);t.append(top);
+  if(value!==undefined)t.append(el('div',value,'tile-value'+(off?' off':'')));
+  if(body)t.append(el('p',body,'tile-body'));
+  if(badges&&badges.length){const b=el('div',null,'badges');b.append(...badges);t.append(b)}
+  if(kids)t.append(...kids);
+  if(actions&&actions.length){const a=el('div',null,'tile-actions');a.append(...actions);t.append(a)}
+  return t
+}
+function tiles(...kids){const g=el('div',null,'tiles');g.append(...kids);return g}
+function emptyBox(title,text,...kids){const b=el('div',null,'empty');b.append(el('h2',title),el('p',text),...kids);return b}
+let toastTimer;
+function toast(msg){let t=q('toast');if(!t){t=el('div',null,'toast');t.id='toast';t.setAttribute('role','status');document.body.append(t)}t.textContent=msg;t.classList.remove('hidden');clearTimeout(toastTimer);toastTimer=setTimeout(()=>t.classList.add('hidden'),4000)}
+let openModal=null;
+function modal(title,intro,opt={}){
+  const back=el('div',null,'modal-back'),box=el('div',null,'modal'+(opt.wide?' wide':'')+(opt.danger?' danger':''));
+  box.setAttribute('role','dialog');box.setAttribute('aria-modal','true');
+  const hd=el('div',null,'modal-head'),h=el('h2',title);h.id='m'+(++uid);box.setAttribute('aria-labelledby',h.id);
+  const x=button('×',()=>m.close(),'modal-x');x.setAttribute('aria-label','Close');hd.append(h,x);
+  const bd=el('div',null,'modal-body');if(intro)bd.append(el('p',intro,'intro'));
+  const ft=el('div',null,'modal-foot'),status=el('p',null,'modal-status');status.setAttribute('role','alert');ft.append(status,button('Close',()=>m.close()));
+  box.append(hd,bd,ft);back.append(box);
+  back.addEventListener('mousedown',e=>{if(e.target===back)m.close()});
+  const before=document.activeElement;
+  const m={box,body:bd,foot:ft,status,
+    add(...k){bd.append(...k);return m},
+    close(){back.remove();if(openModal===m){openModal=null;document.body.style.overflow=''}if(before&&before.isConnected&&before.focus)before.focus()},
+    show(){if(openModal)openModal.close();openModal=m;document.body.style.overflow='hidden';document.body.append(back);const f=box.querySelector('.modal-body input:not([readonly]):not([type=checkbox]),.modal-body textarea:not([readonly]),.modal-body select')||box.querySelector('.modal-ok')||x;f.focus();return m}};
+  return m
+}
+// Gives a window Cancel and one action. run() may return a message to show
+// once the window closes; an error stays in the window.
+function modalAction(m,label,run,cls){
+  const go=button(label,async()=>{m.status.textContent='';go.disabled=true;try{const msg=await run();m.close();if(msg)toast(msg)}catch(e){m.status.textContent=e.message;go.disabled=false}},cls||'primary');
+  go.classList.add('modal-ok');m.foot.replaceChildren(m.status,button('Cancel',()=>m.close()),go);return go
+}
+function formModal(title,intro,kids,label,run,opt={}){const m=modal(title,intro,opt);m.add(...kids);modalAction(m,label,run,opt.danger?'danger solid':'primary');return m.show()}
+// A step that cannot be undone: the button works once word is typed.
+function dangerModal(title,intro,word,label,run){
+  const typed=input('text','');typed.autocomplete='off';typed.spellcheck=false;
+  const m=modal(title,intro,{danger:true});m.add(field('Type '+word+' to continue',typed));
+  const go=modalAction(m,label,run,'danger solid');go.disabled=true;typed.oninput=()=>{go.disabled=typed.value.trim()!==word};
+  return m.show()
+}
+function codeBox(text,label){const t=el('textarea',null,'code');t.value=text;t.readOnly=true;t.rows=text.split('\n').length+1;t.setAttribute('aria-label',label);t.spellcheck=false;return t}
 function group(title,desc,...kids){const g=el('div',null,'group');if(title)g.append(el('h2',title));if(desc)g.append(el('p',desc,'intro'));g.append(...kids);return g}
 function input(type,placeholder,value){const i=el('input');i.type=type;if(placeholder)i.placeholder=placeholder;if(value!==undefined&&value!==null)i.value=value;return i}
 function note(text){return el('p',text,'muted')}
@@ -231,31 +355,31 @@ async function init(){
 // can't receive a reset email.
 function accountsPane(){
   const p=pane('Dashboard accounts','Reset the password of anyone who signs in to this dashboard. They are signed out everywhere and log in with the new password.');
-  const em=input('email','name@example.com'),pw=input('password',''),pw2=input('password',''),st=note('');
-  pw.autocomplete='new-password';pw2.autocomplete='new-password';
-  p.append(group('Reset a password','Use this when someone forgot their password and this server cannot email them a link.',field('Account email',em),field('New password',pw,'At least 8 characters. Tell it to them privately.'),field('Enter it again',pw2),button('Set new password',async()=>{
-    if(pw.value.length<8){st.textContent='The password must be at least 8 characters.';return}
-    if(pw.value!==pw2.value){st.textContent='The two passwords do not match.';return}
-    try{await api('/_pibase/operator/account-password',body({email:em.value.trim(),password:pw.value}));st.textContent='Password changed for '+em.value.trim()+'. They were signed out everywhere.';pw.value='';pw2.value=''}catch(e){st.textContent=e.message}},'primary'),st));
+  const reset=()=>{const em=input('email','name@example.com'),pw=input('password',''),pw2=input('password','');pw.autocomplete='new-password';pw2.autocomplete='new-password';
+    formModal('Reset a password','Use this when someone forgot their password and this server cannot email them a link.',[field('Account email',em),field('New password',pw,'At least 8 characters. Tell it to them privately.'),field('Enter it again',pw2)],'Set new password',async()=>{
+      if(pw.value.length<8)throw Error('The password must be at least 8 characters.');
+      if(pw.value!==pw2.value)throw Error('The two passwords do not match.');
+      await api('/_pibase/operator/account-password',body({email:em.value.trim(),password:pw.value}));return 'Password changed for '+em.value.trim()+'. They were signed out everywhere.'})};
+  p.append(tiles(tile({lead:iconBadge('user'),title:'Reset a password',body:'For someone who cannot receive a reset email.',actions:[sbtn('Reset a password…',reset)]})));
   return p
 }
 function operatorPane(){return pane('Operator access','Enter the operator token above and press Load to see every project on this server.')}
 async function logout(){try{await fetch('/_pibase/auth/logout',{method:'POST'})}catch(_){}location.replace('/')}
 
 /* ---------- projects ---------- */
-function createProjectForm(first){
+async function createProject(name){
+  const x=await api('/_pibase/projects',body({name}));projects=(await api('/_pibase/projects'))||[];selected=projects.find(p=>p.id===x.id)||x;refreshNav();clearFrom(0);add(projectsPane());say(plural(projects.length,'project'));setCurrent('overview');openOverview();openKeys('Your project is ready. Copy these keys into your app, or come back to this page any time under API keys.')
+}
+// The first project is created right on the page; later ones in a window.
+function createProjectForm(){
+  const name=input('text','for example: inventory'),status=el('p',null,'muted');
+  return emptyBox('Create your first project','A project is a private Postgres database with its own API address and keys. Create one to start building.',
+    field('Project name',name,'Letters, numbers and spaces. You can rename it later.'),
+    button('Create project',async()=>{try{await createProject(name.value)}catch(e){status.textContent=e.message}},'primary'),status)
+}
+function newProjectWindow(){
   const name=input('text','for example: inventory');
-  const status=el('p',null,'muted');
-  const go=async()=>{
-    try{const x=await api('/_pibase/projects',body({name:name.value}));projects=(await api('/_pibase/projects'))||[];selected=projects.find(p=>p.id===x.id)||x;refreshNav();clearFrom(0);add(projectsPane());say(plural(projects.length,'project'));setCurrent('overview');openOverview();openKeys('Your project is ready. Copy these keys into your app, or come back to this page any time under API keys.')}
-    catch(e){status.textContent=e.message}
-  };
-  const f=field('Project name',name,'Letters, numbers and spaces. You can rename it later.');
-  const create=button('Create project',go,'primary');
-  const box=first?el('div',null,'empty'):group('New project','A new, empty Postgres database with its own API address and keys.');
-  if(first)box.append(el('h2','Create your first project'),el('p','A project is a private Postgres database with its own API address and keys. Create one to start building.'));
-  box.append(f,create,status);
-  return box
+  formModal('New project','A new, empty Postgres database with its own API address and keys.',[field('Project name',name,'Letters, numbers and spaces. You can rename it later.')],'Create project',()=>createProject(name.value))
 }
 function orgPrompt(){
   const name=input('text','Your company, team or name');const status=note('');
@@ -263,35 +387,37 @@ function orgPrompt(){
 }
 function renderProjectList(list){
   list.replaceChildren();
-  for(const x of projects){const b=button(null,()=>openProject(x),'item'+(selected&&selected.id===x.id?' active':''));b.append(el('b',x.name),el('span',[x.id,x.database_bytes!==undefined?bytes(x.database_bytes)+' database':'',x.requests_30d!==undefined?plural(x.requests_30d,'request')+' in 30 days':''].filter(Boolean).join(' · ')));list.append(b)}
+  for(const x of projects)list.append(tile({lead:avatar(x.name),title:x.name,sub:'ID '+x.id,open:()=>openProject(x),cls:selected&&selected.id===x.id?'active':'',
+    badges:[x.database_bytes!==undefined?badge(bytes(x.database_bytes)+' database','info'):null,x.requests_30d!==undefined?badge(plural(x.requests_30d,'request')+' in 30 days'):null,x.schema_error?badge('Needs attention','bad'):null].filter(Boolean)}));
+  const more=button(null,newProjectWindow,'tile add');more.append(el('span','+ New project'));list.append(more)
 }
 function projectsPane(){
   const p=pane('Projects','Each project is its own Postgres database with its own API address and keys. Pick a project to see how it is being used and to manage it.');
+  topAction(p,button('Import a project',importWindow));
   if(account&&!account.organization)p.append(orgPrompt());
-  if(!projects.length){p.append(createProjectForm(true),importButton());return p}
-  const list=el('div');list.id='projectList';renderProjectList(list);
-  p.append(list);
-  const more=button('+ New project',()=>{more.replaceWith(createProjectForm(false))});
-  p.append(more,importButton());
+  if(!projects.length){p.append(createProjectForm());return p}
+  const list=el('div',null,'tiles');list.id='projectList';renderProjectList(list);p.append(list);
   return p
 }
 // Import a project exported from another PIBASE server.
-function importButton(){const b=button('Import a project',()=>{b.replaceWith(importForm())});return b}
-function importForm(){
-  const file=input('file',''),pass=input('password',''),st=note('');file.accept='.pibx';pass.autocomplete='off';
-  return group('Import a project','Bring a project from another PIBASE server, using the file from its Settings, Move to another server. Its tables, users, files and keys come along, so apps only need the new address.',field('Export file',file),field('Passphrase',pass),button('Import',async()=>{
-    if(!file.files.length){st.textContent='Choose the export file.';return}
-    if(!pass.value){st.textContent='Enter the passphrase the file was exported with.';return}
+function importWindow(){
+  const file=input('file',''),pass=input('password','');file.accept='.pibx';pass.autocomplete='off';
+  const m=modal('Import a project','Bring a project from another PIBASE server, using the file from its Settings, Move to another server. Its tables, users, files and keys come along, so apps only need the new address.');
+  m.add(field('Export file',file),field('Passphrase',pass));
+  const go=modalAction(m,'Import',async()=>{
+    if(!file.files.length)throw Error('Choose the export file.');
+    if(!pass.value)throw Error('Enter the passphrase the file was exported with.');
     const form=new FormData();form.append('passphrase',pass.value);form.append('file',file.files[0]);
     const h=apiHeaders();delete h['Content-Type'];
-    st.textContent='Uploading and importing '+bytes(file.files[0].size)+'…';
+    go.textContent='Importing '+bytes(file.files[0].size)+'…';
     try{const r=await fetch('/_pibase/projects/import',{method:'POST',headers:h,body:form});const t=await r.text();
       if(!r.ok)throw Error(t.trim()||r.status);
-      const res=JSON.parse(t);pass.value='';projects=(await api('/_pibase/projects'))||[];
+      const res=JSON.parse(t);projects=(await api('/_pibase/projects'))||[];
       const x=projects.find(p=>p.id===res.project_id);
-      st.textContent='Imported '+res.name+'.'+(res.notes&&res.notes.length?' '+res.notes.join(' '):'');
-      if(x){refreshNav();setTimeout(()=>openProject(x),800)}}
-    catch(e){st.textContent=e.message}},'primary'),st)
+      if(x){refreshNav();openProject(x)}else load();
+      return 'Imported '+res.name+'.'+(res.notes&&res.notes.length?' '+res.notes.join(' '):'')}
+    finally{go.textContent='Import'}});
+  m.show()
 }
 async function load(){
   try{projects=(await api('/_pibase/projects'))||[];if(selected)selected=projects.find(x=>x.id===selected.id)||null;refreshNav();clearFrom(0);add(projectsPane());if(!account)add(accountsPane());setCurrent('projects');say(plural(projects.length,'project'))}
@@ -355,7 +481,10 @@ async function openOverview(win){
 }
 
 /* ---------- API keys ---------- */
-function rotateButton(){const b=button('Rotate keys',async()=>{if(!b.dataset.armed){b.dataset.armed='1';b.textContent='Click again: the old keys stop working';return}try{await api(projectPath()+'/keys/rotate',{method:'POST'});await openKeys('Keys rotated. Update every app that used the old keys.')}catch(e){say(e.message)}},'danger');return b}
+function rotateWindow(){
+  formModal('Rotate keys?','Creates new keys and a new secret. The old ones stop working immediately and every app user is signed out, so every app using them must be updated.',[],'Rotate keys',async()=>{await api(projectPath()+'/keys/rotate',{method:'POST'});await openKeys('Keys rotated. Update every app that used the old keys.')},{danger:true})
+}
+function keyCard(title,body,...kids){const t=tile({title,body,kids});t.querySelector('.tile-top').remove();t.prepend(el('h3',title));return t}
 async function openKeys(message){
   clearFrom(2);const p=pane('API keys','Everything your app needs to talk to this project: its address, two keys that grant different levels of access, and the secret that signs them.');
   p.classList.add('wide');const h=head(p);p.append(el('p','Loading…'));add(p);const x=selected;
@@ -363,44 +492,55 @@ async function openKeys(message){
     const k=await api(projectPath()+'/keys');if(!p.isConnected)return;
     const url=k.api_url||apiBase(x);
     p.replaceChildren(...h);
-    if(message)p.append(note(message));
-    p.append(group('Project address','Where your app sends its requests. Use it with the JavaScript client below or any HTTP client.',copyField('API URL',url)));
-    if(!x.api_url)p.lastChild.append(note('This address is guessed from the page you are on. Set it under Settings, API address.'));
-    if(k.anon_key){p.append(group('Keys','Send a key in the apikey header of every request.',copyField('anon · public',k.anon_key,'Safe in a browser or mobile app as long as your tables use Row Level Security.'),secretField('service_role · secret',k.service_key,'Skips Row Level Security. Use it only on a server you control, never in an app or web page.')))
-      const env=envBlock(x,url,k);const ta=el('textarea');ta.value=env;ta.readOnly=true;ta.rows=env.split('\n').length;ta.setAttribute('aria-label','.env file');const st=el('span',null,'muted');
-      p.append(group('Environment variables (.env)','Paste into your app\'s .env file. There are names for plain Node, Next.js (NEXT_PUBLIC_) and Vite (VITE_); keep the ones your app uses. Keep the service_role line out of anything shipped to a browser.',ta,el('div',null,'actions'),st));
-      p.lastChild.querySelector('.actions').append(button('Copy .env',()=>copyText(env,st),'primary'))
-      const code=connectCode();const cta=el('textarea');cta.value=code;cta.readOnly=true;cta.rows=code.split('\n').length;cta.setAttribute('aria-label','Connection code');const cst=el('span',null,'muted');
-      p.append(group('Connect your app','pibase works with the standard open-source JavaScript client (MIT licence). Install it with npm install @supabase/supabase-js, then create one client with your address and anon key and use it everywhere in your app.',cta,el('div',null,'actions'),cst));
-      p.lastChild.querySelector('.actions').append(button('Copy code',()=>copyText(code,cst),'primary'))}
-    else{p.append(group('Keys','These keys were created before pibase kept a copy, so they cannot be shown. Rotate the keys once to get keys you can view here at any time.'))}
-    p.append(group('JWT secret','The secret that signs the keys above and your app users\' access tokens (HS256). It is base64: decode it to bytes before verifying tokens on your own server. Rotating keys replaces it and signs every user out.',secretField('JWT secret',k.jwt_secret)));
-    p.append(group('Paths','What each part of the API is called.',el('p','Data: /rest/v1/<table>   ·   Functions: /rest/v1/rpc/<name>   ·   Sign-in: /auth/v1   ·   Storage: /storage/v1   ·   Realtime: /realtime/v1/websocket','muted'),copyField('Try it',"curl '"+url+"/rest/v1/YOUR_TABLE?select=*' -H 'apikey: "+(k.anon_key||'YOUR_ANON_KEY')+"'")));
-    p.append(group('Rotate keys','Creates new keys and a new secret. The old ones stop working immediately, so every app using them must be updated.',rotateButton()))
+    topAction(p,button('Rotate keys',rotateWindow,'danger'));
+    if(message)p.append(el('div',message,'banner info'));
+    const top=el('div',null,'tiles fit');
+    const addr=keyCard('Project address','Where your app sends its requests. Use it with the JavaScript client below or any HTTP client.',copyField('API URL',url));
+    if(!x.api_url)addr.append(note('This address is guessed from the page you are on. Set it under Settings, API address.'));
+    top.append(addr);
+    if(k.anon_key){
+      top.append(keyCard('Public key','Safe in a browser or mobile app as long as your tables use Row Level Security.',copyField('anon · public',k.anon_key)));
+      top.append(keyCard('Secret key','Skips Row Level Security. Use it only on a server you control, never in an app or web page.',secretField('service_role · secret',k.service_key)));
+    }else top.append(keyCard('Keys','These keys were created before pibase kept a copy, so they cannot be shown. Rotate the keys once to get keys you can view here at any time.'));
+    p.append(top);
+    if(k.anon_key){
+      const code=connectCode(),env=envBlock(x,url,k),cst=el('span',null,'muted'),est=el('span',null,'muted');
+      const cc=keyCard('Connect your app','pibase works with the standard open-source JavaScript client (MIT licence). Install it with npm install @supabase/supabase-js, then create one client with your address and anon key and use it everywhere in your app.',codeBox(code,'Connection code'));
+      cc.append(el('div',null,'tile-actions'));cc.lastChild.append(button('Copy code',()=>copyText(code,cst),'primary'),cst);
+      const ec=keyCard('Environment variables (.env)','Paste into your app\'s .env file. There are names for plain Node, Next.js (NEXT_PUBLIC_) and Vite (VITE_); keep the ones your app uses. Keep the service_role line out of anything shipped to a browser.',codeBox(env,'.env file'));
+      ec.append(el('div',null,'tile-actions'));ec.lastChild.append(button('Copy .env',()=>copyText(env,est),'primary'),est);
+      const two=el('div',null,'tiles wide');two.append(cc,ec);p.append(el('h2','Use it in your app','section'),two)
+    }
+    const more=el('div',null,'tiles wide');
+    more.append(keyCard('JWT secret','The secret that signs the keys above and your app users\' access tokens (HS256). It is base64: decode it to bytes before verifying tokens on your own server. Rotating keys replaces it and signs every user out.',secretField('JWT secret',k.jwt_secret)));
+    more.append(keyCard('Paths','What each part of the API is called.',el('p','Data: /rest/v1/<table>  ·  Functions: /rest/v1/rpc/<name>  ·  Sign-in: /auth/v1  ·  Storage: /storage/v1  ·  Realtime: /realtime/v1/websocket','tile-body'),copyField('Try it',"curl '"+url+"/rest/v1/YOUR_TABLE?select=*' -H 'apikey: "+(k.anon_key||'YOUR_ANON_KEY')+"'")));
+    p.append(el('h2','Advanced','section'),more)
   }catch(e){p.replaceChildren(...h,el('p',e.message))}
 }
 
 /* ---------- data: tables, rows, users, SQL, migrations, backups ---------- */
+function tableBadges(t){return [badge(plural(t.count,'row'),'info'),t.rls?badge('Row security on','ok'):badge('Row security off','warn'),t.anon_readable?badge('Public key can read'):badge('Public key cannot read')]}
 async function openTables(){
   clearFrom(2);const p=pane('Tables','Every table in this project\'s database. Pick one to see its columns, who can read it through the API, and the address to read it from your app.');
   const h=head(p);p.append(el('p','Loading…'));add(p);
   try{
-    const ts=await api(projectPath()+'/tables');p.replaceChildren(...h);
-    if(!ts.length){p.append(note('No tables yet. Create your first table with SQL or a migration.'));const a=el('div',null,'actions');a.append(button('Open SQL',()=>pick('sql'),'primary'),button('Open migrations',()=>pick('migrations')));p.append(a);return}
-    for(const t of ts){const b=button(null,()=>openTable(t),'item');b.append(el('b',t.name),el('span',plural(t.count,'row')+' · row security '+(t.rls?'on':'off')+' · public key '+(t.anon_readable?'can read':'cannot read')));p.append(b)}
+    const ts=await api(projectPath()+'/tables');if(!p.isConnected)return;p.replaceChildren(...h);
+    topAction(p,button('Open SQL',()=>pick('sql')));
+    if(!ts.length){p.append(emptyBox('No tables yet','Create your first table with SQL or a migration.',button('Open SQL',()=>pick('sql'),'primary'),document.createTextNode(' '),button('Open migrations',()=>pick('migrations'))));return}
+    p.append(tiles(...ts.map(t=>tile({lead:iconBadge('table'),title:t.name,sub:t.columns&&t.columns.length?plural(t.columns.length,'column'):'',badges:tableBadges(t),open:()=>openTable(t)}))))
   }catch(e){p.replaceChildren(...h,el('p',e.message))}
 }
 function openTable(t){
-  clearFrom(3);const p=pane(t.name,'Details for this table. "Row security" (RLS) limits which rows each signed-in user can see. The public key is the anon key your app ships with.');p.classList.add('sub');
-  p.append(el('p',plural(t.count,'row')+' · row security '+(t.rls?'on':'off')+' · public key '+(t.anon_readable?'can read':'cannot read')));
-  if(t.columns&&t.columns.length)p.append(el('p','Columns: '+t.columns.join(', ')));
+  const m=modal(t.name,'Details for this table. "Row security" (RLS) limits which rows each signed-in user can see. The public key is the anon key your app ships with.',{wide:true});
+  const b=el('div',null,'badges');b.append(...tableBadges(t));b.style.marginBottom='14px';m.add(b);
+  if(t.columns&&t.columns.length){const c=el('div',null,'chips');c.append(...t.columns.map(n=>badge(n)));m.add(el('p','Columns','muted'),c)}
   const url=apiBase(selected)+'/rest/v1/'+encodeURIComponent(t.name)+'?select=*';
-  p.append(copyField('Read this table',url,'Send a key in the apikey header.'),copyField('Example',"curl '"+url+"' -H 'apikey: YOUR_ANON_KEY'"));
-  if(!t.anon_readable)p.append(note('The public (anon) key cannot read this table yet. Grant SELECT to the anon role or add a row security policy, or read it from a server with the service key.'));
-  p.append(button('Browse rows',()=>openRows(t),'primary'));add(p)
+  m.add(copyField('Read this table',url,'Send a key in the apikey header.'),copyField('Example',"curl '"+url+"' -H 'apikey: YOUR_ANON_KEY'"));
+  if(!t.anon_readable)m.add(note('The public (anon) key cannot read this table yet. Grant SELECT to the anon role or add a row security policy, or read it from a server with the service key.'));
+  modalAction(m,'Browse rows',async()=>{openRows(t)});m.show()
 }
 async function openRows(t,offset=0){
-  clearFrom(4);const p=pane(t.name+' rows','A read-only preview of the stored rows, 50 at a time. Use SQL to change data.');p.classList.add('wide','sub');const h=head(p);p.append(el('p','Loading…'));add(p);
+  clearFrom(3);const p=pane(t.name+' rows','A read-only preview of the stored rows, 50 at a time. Use SQL to change data.');p.classList.add('wide','sub');const h=head(p);p.append(el('p','Loading…'));add(p);
   try{
     const data=await api(projectPath()+'/tables/'+encodeURIComponent(t.name)+'/rows?offset='+offset);
     p.replaceChildren(...h);
@@ -410,30 +550,48 @@ async function openRows(t,offset=0){
     nav.append(prev,next,el('span','Rows '+(offset+1)+'–'+(offset+data.rows.length),'muted'));p.append(nav)
   }catch(e){p.replaceChildren(...h,el('p',e.message))}
 }
+function userPath(u){return projectPath()+'/users/'+encodeURIComponent(u.id)}
+function userName(u){return u.email||u.username||u.id}
+function parseJSON(t,what){if(!t.trim())return undefined;try{const v=JSON.parse(t);if(v&&typeof v==='object'&&!Array.isArray(v))return v}catch(e){}throw Error(what+' must be a JSON object, for example {"full_name":"Ann"}')}
+async function changeUser(u,patch,msg){try{await api(userPath(u),body(patch,'PATCH'));toast(msg);openUsers()}catch(e){toast(e.message)}}
+function addUserWindow(){
+  const email=input('email','name@example.com'),username=input('text','optional, for example jsmith'),pass=input('password',''),role=input('text','for example admin, editor, member'),meta=el('textarea'),ok=input('checkbox');
+  ok.checked=true;ok.className='switch';meta.placeholder='{"full_name":"Ann Smith"}';meta.rows=2;pass.autocomplete='new-password';
+  formModal('Add a user','Creates a user who can sign in to your app with a password. Give an email, a username or both.',[field('Email',email),field('Username',username,'Lets the user sign in with a name instead of an email.'),field('Password',pass,'8 to 72 characters.'),field('App role',role,'Saved as app_metadata.role. Only you and server code with the service key can change it, so it is safe to use in policies.'),field('User metadata (JSON)',meta,'Optional. Saved as user_metadata; the user can change it.'),field('Email already confirmed',ok,'Turn off to make the user confirm by email first.')],'Create user',async()=>{
+    const v={email:email.value,username:username.value,password:pass.value,email_confirm:ok.checked,user_metadata:parseJSON(meta.value,'User metadata')};if(role.value.trim())v.app_metadata={role:role.value.trim()};
+    await api(projectPath()+'/users',body(v));openUsers();return 'Added '+(email.value||username.value)})
+}
+function editUserWindow(u){
+  const app=u.app_metadata||{},metaText=JSON.stringify(u.user_metadata||{});
+  const np=input('password','Leave empty to keep it'),r=input('text','for example admin, editor, member',app.role||''),um=el('textarea');np.autocomplete='new-password';um.rows=3;um.value=metaText;
+  const id=input('text','',u.id);id.readOnly=true;const idst=el('span',null,'muted');
+  formModal('Edit '+userName(u),'Changing the password or role signs this user out everywhere, so the change applies at once.',[field('User ID',id,null,button('Copy',()=>copyText(u.id,idst)),idst),field('New password',np,'8 to 72 characters.'),field('App role',r,'Saved as app_metadata.role. Policies can read it with auth.jwt().'),field('User metadata (JSON)',um,'The user can change this from your app.')],'Save changes',async()=>{
+    const v={};if(np.value)v.password=np.value;
+    if(r.value.trim()!==(app.role||''))v.app_metadata=Object.assign({},app,{role:r.value.trim()||undefined});
+    if(um.value.trim()!==metaText)v.user_metadata=parseJSON(um.value,'User metadata')||{};
+    if(!Object.keys(v).length)throw Error('Nothing has changed.');
+    await api(userPath(u),body(v,'PATCH'));openUsers();return 'Saved '+userName(u)})
+}
+function userTile(u){
+  const app=u.app_metadata||{},banned=u.banned_until&&new Date(u.banned_until)>new Date(),name=userName(u);
+  const b=[];if(app.role)b.push(badge(app.role,'info'));if(u.email)b.push(u.email_confirmed_at?badge('Confirmed','ok'):badge('Not confirmed','warn'));if(banned)b.push(badge('Banned','bad'));
+  const acts=[sbtn('Edit',()=>editUserWindow(u))];
+  if(u.email&&!u.email_confirmed_at)acts.push(sbtn('Confirm email',()=>changeUser(u,{email_confirm:true},'Confirmed '+name)));
+  acts.push(banned?sbtn('Unban',()=>changeUser(u,{banned:false},name+' can sign in again')):sbtn('Ban',()=>formModal('Ban '+name+'?','They are signed out everywhere and cannot sign in until you unban them.',[],'Ban user',async()=>{await api(userPath(u),body({banned:true},'PATCH'));openUsers();return 'Banned '+name},{danger:true})));
+  acts.push(sbtn('Delete',()=>dangerModal('Delete '+name+'?','Permanently deletes this user and signs them out. Rows that point to them may be deleted too. This cannot be undone.',name,'Delete user',async()=>{await api(userPath(u),body({confirm:u.id},'DELETE'));openUsers();return 'Deleted '+name}),'danger'));
+  const t=tile({lead:avatar(name,true),title:name,sub:(u.email&&u.username?'@'+u.username+' · ':'')+'Joined '+new Date(u.created_at).toLocaleDateString(),badges:b,actions:acts});
+  t.dataset.search=(name+' '+(u.username||'')+' '+(app.role||'')).toLowerCase();return t
+}
 async function openUsers(){
   clearFrom(2);const intro='The people who sign in to your app. They live in this project\'s database and are separate from your dashboard account. Your app reads the role from user.app_metadata.role, and policies can use auth.jwt()->\'app_metadata\'->>\'role\'.';
   const p=pane('Users',intro);p.classList.add('wide');const h=head(p);p.append(el('p','Loading…'));add(p);
-  const userPath=u=>projectPath()+'/users/'+encodeURIComponent(u.id);
-  const parseJSON=(t,what)=>{if(!t.trim())return undefined;try{const v=JSON.parse(t);if(v&&typeof v==='object'&&!Array.isArray(v))return v}catch(e){}throw Error(what+' must be a JSON object, for example {"full_name":"Ann"}')};
   try{
-    const users=await api(projectPath()+'/users');p.replaceChildren(...h);
-    const email=input('email','name@example.com'),username=input('text','optional, for example jsmith'),pass=input('password',''),role=input('text','for example admin, editor, member'),meta=el('textarea'),confirm=input('checkbox');confirm.checked=true;meta.placeholder='{"full_name":"Ann Smith"}';meta.rows=2;const status=note('');
-    p.append(group('Add a user','Creates a user who can sign in to your app with a password. Give an email, a username or both.',field('Email',email),field('Username',username,'Lets the user sign in with a name instead of an email.'),field('Password',pass,'8 to 72 characters.'),field('App role',role,'Saved as app_metadata.role. Only you and server code with the service key can change it, so it is safe to use in policies.'),field('User metadata (JSON)',meta,'Optional. Saved as user_metadata; the user can change it.'),field('Email already confirmed',confirm,'Untick to make the user confirm by email first.'),button('Create user',async()=>{try{const v={email:email.value,username:username.value,password:pass.value,email_confirm:confirm.checked,user_metadata:parseJSON(meta.value,'User metadata')};if(role.value.trim())v.app_metadata={role:role.value.trim()};await api(projectPath()+'/users',body(v));openUsers()}catch(e){status.textContent=e.message}},'primary'),status));
-    if(!users.length)p.append(note('No users yet. Add the first one above, or let people sign up from your app.'));
-    for(const u of users){
-      const app=u.app_metadata||{},banned=u.banned_until&&new Date(u.banned_until)>new Date();const st=note('');
-      const done=m=>async()=>{st.textContent='';try{await m();openUsers()}catch(e){st.textContent=e.message}};
-      const np=input('password','new password'),r=input('text','role',app.role||''),um=el('textarea');um.rows=2;um.value=JSON.stringify(u.user_metadata||{});const c=input('text','');
-      const info=[u.username?'Username: '+u.username:null,'ID: '+u.id,'Created '+new Date(u.created_at).toLocaleString(),u.email?'Email confirmed: '+(u.email_confirmed_at?'yes':'no'):null,'Role: '+(app.role||'none'),banned?'BANNED':null].filter(Boolean).join(' · ');
-      const g=group(u.email||u.username,null,el('p',info,'muted'),
-        field('New password',np,null,button('Set password',done(()=>api(userPath(u),body({password:np.value},'PATCH'))))),
-        field('App role',r,null,button('Save role',done(()=>api(userPath(u),body({app_metadata:Object.assign({},app,{role:r.value.trim()||undefined})},'PATCH'))))),
-        field('User metadata (JSON)',um));
-      const acts=el('div',null,'actions');
-      acts.append(button('Save metadata',done(()=>api(userPath(u),body({user_metadata:parseJSON(um.value,'User metadata')||{}},'PATCH')))));
-      acts.append(button(banned?'Unban user':'Ban user',done(()=>api(userPath(u),body({banned:!banned},'PATCH')))));
-      if(u.email&&!u.email_confirmed_at)acts.append(button('Confirm email',done(()=>api(userPath(u),body({email_confirm:true},'PATCH')))));
-      g.append(acts,field('Type the user ID to delete this user',c),button('Delete user',done(()=>api(userPath(u),body({confirm:c.value},'DELETE'))),'danger'),st);p.append(g)}
+    const users=await api(projectPath()+'/users');if(!p.isConnected)return;p.replaceChildren(...h);
+    topAction(p,button('+ Add user',addUserWindow,'primary'));
+    if(!users.length){p.append(emptyBox('No users yet','Add the first one here, or let people sign up from your app.',button('+ Add user',addUserWindow,'primary')));return}
+    const grid=tiles(...users.map(userTile)),find=input('search','Search by email, username or role'),count=el('span',plural(users.length,'user'),'muted');find.setAttribute('aria-label','Search users');
+    find.oninput=()=>{const s=find.value.trim().toLowerCase();let n=0;for(const t of grid.children){const show=!s||t.dataset.search.includes(s);t.classList.toggle('hidden',!show);if(show)n++}count.textContent=s?n+' of '+plural(users.length,'user'):plural(users.length,'user')};
+    const bar=el('div',null,'toolbar');bar.append(find,count);p.append(bar,grid)
   }catch(e){p.replaceChildren(...h,el('p',e.message))}
 }
 const SQL_TEMPLATES={
@@ -464,92 +622,123 @@ left join pg_policies p on p.schemaname = n.nspname and p.tablename = c.relname
 where n.nspname = 'public' and c.relkind = 'r' order by 1, 3;`};
 function openSQL(){
   clearFrom(2);const p=pane('SQL','Run SQL against this project\'s Postgres database: create and change tables, policies, functions and grants, or query data. A script may hold many statements; it runs as one transaction, so if one fails nothing is changed. For changes you want to track or repeat on another project, use Migrations.');p.classList.add('wide');
-  const a=el('textarea');a.rows=12;a.placeholder='select * from my_table limit 10';a.setAttribute('aria-label','SQL statement');const out=el('div');
-  const pick_=el('select');pick_.append(el('option','Start from a template…'));for(const k in SQL_TEMPLATES)pick_.append(el('option',k));pick_.onchange=()=>{if(SQL_TEMPLATES[pick_.value])a.value=SQL_TEMPLATES[pick_.value];pick_.selectedIndex=0;a.focus()};pick_.setAttribute('aria-label','SQL templates');
+  const a=el('textarea');a.rows=12;a.placeholder='select * from my_table limit 10';a.setAttribute('aria-label','SQL statement');a.spellcheck=false;const out=el('div');
+  const chips=el('div',null,'chips');chips.append(el('span','Start from a template:','muted'));for(const k in SQL_TEMPLATES)chips.append(sbtn(k,()=>{a.value=SQL_TEMPLATES[k];a.focus()}));
   const run=async()=>{out.replaceChildren(el('p','Running…'));try{const r=await api(projectPath()+'/sql',body({sql:a.value}));const n=(r.rows||[]).length;out.replaceChildren();if(r.results&&r.results.length>1)out.append(el('p',r.results.length+' statements: '+r.results.map(x=>x.command).join(' · '),'muted'));out.append(el('p',r.columns&&r.columns.length?plural(n,'row'):(r.command||'Done')));if(r.columns&&r.columns.length)out.append(dataTable(r.columns,r.rows||[]))}catch(e){out.replaceChildren(el('pre',e.message))}};
   a.addEventListener('keydown',e=>{if(e.key==='Enter'&&(e.ctrlKey||e.metaKey)){e.preventDefault();run()}});
-  p.append(group('Script','Press Ctrl+Enter (or Cmd+Enter) to run. Roles: anon (your public key), authenticated (signed-in users), service_role (server key). Up to 1,000 rows are shown.',pick_,a,button('Run SQL',run,'primary'),out));add(p)
+  topAction(p,button('Run SQL',run,'primary'));
+  p.append(chips,a,el('p','Press Ctrl+Enter (or Cmd+Enter) to run. Roles: anon (your public key), authenticated (signed-in users), service_role (server key). Up to 1,000 rows are shown.','muted'),out);add(p)
 }
-async function openMigrations(note_){
-  clearFrom(2);const intro='A migration is a named, one-time change to your database structure, such as creating a table. pibase remembers which ones have run so each is applied only once, and lists them below.';
-  const p=pane('Migrations',intro);const name=input('text','for example: create_todos'),sql=el('textarea');sql.placeholder='create table todos (id serial primary key, title text)';const status=note(note_||'');
-  p.append(group('Apply a migration','Give it a short unique name and the SQL to run. If it fails nothing is changed.',field('Name',name,'Letters, numbers and underscores.'),field('SQL',sql),button('Apply',async()=>{try{await api(projectPath()+'/migrations',body({name:name.value,sql:sql.value}));openMigrations('Applied: '+name.value)}catch(e){status.textContent=e.message}},'primary'),status));
-  p.append(el('h2','Already applied'));
-  // Show the page now; only the list below waits for the server.
-  const wait=note('Loading…');p.append(wait);add(p);
-  try{const ms=await api(projectPath()+'/migrations');wait.remove();for(const m of ms){const d=el('div',null,'item');d.append(el('b',m.name),el('span',m.checksum+' · '+new Date(m.applied_at).toLocaleString()));p.append(d)}if(!ms.length)p.append(note('No migrations applied yet.'))}catch(e){wait.textContent=e.message}
+function newMigrationWindow(){
+  const name=input('text','for example: create_todos'),sql=el('textarea');sql.placeholder='create table todos (id serial primary key, title text)';sql.rows=10;sql.spellcheck=false;
+  formModal('New migration','Give it a short unique name and the SQL to run. If it fails nothing is changed.',[field('Name',name,'Letters, numbers and underscores.'),field('SQL',sql)],'Apply',async()=>{await api(projectPath()+'/migrations',body({name:name.value,sql:sql.value}));openMigrations();return 'Applied '+name.value},{wide:true})
 }
-async function openBackups(msg){
-  clearFrom(2);const p=pane('Backups','A backup is an encrypted saved copy of this project\'s database. Create one before risky changes. Restoring a backup is done by the server operator.');const status=note(msg||'');
-  p.append(group('Create a backup','Saves a copy of the database right now. It can take a few seconds.',button('Back up now',async()=>{try{const r=await api(projectPath()+'/backup',{method:'POST'});openBackups('Created: '+r.file)}catch(e){status.textContent=e.message}},'primary'),status));
-  p.append(el('h2','Saved backups'));
-  const wait=note('Loading…');p.append(wait);add(p);
-  try{const bs=await api(projectPath()+'/backups');wait.remove();for(const b of bs){const d=el('div',null,'item');d.append(el('b',b.name),el('span',Math.round(b.size/1024)+' KB'));p.append(d)}if(!bs.length)p.append(note('No backups yet.'))}catch(e){wait.textContent=e.message}
+async function openMigrations(){
+  clearFrom(2);const p=pane('Migrations','A migration is a named, one-time change to your database structure, such as creating a table. pibase remembers which ones have run so each is applied only once, and lists them below.');
+  const h=head(p);p.append(el('p','Loading…'));add(p);
+  try{const ms=await api(projectPath()+'/migrations');if(!p.isConnected)return;p.replaceChildren(...h);
+    topAction(p,button('+ New migration',newMigrationWindow,'primary'));
+    if(!ms.length){p.append(emptyBox('No migrations yet','Use a migration for a change you want recorded, such as creating a table.',button('+ New migration',newMigrationWindow,'primary')));return}
+    p.append(tiles(...ms.map(m=>tile({lead:iconBadge('layers'),title:m.name,sub:'Applied '+new Date(m.applied_at).toLocaleString(),badges:[badge('Checksum '+String(m.checksum).slice(0,12))]}))))}
+  catch(e){p.replaceChildren(...h,el('p',e.message))}
+}
+async function openBackups(){
+  clearFrom(2);const p=pane('Backups','A backup is an encrypted saved copy of this project\'s database. Create one before risky changes. Restoring a backup is done by the server operator.');
+  const h=head(p);p.append(el('p','Loading…'));add(p);
+  const now=async()=>{go.disabled=true;go.textContent='Backing up…';try{const r=await api(projectPath()+'/backup',{method:'POST'});toast('Created '+r.file);openBackups()}catch(e){toast(e.message);go.disabled=false;go.textContent='Back up now'}};
+  const go=button('Back up now',now,'primary');
+  try{const bs=await api(projectPath()+'/backups');if(!p.isConnected)return;p.replaceChildren(...h);topAction(p,go);
+    if(!bs.length){p.append(emptyBox('No backups yet','Back up now to save a copy of the database. It takes a few seconds.'));return}
+    p.append(tiles(...bs.map(b=>tile({lead:iconBadge('archive'),title:b.name,badges:[badge(bytes(b.size),'info')]}))))}
+  catch(e){p.replaceChildren(...h,el('p',e.message))}
 }
 function openExtensions(){
   clearFrom(2);const p=pane('Extensions','Optional add-ons for the database: PostGIS for maps and locations, and pgvector for similarity search. They change the shared database server, so only the operator can turn them on.');
-  const status=note('');
-  p.append(group('PostGIS','Adds map and location data types and queries.',button('Enable PostGIS',()=>api(projectPath()+'/extensions/postgis',{method:'POST'}).then(()=>{status.textContent='PostGIS enabled.'}).catch(e=>{status.textContent=e.message}))));
-  p.append(group('pgvector','Adds a vector type for storing and comparing embeddings, such as for AI search.',button('Enable pgvector',()=>api(projectPath()+'/extensions/pgvector',{method:'POST'}).then(()=>{status.textContent='pgvector enabled.'}).catch(e=>{status.textContent=e.message}))));
-  p.append(status);add(p)
+  const turnOn=(path,name)=>sbtn('Enable '+name,()=>api(projectPath()+path,{method:'POST'}).then(()=>toast(name+' enabled.')).catch(e=>toast(e.message)),'primary');
+  p.append(tiles(
+    tile({lead:iconBadge('puzzle'),title:'PostGIS',body:'Adds map and location data types and queries.',actions:[turnOn('/extensions/postgis','PostGIS')]}),
+    tile({lead:iconBadge('puzzle'),title:'pgvector',body:'Adds a vector type for storing and comparing embeddings, such as for AI search.',actions:[turnOn('/extensions/pgvector','pgvector')]})));
+  add(p)
 }
 
 /* ---------- authentication ---------- */
 async function openAuth(){
-  clearFrom(2);const p=pane('Authentication','How people sign up to your app, and which of your app\'s pages the links in sign-up and password reset emails may send them back to.');const wait=note('Loading…');p.append(wait);add(p);
-  let a;try{a=await api(projectPath()+'/auth-settings')}catch(e){wait.textContent=e.message;return}wait.remove();
-  const confirm=input('checkbox');confirm.checked=!!a.confirm_email;
-  const site=input('text','https://your-app.com',a.site_url||'');
-  const redirects=el('textarea');redirects.rows=4;redirects.placeholder='https://your-app.com/welcome\nhttp://localhost:3000/*';redirects.value=(a.redirect_urls||[]).join('\n');
-  const status=note('');
-  const warn=note('');warn.classList.add('warn');
-  const showWarn=()=>{warn.textContent=confirm.checked&&!a.email_sending?'This server has no email service set up, so confirmation emails will not be sent and new users will not be able to sign in. Turn this off, or ask the server operator to set up email.':''};
-  confirm.onchange=showWarn;showWarn();
-  const save=button('Save',async()=>{status.textContent='';try{a=await api(projectPath()+'/auth-settings',body({confirm_email:confirm.checked,site_url:site.value,redirect_urls:redirects.value.split('\n')},'PUT'));site.value=a.site_url||'';redirects.value=(a.redirect_urls||[]).join('\n');showWarn();status.textContent='Saved.';await refreshProject(selected)}catch(e){status.textContent=e.message}},'primary');
-  p.append(group('Sign up','',field('Confirm email',confirm,'On: a new user must click the link in a confirmation email before they can sign in. Off: signing up signs them in straight away.'),warn));
-  p.append(group('Your app\'s address','After someone clicks a link in a sign-up or password reset email, pibase sends them back to your app, already signed in.',field('Site URL',site,'Your app\'s main address. Links return here unless your app asks for another allowed page.'),field('Allowed redirect URLs',redirects,'One per line. Other pages your app may ask to return to (emailRedirectTo or redirectTo in your code). End a line with * to allow every page under it, for example http://localhost:3000/*.')));
-  p.append(save,status);
+  clearFrom(2);const p=pane('Authentication','How people sign up to your app, and which of your app\'s pages the links in sign-up and password reset emails may send them back to.');const h=head(p);p.append(el('p','Loading…'));add(p);
+  let a;try{a=await api(projectPath()+'/auth-settings')}catch(e){p.replaceChildren(...h,el('p',e.message));return}
+  if(!p.isConnected)return;
+  const save=async(change,msg)=>{try{a=await api(projectPath()+'/auth-settings',body(Object.assign({confirm_email:a.confirm_email,site_url:a.site_url,redirect_urls:a.redirect_urls},change),'PUT'));toast(msg);render()}catch(e){toast(e.message);render()}};
+  const editLinks=()=>{
+    const site=input('text','https://your-app.com',a.site_url||''),redirects=el('textarea');redirects.rows=5;redirects.placeholder='https://your-app.com/welcome\nhttp://localhost:3000/*';redirects.value=(a.redirect_urls||[]).join('\n');
+    formModal('Your app\'s address','After someone clicks a link in a sign-up or password reset email, pibase sends them back to your app, already signed in.',[field('Site URL',site,'Your app\'s main address. Links return here unless your app asks for another allowed page.'),field('Allowed redirect URLs',redirects,'One per line. Other pages your app may ask to return to (emailRedirectTo or redirectTo in your code). End a line with * to allow every page under it, for example http://localhost:3000/*.')],'Save',async()=>{
+      a=await api(projectPath()+'/auth-settings',body({confirm_email:a.confirm_email,site_url:site.value,redirect_urls:redirects.value.split('\n')},'PUT'));render();return 'Saved'})};
+  const render=()=>{
+    const sw=input('checkbox');sw.className='switch';sw.checked=!!a.confirm_email;sw.setAttribute('aria-label','Confirm email');
+    sw.onchange=()=>save({confirm_email:sw.checked},sw.checked?'New users must now confirm their email':'New users are now signed in straight away');
+    const row=el('label',null,'switch-row');row.append(sw,el('span',a.confirm_email?'On':'Off'));
+    const kids=[...h.map(n=>n.cloneNode(true))];
+    if(a.confirm_email&&!a.email_sending)kids.push(el('div','This server has no email service set up, so confirmation emails will not be sent and new users will not be able to sign in. Turn off Confirm email, or ask the server operator to set up email.','banner'));
+    const urls=a.redirect_urls||[];
+    kids.push(tiles(
+      tile({lead:iconBadge('shield'),title:'Confirm email',body:'On: a new user must click the link in a confirmation email before they can sign in. Off: signing up signs them in straight away.',kids:[row]}),
+      tile({lead:iconBadge('grid'),title:'Site URL',value:a.site_url||'Not set',off:!a.site_url,body:'Your app\'s main address. Email links send people back here, signed in.',actions:[sbtn(a.site_url?'Change':'Set site URL',editLinks)]}),
+      tile({lead:iconBadge('layers'),title:'Allowed redirect URLs',value:urls.length?urls.length+' '+(urls.length===1?'address':'addresses'):'None',off:!urls.length,body:'Other pages your app may ask email links to return to.',badges:urls.slice(0,4).map(u=>badge(u)),actions:[sbtn('Edit',editLinks)]})));
+    p.replaceChildren(...kids)
+  };
+  render()
 }
 
 /* ---------- settings and account ---------- */
 function openSettings(){
   clearFrom(2);const x=selected;const p=pane('Settings','Rename this project, set its API address and where server-side calls go, check its size limit, or delete it.');
-  const name=input('text','',x.name),status=note('');
-  p.append(group('Project name','Only changes the name shown in this dashboard. The project ID, address and keys stay the same.',field('Name',name),button('Save name',async()=>{try{await api(projectPath(),body({name:name.value},'PATCH'));await refreshProject(x);say('Saved');openSettings()}catch(e){status.textContent=e.message}},'primary'),status));
-  if(account){p.append(group('Database size limit','The most data this project\'s database may hold.',el('p',x.max_database_bytes?bytes(x.max_database_bytes):'No limit set')),note('Only the server operator can change this limit.'))}
-  else{const lim=input('number','Bytes',x.max_database_bytes||'');lim.min='1';const ls=note('');p.append(group('Database size limit','The most data this project\'s database may hold. Writes are refused above it.',field('Limit in bytes',lim,'For example 1073741824 is 1 GB.'),button('Save limit',async()=>{try{await api(projectPath()+'/limits',body({max_database_bytes:Number(lim.value)},'PATCH'));const f=await refreshProject(x);ls.textContent='Limit saved: '+bytes(f.max_database_bytes)}catch(e){ls.textContent=e.message}},'primary'),ls))}
-  const pu=input('text','https://pibase.client.com',x.public_url||''),pus=note('');
-  p.append(group('API address','The address your app uses for this project, such as https://pibase.client.com. It changes what the API keys page shows; the address must also point to this server.',field('Address',pu,'Leave empty to use the server\'s default address.'),button('Save API address',async()=>{try{const r=await api(projectPath()+'/public-url',body({url:pu.value},'PATCH'));await refreshProject(x);pus.textContent=r&&r.url?'Saved. Apps use '+r.url+'.':(r&&r.api_url?'Using the server\'s default address: '+r.api_url+'.':'Using the address of this page.')}catch(e){pus.textContent=e.message}},'primary'),pus));
-  const fn=input('text','https://your-site.example/api',x.functions_url||''),fs=note('');
-  p.append(group('Server-side code','Where this project forwards /functions/v1/<name> calls: your site\'s own server routes, for example a Next.js app. Leave empty to turn it off.',field('Address',fn,account?'A public address. The operator can allow one on your own network.':'Public, or a private address such as the site\'s server on this machine.'),button('Save address',async()=>{try{const r=await api(projectPath()+'/functions',body({url:fn.value},'PATCH'));await refreshProject(x);fs.textContent=r&&r.url?'Saved. Calls to /functions/v1/<name> go to '+r.url+'/<name>.':'Server-side code is turned off.'}catch(e){fs.textContent=e.message}},'primary'),fs));
-  const ep=input('password',''),ep2=input('password',''),es=note('');ep.autocomplete='new-password';ep2.autocomplete='new-password';
-  p.append(group('Move to another server','Downloads one file with this project\'s tables, users, files, settings and keys. Import it on another PIBASE server and your app keeps working: only its address changes. The file is locked with the passphrase you choose here.',field('Passphrase',ep,'At least 12 characters. You need it to import the file, so keep it safe.'),field('Enter it again',ep2),button('Download export file',async()=>{
-    if(ep.value.length<12){es.textContent='The passphrase must be at least 12 characters.';return}
-    if(ep.value!==ep2.value){es.textContent='The two passphrases do not match.';return}
-    es.textContent='Preparing the file…';
-    try{const r=await fetch(projectPath()+'/export',{method:'POST',headers:apiHeaders(),body:JSON.stringify({passphrase:ep.value})});
-      if(!r.ok)throw Error((await r.text()).trim()||r.status);
-      const blob=await r.blob(),a=document.createElement('a'),name=(r.headers.get('Content-Disposition')||'').match(/filename="([^"]+)"/);
-      a.href=URL.createObjectURL(blob);a.download=name?name[1]:'pibase-export.pibx';document.body.append(a);a.click();a.remove();setTimeout(()=>URL.revokeObjectURL(a.href),60000);
-      ep.value='';ep2.value='';es.textContent='Downloaded ('+bytes(blob.size)+'). Keep the file and passphrase safe: together they open the whole project.'}
-    catch(e){es.textContent=e.message}},'primary'),es));
-  const sure=input('text','');const ds=note('');
-  const dg=group('Delete this project','Permanently deletes the database, its users, files, backups and keys. This cannot be undone.',field('Type the project ID ('+x.id+') to confirm',sure),button('Delete project',async()=>{try{await api(projectPath(),body({confirm:sure.value},'DELETE'));selected=null;refreshNav();await load()}catch(e){ds.textContent=e.message}},'danger'),ds);
-  dg.classList.add('danger');p.append(dg);add(p)
+  const rename=()=>{const name=input('text','',x.name);formModal('Rename project','Only changes the name shown in this dashboard. The project ID, address and keys stay the same.',[field('Name',name)],'Save name',async()=>{await api(projectPath(),body({name:name.value},'PATCH'));await refreshProject(x);openSettings();return 'Renamed to '+name.value})};
+  const limit=()=>{const lim=input('number','Bytes',x.max_database_bytes||'');lim.min='1';formModal('Database size limit','The most data this project\'s database may hold. Writes are refused above it.',[field('Limit in bytes',lim,'For example 1073741824 is 1 GB.')],'Save limit',async()=>{await api(projectPath()+'/limits',body({max_database_bytes:Number(lim.value)},'PATCH'));const f=await refreshProject(x);openSettings();return 'Limit saved: '+bytes(f.max_database_bytes)})};
+  const address=()=>{const pu=input('text','https://pibase.client.com',x.public_url||'');formModal('API address','The address your app uses for this project, such as https://pibase.client.com. It changes what the API keys page shows; the address must also point to this server.',[field('Address',pu,'Leave empty to use the server\'s default address.')],'Save API address',async()=>{const r=await api(projectPath()+'/public-url',body({url:pu.value},'PATCH'));await refreshProject(x);openSettings();return r&&r.url?'Saved. Apps use '+r.url+'.':(r&&r.api_url?'Using the server\'s default address: '+r.api_url+'.':'Using the address of this page.')})};
+  const functions=()=>{const fn=input('text','https://your-site.example/api',x.functions_url||'');formModal('Server-side code','Where this project forwards /functions/v1/<name> calls: your site\'s own server routes, for example a Next.js app. Leave empty to turn it off.',[field('Address',fn,account?'A public address. The operator can allow one on your own network.':'Public, or a private address such as the site\'s server on this machine.')],'Save address',async()=>{const r=await api(projectPath()+'/functions',body({url:fn.value},'PATCH'));await refreshProject(x);openSettings();return r&&r.url?'Saved. Calls to /functions/v1/<name> go to '+r.url+'/<name>.':'Server-side code is turned off.'})};
+  const exportWin=()=>{const ep=input('password',''),ep2=input('password','');ep.autocomplete='new-password';ep2.autocomplete='new-password';
+    const m=modal('Move to another server','Downloads one file with this project\'s tables, users, files, settings and keys. Import it on another PIBASE server and your app keeps working: only its address changes. The file is locked with the passphrase you choose here.');
+    m.add(field('Passphrase',ep,'At least 12 characters. You need it to import the file, so keep it safe.'),field('Enter it again',ep2));
+    const go=modalAction(m,'Download export file',async()=>{
+      if(ep.value.length<12)throw Error('The passphrase must be at least 12 characters.');
+      if(ep.value!==ep2.value)throw Error('The two passphrases do not match.');
+      go.textContent='Preparing the file…';
+      try{const r=await fetch(projectPath()+'/export',{method:'POST',headers:apiHeaders(),body:JSON.stringify({passphrase:ep.value})});
+        if(!r.ok)throw Error((await r.text()).trim()||r.status);
+        const blob=await r.blob(),a=document.createElement('a'),name=(r.headers.get('Content-Disposition')||'').match(/filename="([^"]+)"/);
+        a.href=URL.createObjectURL(blob);a.download=name?name[1]:'pibase-export.pibx';document.body.append(a);a.click();a.remove();setTimeout(()=>URL.revokeObjectURL(a.href),60000);
+        return 'Downloaded ('+bytes(blob.size)+'). Keep the file and passphrase safe: together they open the whole project.'}
+      finally{go.textContent='Download export file'}});
+    m.show()};
+  const del=()=>dangerModal('Delete '+x.name+'?','Permanently deletes the database, its users, files, backups and keys. This cannot be undone.',x.id,'Delete project',async()=>{await api(projectPath(),body({confirm:x.id},'DELETE'));selected=null;refreshNav();await load();return 'Deleted '+x.name});
+  p.append(tiles(
+    tile({lead:avatar(x.name),title:'Project name',value:x.name,body:'Only changes the name shown in this dashboard.',actions:[sbtn('Rename',rename)]}),
+    tile({lead:iconBadge('archive'),title:'Database size limit',value:x.max_database_bytes?bytes(x.max_database_bytes):'No limit set',body:account?'Only the server operator can change this limit.':'Writes are refused above it.',actions:account?[]:[sbtn('Change',limit)]}),
+    tile({lead:iconBadge('key'),title:'API address',value:x.public_url||'Server default',off:!x.public_url,body:'The address your app uses for this project.',actions:[sbtn('Change',address)]}),
+    tile({lead:iconBadge('code'),title:'Server-side code',value:x.functions_url||'Off',off:!x.functions_url,body:'Where /functions/v1/<name> calls are forwarded, such as your site\'s API routes.',actions:[sbtn(x.functions_url?'Change':'Set up',functions)]}),
+    tile({lead:iconBadge('layers'),title:'Move to another server',body:'Download this whole project as one locked file, then import it on another PIBASE server.',actions:[sbtn('Export…',exportWin)]}),
+    tile({lead:iconBadge('logout'),title:'Delete this project',cls:'danger',body:'Permanently deletes the database, its users, files, backups and keys.',actions:[sbtn('Delete project…',del,'danger')]})));
+  add(p)
 }
 function openAccount(){
   clearFrom(0);const p=pane('Account','Your dashboard sign-in and organization. This is separate from the users of your projects.');
-  const org=input('text','',account.organization||''),os=note('');
-  p.append(group('Organization','The name shown at the top of every page.',field('Organization name',org),button('Save',async()=>{try{account=await api('/_pibase/auth/organization',body({organization:org.value},'PATCH'));renderWho();os.textContent='Saved'}catch(e){os.textContent=e.message}},'primary'),os));
-  const cur=input('password',''),nw=input('password',''),nw2=input('password',''),ps=note('');
-  p.append(group('Password','Choose a new password. You will be signed out everywhere else.',field('Current password',cur),field('New password',nw,'At least 8 characters.'),field('New password again',nw2),button('Change password',async()=>{if(nw.value!==nw2.value){ps.textContent='The two new passwords do not match.';return}try{await api('/_pibase/auth/password',body({current_password:cur.value,new_password:nw.value}));cur.value=nw.value=nw2.value='';ps.textContent='Password updated.'}catch(e){ps.textContent=e.message}},'primary'),ps));
-  const sure=input('text',''),ds=note('');
-  const dg=group('Delete account','Permanently deletes your account and every project in it, with all their data. This cannot be undone.',field('Type '+account.email+' to confirm',sure),button('Delete account',async()=>{try{await api('/_pibase/auth/account',body({confirm:sure.value},'DELETE'));location.replace('/')}catch(e){ds.textContent=e.message}},'danger'),ds);
-  dg.classList.add('danger');p.append(dg);add(p)
+  const org=()=>{const o=input('text','',account.organization||'');formModal('Organization name','The name shown at the top of every page.',[field('Organization name',o)],'Save',async()=>{account=await api('/_pibase/auth/organization',body({organization:o.value},'PATCH'));renderWho();openAccount();return 'Saved'})};
+  const pw=()=>{const cur=input('password',''),nw=input('password',''),nw2=input('password','');cur.autocomplete='current-password';nw.autocomplete=nw2.autocomplete='new-password';
+    formModal('Change password','Choose a new password. You will be signed out everywhere else.',[field('Current password',cur),field('New password',nw,'At least 8 characters.'),field('New password again',nw2)],'Change password',async()=>{if(nw.value!==nw2.value)throw Error('The two new passwords do not match.');await api('/_pibase/auth/password',body({current_password:cur.value,new_password:nw.value}));return 'Password updated'})};
+  const del=()=>dangerModal('Delete your account?','Permanently deletes your account and every project in it, with all their data. This cannot be undone.',account.email,'Delete account',async()=>{await api('/_pibase/auth/account',body({confirm:account.email},'DELETE'));location.replace('/')});
+  p.append(tiles(
+    tile({lead:avatar(account.organization||account.email),title:'Organization',value:account.organization||'Not set',off:!account.organization,body:'Shown at the top of every page.',actions:[sbtn('Change',org)]}),
+    tile({lead:iconBadge('key'),title:'Password',value:account.email,body:'Signs you out everywhere else when changed.',actions:[sbtn('Change password',pw)]}),
+    tile({lead:iconBadge('logout'),title:'Delete account',cls:'danger',body:'Deletes your account and every project in it.',actions:[sbtn('Delete account…',del,'danger')]})));
+  add(p)
 }
 
 /* ---------- behaviour ---------- */
-document.addEventListener('keydown',e=>{if(e.key!=='Enter'||e.target.tagName!=='INPUT'||e.target.readOnly)return;const g=e.target.closest('.group,.empty');const act=g&&g.querySelector('button.primary');if(act){e.preventDefault();act.click()}});
+document.addEventListener('keydown',e=>{
+  if(openModal){
+    if(e.key==='Escape'){e.preventDefault();openModal.close();return}
+    if(e.key==='Tab'){const f=[...openModal.box.querySelectorAll('button:not(:disabled),input:not(:disabled),textarea,select')].filter(n=>n.offsetParent!==null);if(f.length){const first=f[0],last=f[f.length-1];if(e.shiftKey&&document.activeElement===first){e.preventDefault();last.focus()}else if(!e.shiftKey&&document.activeElement===last){e.preventDefault();first.focus()}}return}
+  }
+  if(e.key!=='Enter'||e.target.tagName!=='INPUT'||e.target.readOnly||e.target.type==='checkbox'||e.target.type==='file')return;
+  const g=e.target.closest('.modal,.group,.empty');const act=g&&g.querySelector(g.classList.contains('modal')?'.modal-ok':'button.primary');if(act&&!act.disabled){e.preventDefault();act.click()}});
 const backBtn=q('back');backBtn.onclick=()=>{if(chain.lastChild&&chain.lastChild.classList.contains('sub')){chain.lastChild.remove();alignChain()}};
 new MutationObserver(()=>backBtn.classList.toggle('hidden',!(chain.lastChild&&chain.lastChild.classList.contains('sub')))).observe(chain,{childList:true});
 init();

@@ -162,7 +162,9 @@ with log in, sign up and forgot password; signing up asks for an organization na
 twice. The main login (`omnia@local.com` by default) is made with `./scripts/create-account.sh`, which
 asks for its password; `--reset <email>` gives an account a new one. Forgot password emails a
 one-hour, single-use link when `PIBASE_SMTP_*` and `PIBASE_DASHBOARD_URL` are set, and the operator
-view can set any account's password. After logging in, `/app` shows only that account's projects, with an icon menu that expands on tap,
+view can set any account's password. After logging in, `/app` shows only that account's projects as cards, with an icon menu that expands on tap.
+Projects, tables, users, backups, migrations and settings are cards; adding and changing things
+happens in pop-up windows, and deleting asks you to type the name first. The dashboard also has
 a per-project overview (database size, requests, success rate, warnings and errors by service, and daily
 requests), API keys with a ready `.env` block (`PIBASE_URL`, `NEXT_PUBLIC_*`, `VITE_*`) and connection code, tables, users
 (add, set a password, app role in `app_metadata.role`, user metadata, ban, confirm, delete; email or
