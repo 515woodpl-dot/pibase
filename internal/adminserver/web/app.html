@@ -4,7 +4,14 @@
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width,initial-scale=1">
 <title>pibase</title>
-<link rel="icon" href="data:,">
+<link rel="icon" href="/pwa/favicon-32.png" type="image/png">
+<link rel="manifest" href="/manifest.webmanifest">
+<link rel="apple-touch-icon" href="/apple-touch-icon.png">
+<meta name="theme-color" content="#2557d6">
+<meta name="mobile-web-app-capable" content="yes">
+<meta name="apple-mobile-web-app-capable" content="yes">
+<meta name="apple-mobile-web-app-title" content="pibase">
+<meta name="apple-mobile-web-app-status-bar-style" content="default">
 <style>
 :root{--ink:#17203a;--muted:#66718a;--line:#dde4f0;--tint:#edf3ff;--accent:#2557d6;--accent-dark:#173f9f;--danger:#b4332f;--surface:#fff;--shadow:0 10px 28px rgba(30,52,88,.09);font:14px/1.45 system-ui,-apple-system,"Segoe UI",Roboto,sans-serif;color:var(--ink)}
 *{box-sizing:border-box}
@@ -770,6 +777,8 @@ document.addEventListener('keydown',e=>{
   const g=e.target.closest('.modal,.group,.empty');const act=g&&g.querySelector(g.classList.contains('modal')?'.modal-ok':'button.primary');if(act&&!act.disabled){e.preventDefault();act.click()}});
 const backBtn=q('back');backBtn.onclick=()=>{if(chain.lastChild&&chain.lastChild.classList.contains('sub')){chain.lastChild.remove();alignChain()}};
 new MutationObserver(()=>backBtn.classList.toggle('hidden',!(chain.lastChild&&chain.lastChild.classList.contains('sub')))).observe(chain,{childList:true});
+// Installable as an app on phones and desktops; the worker keeps nothing on the device.
+if('serviceWorker' in navigator)navigator.serviceWorker.register('/sw.js').catch(()=>{});
 init();
 </script>
 </body>

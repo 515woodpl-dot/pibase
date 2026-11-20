@@ -7,7 +7,7 @@ import (
 	"context"
 	"crypto/rand"
 	"crypto/subtle"
-	_ "embed"
+	"embed"
 	"encoding/hex"
 	"encoding/json"
 	"errors"
@@ -173,6 +173,13 @@ func (s *Server) Handler() http.Handler {
 				return
 			case "/app", "/dashboard":
 				s.servePage(w, page)
+				return
+			case "/manifest.webmanifest", "/sw.js", "/favicon.ico", "/apple-touch-icon.png":
+				s.servePWA(w, r)
+				return
+			}
+			if strings.HasPrefix(r.URL.Path, "/pwa/") {
+				s.servePWA(w, r)
 				return
 			}
 		}
@@ -1324,10 +1331,51 @@ func (s *Server) backups(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, 200, out)
 }
 
+// servePWA serves the app manifest, icons and service worker. They hold no
+// secrets and are the same for everyone.
+func (s *Server) servePWA(w http.ResponseWriter, r *http.Request) {
+	name := strings.TrimPrefix(r.URL.Path, "/pwa/")
+	switch r.URL.Path {
+	case "/manifest.webmanifest":
+		name = "manifest.webmanifest"
+	case "/sw.js":
+		name = "sw.js"
+	case "/favicon.ico":
+		name = "favicon-32.png"
+	case "/apple-touch-icon.png":
+		name = "apple-touch-icon.png"
+	}
+	if name == "" || strings.ContainsAny(name, "/\\") {
+		http.NotFound(w, r)
+		return
+	}
+	data, err := pwaFiles.ReadFile("web/pwa/" + name)
+	if err != nil {
+		http.NotFound(w, r)
+		return
+	}
+	switch {
+	case strings.HasSuffix(name, ".webmanifest"):
+		w.Header().Set("Content-Type", "application/manifest+json")
+	case strings.HasSuffix(name, ".js"):
+		w.Header().Set("Content-Type", "text/javascript; charset=utf-8")
+	case strings.HasSuffix(name, ".png"):
+		w.Header().Set("Content-Type", "image/png")
+	}
+	w.Header().Set("X-Content-Type-Options", "nosniff")
+	if name == "sw.js" {
+		// Browsers check for a new service worker against the server each time.
+		w.Header().Set("Cache-Control", "no-cache")
+	} else {
+		w.Header().Set("Cache-Control", "public, max-age=86400")
+	}
+	_, _ = w.Write(data)
+}
+
 func (s *Server) servePage(w http.ResponseWriter, html string) {
 	w.Header().Set("Content-Type", "text/html; charset=utf-8")
 	// The pages hold no secrets and load nothing from other sites.
-	w.Header().Set("Content-Security-Policy", "default-src 'none'; script-src 'unsafe-inline'; style-src 'unsafe-inline'; connect-src 'self'; img-src 'self' data:; base-uri 'none'; form-action 'self'; frame-ancestors 'none'")
+	w.Header().Set("Content-Security-Policy", "default-src 'none'; script-src 'unsafe-inline'; style-src 'unsafe-inline'; connect-src 'self'; img-src 'self' data:; manifest-src 'self'; worker-src 'self'; base-uri 'none'; form-action 'self'; frame-ancestors 'none'")
 	w.Header().Set("X-Content-Type-Options", "nosniff")
 	_, _ = w.Write([]byte(html))
 }
@@ -1450,6 +1498,12 @@ func (r *rateLimiter) Reset(key string) {
 //
 //go:embed web/app.html
 var page string
+
+// pwaFiles make the dashboard installable on phones and desktops: the app
+// manifest, its icons and a service worker that keeps nothing on the device.
+//
+//go:embed web/pwa
+var pwaFiles embed.FS
 
 //go:embed web/landing.html
 var landingPage string

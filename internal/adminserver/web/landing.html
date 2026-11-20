@@ -5,7 +5,14 @@
 <meta name="viewport" content="width=device-width,initial-scale=1">
 <title>pibase · Your own Postgres backend</title>
 <meta name="description" content="pibase gives every project a private Postgres database, user sign-in, file storage and live updates, with a dashboard that shows how it is used.">
-<link rel="icon" href="data:,">
+<link rel="icon" href="/pwa/favicon-32.png" type="image/png">
+<link rel="manifest" href="/manifest.webmanifest">
+<link rel="apple-touch-icon" href="/apple-touch-icon.png">
+<meta name="theme-color" content="#2557d6">
+<meta name="mobile-web-app-capable" content="yes">
+<meta name="apple-mobile-web-app-capable" content="yes">
+<meta name="apple-mobile-web-app-title" content="pibase">
+<meta name="apple-mobile-web-app-status-bar-style" content="default">
 <style>
 :root{--ink:#14213d;--muted:#5d6985;--line:#dbe3f1;--tint:#eef3ff;--accent:#2557d6;--accent-dark:#173f9f;--surface:#fff;font:16px/1.55 system-ui,-apple-system,"Segoe UI",Roboto,sans-serif;color:var(--ink)}
 *{box-sizing:border-box}
@@ -395,6 +402,7 @@ footer a{color:var(--muted)}
     open.textContent = 'Open dashboard';
     $('topNav').append(open);
   }).catch(function () {});
+  if ('serviceWorker' in navigator) navigator.serviceWorker.register('/sw.js').catch(function () {});
 })();
 </script>
 </body>

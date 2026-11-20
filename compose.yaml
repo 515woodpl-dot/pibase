@@ -129,6 +129,12 @@ services:
       PIBASE_SMTP_PASS: ${PIBASE_SMTP_PASS:-}
       PIBASE_SMTP_FROM: ${PIBASE_SMTP_FROM:-}
       PIBASE_DASHBOARD_URL: ${PIBASE_DASHBOARD_URL:-}
+      # Public sign-up for dashboard accounts: open (default) or closed, the
+      # most new accounts per hour, and extra email domains to refuse
+      # (comma-separated). See docs/VPS.md, "Public dashboard".
+      PIBASE_SIGNUP: ${PIBASE_SIGNUP:-open}
+      PIBASE_SIGNUP_HOURLY_LIMIT: ${PIBASE_SIGNUP_HOURLY_LIMIT:-}
+      PIBASE_BLOCKED_EMAIL_DOMAINS: ${PIBASE_BLOCKED_EMAIL_DOMAINS:-}
     depends_on:
       bootstrap:
         condition: service_completed_successfully

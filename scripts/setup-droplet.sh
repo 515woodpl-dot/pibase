@@ -3,7 +3,7 @@
 # such as a DigitalOcean droplet. Run it as root, from a clone of the
 # repository:
 #
-#   ./scripts/setup-droplet.sh --domain api.example.com [--email you@example.com]
+#   ./scripts/setup-droplet.sh --domain api.example.com [--dashboard app.example.com] [--email you@example.com]
 #
 # It is safe to run again: every step checks what is already there.
 #
@@ -14,11 +14,16 @@
 #   3. creates the non-root "pibase" account that runs everything
 #   4. creates /srv/pibase for the database, files and backups
 #   5. generates secrets (.env), builds and starts PIBASE
-#   6. puts Caddy in front of it with HTTPS for --domain
+#   6. puts Caddy in front of it with HTTPS for --domain (and --dashboard)
 #   7. schedules a daily encrypted backup of every project
 #
 # Options:
 #   --domain NAME     public name of the API (required), e.g. api.example.com
+#   --dashboard NAME  also serve the dashboard publicly at this name, e.g.
+#                     app.example.com, so people sign up and use it from any
+#                     browser or phone. Without it the dashboard stays private
+#                     (SSH tunnel only). Public sign-up opens once email is set
+#                     up (PIBASE_SMTP_* in .env); until then it stays closed.
 #   --email ADDRESS   contact for the HTTPS certificate (recommended)
 #   --user NAME       account that runs PIBASE (default: pibase)
 #   --swap SIZE       swap file size, e.g. 2G (default: 2G; 0 skips)
@@ -30,10 +35,11 @@
 #   --no-account      don't create a dashboard account
 set -euo pipefail
 
-domain="" email="" user="pibase" swap="2G" tls_internal=0 firewall=1 account="omnia@local.com" make_account=1
+domain="" dashboard="" email="" user="pibase" swap="2G" tls_internal=0 firewall=1 account="omnia@local.com" make_account=1
 while [ $# -gt 0 ]; do
   case "$1" in
     --domain) domain="${2:-}"; shift 2 ;;
+    --dashboard) dashboard="${2:-}"; shift 2 ;;
     --email) email="${2:-}"; shift 2 ;;
     --user) user="${2:-}"; shift 2 ;;
     --swap) swap="${2:-}"; shift 2 ;;
@@ -41,7 +47,7 @@ while [ $# -gt 0 ]; do
     --no-firewall) firewall=0; shift ;;
     --account) account="${2:-}"; shift 2 ;;
     --no-account) make_account=0; shift ;;
-    -h|--help) sed -n '2,30p' "$0"; exit 0 ;;
+    -h|--help) sed -n '2,35p' "$0"; exit 0 ;;
     *) echo "unknown option: $1 (see --help)" >&2; exit 2 ;;
   esac
 done
@@ -53,6 +59,9 @@ die() { printf 'error: %s\n' "$*" >&2; exit 1; }
 [ -n "$domain" ] || die "--domain is required, for example --domain api.example.com"
 printf '%s' "$domain" | grep -Eq '^[A-Za-z0-9]([A-Za-z0-9-]*[A-Za-z0-9])?(\.[A-Za-z0-9]([A-Za-z0-9-]*[A-Za-z0-9])?)+$' \
   || die "--domain must be a host name such as api.example.com"
+[ -z "$dashboard" ] || printf '%s' "$dashboard" | grep -Eq '^[A-Za-z0-9]([A-Za-z0-9-]*[A-Za-z0-9])?(\.[A-Za-z0-9]([A-Za-z0-9-]*[A-Za-z0-9])?)+$' \
+  || die "--dashboard must be a host name such as app.example.com"
+[ "$dashboard" != "$domain" ] || die "--dashboard needs its own name, different from --domain"
 [ -z "$email" ] || printf '%s' "$email" | grep -Eq '^[^@[:space:]]+@[^@[:space:]]+\.[^@[:space:]]+$' || die "--email is not an email address"
 printf '%s' "$user" | grep -Eq '^[a-z_][a-z0-9_-]{0,31}$' || die "--user must be a plain lowercase account name"
 printf '%s' "$swap" | grep -Eq '^(0|[1-9][0-9]*[MG])$' || die "--swap must look like 2G, 512M or 0"
@@ -160,6 +169,18 @@ set_env() { # set_env KEY VALUE: replace or add one line, keeping the rest
 as_user "PIBASE_DATA_ROOT='$data' ./scripts/init-env.sh"
 set_env PIBASE_DATA_ROOT "$data"
 set_env PIBASE_PUBLIC_URL "https://$domain"
+if [ -n "$dashboard" ]; then
+  # Served over HTTPS by Caddy: secure cookies, and links in emails point here.
+  set_env PIBASE_ADMIN_ENV production
+  set_env PIBASE_DASHBOARD_URL "https://$dashboard"
+  # Public sign-up asks new accounts to confirm their email; without email
+  # that layer of spam protection is missing, so sign-up waits for it.
+  if grep -q '^PIBASE_SMTP_HOST=.' "$app/.env" && grep -q '^PIBASE_SMTP_FROM=.' "$app/.env"; then
+    grep -q '^PIBASE_SIGNUP=' "$app/.env" || set_env PIBASE_SIGNUP open
+  else
+    set_env PIBASE_SIGNUP closed
+  fi
+fi
 # `docker compose` in this folder uses the server layout (bind mounts under
 # /srv/pibase and automatic restarts) without extra -f flags.
 set_env COMPOSE_FILE "compose.yaml:compose.pi.yaml"
@@ -200,6 +221,7 @@ install -d -m 0755 /etc/caddy/pibase.d
 domain_flags=(--no-reload)
 [ "$tls_internal" -eq 0 ] || domain_flags+=(--tls-internal)
 "$app/scripts/add-domain.sh" "${domain_flags[@]}" "$domain"
+[ -z "$dashboard" ] || "$app/scripts/add-domain.sh" "${domain_flags[@]}" --dashboard "$dashboard"
 systemctl enable caddy >/dev/null
 systemctl restart caddy
 
@@ -272,17 +294,41 @@ else
   echo "wait a few minutes, then check: curl https://$domain/healthz"
 fi
 
-cat <<EOF
+cat <<NEXT
 
 Done. Next steps:
   * DNS: an A record for $domain -> $ip (and later one per client name).
+NEXT
+if [ -n "$dashboard" ]; then
+  signup="$(sed -n 's/^PIBASE_SIGNUP=//p' "$app/.env" | tail -1)"
+  cat <<NEXT
+  * DNS: an A record for $dashboard -> $ip. The dashboard is public at
+        https://$dashboard   (phones can install it from the browser menu)
+    Operator view: https://$dashboard/app#operator with the
+    PIBASE_OPERATOR_TOKEN line in $app/.env; copy it from there, don't share it.
+NEXT
+  if [ "$signup" = "closed" ]; then
+    cat <<NEXT
+  * Public sign-up is CLOSED until email is set up. Add to $app/.env:
+        PIBASE_SMTP_HOST=smtp.example.com   PIBASE_SMTP_PORT=587
+        PIBASE_SMTP_USER=...   PIBASE_SMTP_PASS=...   PIBASE_SMTP_FROM=no-reply@example.com
+        PIBASE_SIGNUP=open
+    then, as $user: cd $app && docker compose up -d
+NEXT
+  fi
+else
+  cat <<NEXT
   * Dashboard (local only). On your own computer run:
         ssh -L 18081:127.0.0.1:18081 $user@$ip
     then open http://127.0.0.1:18081/ and sign up. The operator token is the
     PIBASE_OPERATOR_TOKEN line in $app/.env; copy it from there, don't share it.
+    To make it public later, run this script again with --dashboard app.example.com.
+NEXT
+fi
+cat <<NEXT
   * Add a client's API name:   $app/scripts/add-domain.sh pibase.client.com   (as root)
   * Update PIBASE:             sudo -u $user $app/scripts/update.sh
   * Backups: $data/backups, daily. Copy them off this server; see docs/VPS.md.
   * Keep PIBASE_BACKUP_KEY from $app/.env somewhere safe off this server, or
     the backups cannot be restored.
-EOF
+NEXT

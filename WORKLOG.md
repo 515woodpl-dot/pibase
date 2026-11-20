@@ -32,6 +32,30 @@ setup drill remains required before a release claim; current evidence is in
   `internal/gateway/auth_settings_integration_test.go`, `TestRESTWithRLS`.
   Pre-existing: `TestPagesUIHardRules` fails on main (`chain.scrollLeft=x`).
 
+## Public dashboard, spam protection and phone app (Claude, 2026-11-20)
+
+- Dashboard sign-up spam layers (`internal/adminserver/signup_guard.go`): signed
+  form token >= 3 s old, hidden trap field, throwaway domains
+  (+`PIBASE_BLOCKED_EMAIL_DOMAINS`), 3 accounts/IP/day, server-wide hourly cap
+  (`PIBASE_SIGNUP_HOURLY_LIMIT`, default 30), `PIBASE_SIGNUP=closed`. All skipped
+  when `Env=test` except closed and the trap.
+- Email confirmation for self-made accounts when SMTP and `PIBASE_DASHBOARD_URL`
+  are set: `control.accounts.email_verified_at` (existing rows backfilled as
+  confirmed), `control.email_verifications`, link `<dashboard>/#verify=<token>`,
+  resend endpoint, create/import project refused until confirmed. Unconfirmed
+  accounts without projects removed after 48 h (start-up and hourly on sign-up).
+  CLI `account-create` marks accounts confirmed.
+- Operator: `GET /_pibase/operator/accounts`, `DELETE .../accounts/{id}` (type
+  the email); dashboard list with "Not confirmed only" filter.
+- `setup-droplet.sh --dashboard NAME` and `add-domain.sh --dashboard`: Caddy
+  site to :18081 with HSTS, `PIBASE_ADMIN_ENV=production`, dashboard URL, and
+  sign-up closed until SMTP is configured. Caddy config validated and served
+  locally with `tls internal`; not yet run on a real droplet.
+- Installable app: manifest, icons, no-storage service worker with an offline
+  notice; CSP adds `manifest-src`/`worker-src`. Chromium reports no
+  installability errors. `TestDashboardIsInstallable`, `TestSignup*`,
+  `TestStaleUnconfirmedAccountsAreRemoved`.
+
 ## M4 implementation
 
 - Added authenticated static dashboard, owner SQL UI, health/Prometheus
