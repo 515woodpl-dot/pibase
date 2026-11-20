@@ -88,6 +88,7 @@ footer a{color:var(--muted)}
   footer{padding:20px 16px 32px}
   .field input{font-size:16px}
 }
+.trap{position:absolute;left:-10000px;top:auto;width:1px;height:1px;overflow:hidden}
 </style>
 </head>
 <body>
@@ -139,6 +140,7 @@ footer a{color:var(--muted)}
           <div class="field"><label for="signup-email">Email</label><input id="signup-email" name="email" type="email" autocomplete="email" required></div>
           <div class="field"><label for="signup-password">Password</label><input id="signup-password" name="password" type="password" autocomplete="new-password" minlength="8" required><span class="hint">At least 8 characters.</span></div>
           <div class="field"><label for="signup-password2">Enter the password again</label><input id="signup-password2" name="password_confirm" type="password" autocomplete="new-password" required></div>
+          <div class="trap" aria-hidden="true"><label for="signup-hp">Leave this empty</label><input id="signup-hp" name="hp" type="text" tabindex="-1" autocomplete="off"></div>
           <button class="btn primary block" type="submit">Create account</button>
           <p class="switch">Already have an account? <button type="button" data-tab="login">Log in</button></p>
         </form>
@@ -223,6 +225,21 @@ footer a{color:var(--muted)}
   var forms = { login: $('form-login'), signup: $('form-signup'), recover: $('form-recover'), reset: $('form-reset') };
   var tabs = { login: $('tab-login'), signup: $('tab-signup') };
   var resetToken = '';
+  // Sign-up needs a signed form token from the server, at least a few seconds
+  // old: a light check that a person, not a script, filled in the form.
+  var formToken = '';
+  function loadSignupForm() {
+    return fetch('/_pibase/auth/signup-form').then(function (r) { return r.ok ? r.json() : null; }).then(function (info) {
+      if (!info) return;
+      formToken = info.token || '';
+      if (info.open === false) {
+        tabs.signup.classList.add('hidden');
+        document.querySelectorAll('[data-tab="signup"]').forEach(function (n) { n.classList.add('hidden'); });
+        if (!forms.signup.classList.contains('hidden')) show('login');
+      }
+    }).catch(function () {});
+  }
+  loadSignupForm();
 
   function show(which) {
     for (var name in forms) {
@@ -282,7 +299,9 @@ footer a{color:var(--muted)}
     if (!email || email.indexOf('@') < 1) throw new Error('Enter a valid email address.');
     if (password.length < 8) throw new Error('The password must be at least 8 characters.');
     if (password !== again) throw new Error('The two passwords do not match.');
-    await post('/_pibase/auth/signup', { organization: organization, email: email, password: password, password_confirm: again });
+    try {
+      await post('/_pibase/auth/signup', { organization: organization, email: email, password: password, password_confirm: again, form_token: formToken, hp: String(data.get('hp') || '') });
+    } catch (e) { loadSignupForm(); throw e; }
     location.href = '/app';
   });
 
@@ -334,8 +353,22 @@ footer a{color:var(--muted)}
   // A reset link opens the page at #reset=<token>. The token stays in the
   // fragment, which browsers never send to a server.
   // The same applies when the link opens in a tab already showing this page.
+  // The welcome email links to #verify=<token>, which confirms the account.
+  function confirmEmail(token) {
+    history.replaceState(null, '', '#login');
+    show('login');
+    post('/_pibase/auth/verify', { token: token }).then(function (r) {
+      if (r && r.email) $('login-email').value = r.email;
+      fetch('/_pibase/auth/me').then(function (m) {
+        if (m.ok) { location.href = '/app#verified'; return; }
+        showNote(forms.login, 'Your email is confirmed. Log in to create your first project.');
+      });
+    }).catch(function (e) { showError(forms.login, e.message); });
+  }
   function route() {
-    if (location.hash.indexOf('#reset=') === 0) {
+    if (location.hash.indexOf('#verify=') === 0) {
+      confirmEmail(decodeURIComponent(location.hash.slice('#verify='.length)));
+    } else if (location.hash.indexOf('#reset=') === 0) {
       resetToken = decodeURIComponent(location.hash.slice('#reset='.length));
       history.replaceState(null, '', '#reset');
       show('reset');

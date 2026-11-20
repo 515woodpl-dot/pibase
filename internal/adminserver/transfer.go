@@ -69,6 +69,9 @@ func (s *Server) exportProject(w http.ResponseWriter, r *http.Request) {
 // importProject creates a project from an uploaded export file. The request
 // is multipart: "passphrase" first, then "file".
 func (s *Server) importProject(w http.ResponseWriter, r *http.Request) {
+	if !s.requireVerified(w, r) {
+		return
+	}
 	ident, _ := getIdentity(r.Context())
 	rc := http.NewResponseController(w)
 	_ = rc.SetReadDeadline(time.Now().Add(time.Hour))

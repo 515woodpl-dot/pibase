@@ -12,6 +12,7 @@ import (
 	"net/url"
 	"os"
 	"os/signal"
+	"strconv"
 	"strings"
 	"syscall"
 	"time"
@@ -296,6 +297,10 @@ func run() error {
 			}
 			return err
 		}
+		// The operator made this account, so its email needs no confirmation.
+		if err := control.MarkAccountVerified(ctx, url, account.ID); err != nil {
+			return err
+		}
 		fmt.Printf("Created dashboard account %s.\n", account.Email)
 		return nil
 	case "account-password-reset":
@@ -415,7 +420,35 @@ func adminServe() error {
 			return err
 		}
 	}
-	s, err := adminserver.New(adminserver.Config{AdminURL: adminURL, DatabaseURL: databaseURL, StorageRoot: os.Getenv("PIBASE_STORAGE_ROOT"), BackupRoot: os.Getenv("PIBASE_BACKUP_ROOT"), Token: token, MasterKey: master, BackupKey: backupKey, Env: os.Getenv("PIBASE_ADMIN_ENV"), PublicURL: os.Getenv("PIBASE_PUBLIC_URL"), MaxProjectsPerAccount: maxProjects, TrustedProxies: trusted, SendMail: sendMail, DashboardURL: dashboardURL})
+	// Public dashboard sign-up: open (default) or closed, an hourly cap and
+	// extra blocked email domains. See internal/adminserver/signup_guard.go.
+	signupClosed := false
+	switch strings.ToLower(strings.TrimSpace(os.Getenv("PIBASE_SIGNUP"))) {
+	case "", "open":
+	case "closed":
+		signupClosed = true
+	default:
+		return fmt.Errorf("PIBASE_SIGNUP must be open or closed")
+	}
+	hourly := 0
+	if v := strings.TrimSpace(os.Getenv("PIBASE_SIGNUP_HOURLY_LIMIT")); v != "" {
+		if hourly, err = strconv.Atoi(v); err != nil || hourly < 1 {
+			return fmt.Errorf("PIBASE_SIGNUP_HOURLY_LIMIT must be a positive number")
+		}
+	}
+	var blocked []string
+	for _, d := range strings.Split(os.Getenv("PIBASE_BLOCKED_EMAIL_DOMAINS"), ",") {
+		if d = strings.TrimSpace(d); d != "" {
+			blocked = append(blocked, d)
+		}
+	}
+	if !signupClosed && (sendMail == nil || dashboardURL == "") && os.Getenv("PIBASE_ADMIN_ENV") == "production" {
+		slog.Warn("public sign-up is open but email is not set up (PIBASE_SMTP_* and PIBASE_DASHBOARD_URL), so new accounts are not asked to confirm their email")
+	}
+	if n, err := control.RemoveStaleUnverifiedAccounts(context.Background(), adminURL); err == nil && n > 0 {
+		slog.Info("removed unconfirmed dashboard accounts", "count", n)
+	}
+	s, err := adminserver.New(adminserver.Config{AdminURL: adminURL, DatabaseURL: databaseURL, StorageRoot: os.Getenv("PIBASE_STORAGE_ROOT"), BackupRoot: os.Getenv("PIBASE_BACKUP_ROOT"), Token: token, MasterKey: master, BackupKey: backupKey, Env: os.Getenv("PIBASE_ADMIN_ENV"), PublicURL: os.Getenv("PIBASE_PUBLIC_URL"), MaxProjectsPerAccount: maxProjects, TrustedProxies: trusted, SendMail: sendMail, DashboardURL: dashboardURL, SignupClosed: signupClosed, SignupHourlyLimit: hourly, BlockedEmailDomains: blocked})
 	if err != nil {
 		return err
 	}

@@ -347,7 +347,7 @@ function renderWho(){
 }
 async function init(){
   buildNav();
-  try{const r=await fetch('/_pibase/auth/me');if(r.ok){account=await r.json();renderWho();refreshNav();load();return}}catch(_){}
+  try{const r=await fetch('/_pibase/auth/me');if(r.ok){account=await r.json();renderWho();refreshNav();load();if(location.hash==='#verified'){history.replaceState(null,'','/app');toast('Email confirmed. You can create projects now.')}return}}catch(_){}
   if(location.hash==='#operator'){operator=true;renderWho();refreshNav();q('opLoad').onclick=load;q('opToken').addEventListener('keydown',e=>{if(e.key==='Enter')load()});add(operatorPane());return}
   location.replace('/')
 }
@@ -360,7 +360,25 @@ function accountsPane(){
       if(pw.value.length<8)throw Error('The password must be at least 8 characters.');
       if(pw.value!==pw2.value)throw Error('The two passwords do not match.');
       await api('/_pibase/operator/account-password',body({email:em.value.trim(),password:pw.value}));return 'Password changed for '+em.value.trim()+'. They were signed out everywhere.'})};
-  p.append(tiles(tile({lead:iconBadge('user'),title:'Reset a password',body:'For someone who cannot receive a reset email.',actions:[sbtn('Reset a password…',reset)]})));
+  const grid=tiles(tile({lead:iconBadge('user'),title:'Reset a password',body:'For someone who cannot receive a reset email.',actions:[sbtn('Reset a password…',reset)]}));
+  p.append(grid);
+  api('/_pibase/operator/accounts').then(list=>{
+    const find=input('search','Search accounts by email or organization');find.setAttribute('aria-label','Search accounts');
+    const unconfirmed=list.filter(a=>!a.email_verified_at).length;
+    const count=el('span',plural(list.length,'account')+(unconfirmed?' · '+unconfirmed+' not confirmed':''),'muted');
+    const cards=tiles(...list.map(a=>{const t=tile({lead:avatar(a.organization||a.email,true),title:a.email,sub:(a.organization?a.organization+' · ':'')+'Joined '+new Date(a.created_at).toLocaleDateString(),
+      badges:[a.email_verified_at?badge('Confirmed','ok'):badge('Not confirmed','warn'),badge(plural(a.projects,'project'),'info')],
+      actions:[sbtn('Delete',()=>dangerModal('Delete '+a.email+'?','Deletes this dashboard account and every project it owns, with all their data. Use it for spam accounts. This cannot be undone.',a.email,'Delete account',async()=>{await api('/_pibase/operator/accounts/'+encodeURIComponent(a.id),body({confirm:a.email},'DELETE'));load();return 'Deleted '+a.email}),'danger')]});
+      t.dataset.search=(a.email+' '+(a.organization||'')).toLowerCase();return t}));
+    // Newest 30 first; search, the filter or "Show all" reach the rest.
+    let all=false;const onlyNew=input('checkbox');onlyNew.className='switch';const onlyLbl=el('label',null,'switch-row');onlyLbl.append(onlyNew,el('span','Not confirmed only'));
+    const more=sbtn('Show all '+list.length,()=>{all=true;filter()});
+    list.forEach((a,i)=>{cards.children[i].dataset.unconfirmed=a.email_verified_at?'':'1'});
+    const filter=()=>{const v=find.value.trim().toLowerCase();let shown=0,hidden=0;for(const t of cards.children){const match=(!v||t.dataset.search.includes(v))&&(!onlyNew.checked||t.dataset.unconfirmed);const show=match&&(all||v||onlyNew.checked||shown<30);if(show)shown++;else if(match)hidden++;t.classList.toggle('hidden',!show)}more.classList.toggle('hidden',!hidden)};
+    find.oninput=filter;onlyNew.onchange=filter;filter();
+    const bar=el('div',null,'toolbar');bar.append(find,onlyLbl,count);
+    p.append(el('h2','Accounts','section'),note('Everyone who signed up, newest first. Unconfirmed accounts with no projects are removed after two days.'),bar,cards,more)
+  }).catch(e=>p.append(note(e.message)));
   return p
 }
 function operatorPane(){return pane('Operator access','Enter the operator token above and press Load to see every project on this server.')}
@@ -391,9 +409,20 @@ function renderProjectList(list){
     badges:[x.database_bytes!==undefined?badge(bytes(x.database_bytes)+' database','info'):null,x.requests_30d!==undefined?badge(plural(x.requests_30d,'request')+' in 30 days'):null,x.schema_error?badge('Needs attention','bad'):null].filter(Boolean)}));
   const more=button(null,newProjectWindow,'tile add');more.append(el('span','+ New project'));list.append(more)
 }
+// A new account confirms its email before it can create projects.
+function verifyBanner(){
+  const b=el('div',null,'banner');const st=el('span');
+  b.append(el('div','Confirm your email to start. We sent a link to '+account.email+'. Open it on this device or any other, then come back here.'));
+  const row=el('div',null,'tile-actions');
+  row.append(sbtn('I confirmed it',async()=>{try{account=await api('/_pibase/auth/me');if(account.email_verified){toast('Email confirmed. You can create projects now.');load()}else st.textContent=' Not confirmed yet. Check your inbox and spam folder.'}catch(e){st.textContent=' '+e.message}}),
+    sbtn('Send the link again',async()=>{try{const r=await api('/_pibase/auth/verify/resend',{method:'POST'});st.textContent=r&&r.verified?' Already confirmed.':' Sent. Check your inbox and spam folder.'}catch(e){st.textContent=' '+e.message}}),st);
+  b.append(row);return b
+}
 function projectsPane(){
   const p=pane('Projects','Each project is its own Postgres database with its own API address and keys. Pick a project to see how it is being used and to manage it.');
-  topAction(p,button('Import a project',importWindow));
+  const unverified=account&&!account.email_verified;
+  if(!unverified)topAction(p,button('Import a project',importWindow));
+  if(unverified){p.append(verifyBanner());if(!projects.length)return p}
   if(account&&!account.organization)p.append(orgPrompt());
   if(!projects.length){p.append(createProjectForm());return p}
   const list=el('div',null,'tiles');list.id='projectList';renderProjectList(list);p.append(list);

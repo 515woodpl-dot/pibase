@@ -52,6 +52,12 @@ type Config struct {
 	// DashboardURL is this dashboard's address as people open it, used in
 	// reset links (PIBASE_DASHBOARD_URL). Never taken from request headers.
 	DashboardURL string
+	// SignupClosed turns public dashboard sign-up off (PIBASE_SIGNUP=closed).
+	SignupClosed bool
+	// SignupHourlyLimit caps new accounts per hour across the server; 0 means 30.
+	SignupHourlyLimit int
+	// BlockedEmailDomains are refused at sign-up, besides common throwaway inboxes.
+	BlockedEmailDomains []string
 }
 
 type Server struct {
@@ -62,6 +68,7 @@ type Server struct {
 	loginFailures *rateLimiter
 	recoverLimit  *rateLimiter
 	userEditLimit *rateLimiter
+	signup        *signupState
 	// accountProjectsMu serialises account-owned project creation and account
 	// deletion so the per-account cap cannot be raced and a delete cannot
 	// leave behind a project created while it ran.
@@ -81,7 +88,7 @@ func New(c Config) (*Server, error) {
 	if c.MaxProjectsPerAccount <= 0 {
 		c.MaxProjectsPerAccount = 2
 	}
-	return &Server{Config: c, loginLimit: newRateLimiter(), signupLimit: newRateLimiter(), passwordLimit: newRateLimiter(), loginFailures: newRateLimiter(), recoverLimit: newRateLimiter(), userEditLimit: newRateLimiter()}, nil
+	return &Server{Config: c, loginLimit: newRateLimiter(), signupLimit: newRateLimiter(), passwordLimit: newRateLimiter(), loginFailures: newRateLimiter(), recoverLimit: newRateLimiter(), userEditLimit: newRateLimiter(), signup: newSignupState()}, nil
 }
 
 // identityKind distinguishes operator-token auth from account-session auth.
@@ -141,6 +148,11 @@ func (s *Server) Handler() http.Handler {
 	mux.HandleFunc("DELETE /_pibase/projects/{id}/users/{user}", s.deleteUser)
 	// Auth endpoints — no token required.
 	mux.HandleFunc("POST /_pibase/auth/signup", s.authSignup)
+	mux.HandleFunc("GET /_pibase/auth/signup-form", s.signupForm)
+	mux.HandleFunc("POST /_pibase/auth/verify", s.authVerify)
+	mux.HandleFunc("POST /_pibase/auth/verify/resend", s.authResendVerification)
+	mux.HandleFunc("GET /_pibase/operator/accounts", s.operatorAccounts)
+	mux.HandleFunc("DELETE /_pibase/operator/accounts/{id}", s.operatorDeleteAccount)
 	mux.HandleFunc("POST /_pibase/auth/login", s.authLogin)
 	mux.HandleFunc("POST /_pibase/auth/logout", s.authLogout)
 	mux.HandleFunc("GET /_pibase/auth/me", s.authMe)
@@ -289,8 +301,14 @@ func (s *Server) authSignup(w http.ResponseWriter, r *http.Request) {
 		Email           string `json:"email"`
 		Password        string `json:"password"`
 		PasswordConfirm string `json:"password_confirm"`
+		FormToken       string `json:"form_token"`
+		Trap            string `json:"hp"`
 	}
 	if !jsonBody(w, r, &b) {
+		return
+	}
+	if status, msg := s.checkSignup(r, ip, b.Email, b.FormToken, b.Trap); status != 0 {
+		http.Error(w, msg, status)
 		return
 	}
 	// The password is typed twice when an account is created, so a typo cannot
@@ -307,6 +325,22 @@ func (s *Server) authSignup(w http.ResponseWriter, r *http.Request) {
 		}
 		http.Error(w, err.Error(), http.StatusBadRequest)
 		return
+	}
+	s.noteSignup(ip)
+	s.cleanupUnverified()
+	if s.verifyEmailRequired() {
+		if err := s.sendVerification(r.Context(), account.ID, account.Email); err != nil {
+			fail(w, err)
+			return
+		}
+	} else {
+		// Without email the server cannot send a link, so the account is
+		// confirmed at once and the other limits carry the spam protection.
+		if err := control.MarkAccountVerified(r.Context(), s.AdminURL, account.ID); err != nil {
+			fail(w, err)
+			return
+		}
+		account.EmailVerified = true
 	}
 	token, err := control.IssueSession(r.Context(), s.AdminURL, account.ID)
 	if err != nil {
@@ -864,6 +898,9 @@ func (s *Server) createProject(w http.ResponseWriter, r *http.Request) {
 		Name string `json:"name"`
 	}
 	if !jsonBody(w, r, &b) {
+		return
+	}
+	if !s.requireVerified(w, r) {
 		return
 	}
 	id, _ := getIdentity(r.Context())

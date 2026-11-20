@@ -29,6 +29,9 @@ type Account struct {
 	Email        string    `json:"email"`
 	Organization string    `json:"organization"`
 	CreatedAt    time.Time `json:"created_at"`
+	// EmailVerified is false until the owner opens the link in the welcome
+	// email; until then the account cannot create projects.
+	EmailVerified bool `json:"email_verified"`
 }
 
 // sessionTTL is the lifetime of a dashboard session cookie.
@@ -81,9 +84,9 @@ func CreateAccount(ctx context.Context, adminURL, email, password, organization 
 	defer conn.Close(ctx)
 	var a Account
 	err = conn.QueryRow(ctx,
-		`INSERT INTO control.accounts(id,email,password_hash,organization) VALUES($1,$2,$3,$4) RETURNING id,email,organization,created_at`,
+		`INSERT INTO control.accounts(id,email,password_hash,organization) VALUES($1,$2,$3,$4) RETURNING id,email,organization,created_at,email_verified_at IS NOT NULL`,
 		id, email, hash, organization,
-	).Scan(&a.ID, &a.Email, &a.Organization, &a.CreatedAt)
+	).Scan(&a.ID, &a.Email, &a.Organization, &a.CreatedAt, &a.EmailVerified)
 	if err != nil {
 		if strings.Contains(err.Error(), "unique") || strings.Contains(err.Error(), "duplicate") {
 			return Account{}, ErrDuplicate
@@ -107,9 +110,9 @@ func AuthenticateAccount(ctx context.Context, adminURL, email, password string) 
 	var a Account
 	var hash string
 	err = conn.QueryRow(ctx,
-		`SELECT id,email,password_hash,organization,created_at FROM control.accounts WHERE email=$1`,
+		`SELECT id,email,password_hash,organization,created_at,email_verified_at IS NOT NULL FROM control.accounts WHERE email=$1`,
 		email,
-	).Scan(&a.ID, &a.Email, &hash, &a.Organization, &a.CreatedAt)
+	).Scan(&a.ID, &a.Email, &hash, &a.Organization, &a.CreatedAt, &a.EmailVerified)
 	if err == pgx.ErrNoRows {
 		auth.VerifyPassword(password, auth.DummyPasswordHash())
 		return Account{}, fmt.Errorf("invalid credentials")
@@ -160,12 +163,12 @@ func ResolveSession(ctx context.Context, adminURL, token string) (Account, error
 	defer conn.Close(ctx)
 	var a Account
 	err = conn.QueryRow(ctx,
-		`SELECT a.id,a.email,a.organization,a.created_at
+		`SELECT a.id,a.email,a.organization,a.created_at,a.email_verified_at IS NOT NULL
 		 FROM control.sessions s
 		 JOIN control.accounts a ON a.id=s.account_id
 		 WHERE s.token_hash=$1 AND s.expires_at > now()`,
 		digest[:],
-	).Scan(&a.ID, &a.Email, &a.Organization, &a.CreatedAt)
+	).Scan(&a.ID, &a.Email, &a.Organization, &a.CreatedAt, &a.EmailVerified)
 	if err != nil {
 		return Account{}, fmt.Errorf("invalid session")
 	}
